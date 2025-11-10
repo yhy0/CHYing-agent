@@ -1,0 +1,52 @@
+services:
+  kali-security:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: kali-security-tools:latest
+    container_name: kali-pentest
+    hostname: kali-pentest
+    
+    # 交互式终端
+    stdin_open: true
+    tty: true
+    
+    # 网络模式 (host模式可以直接访问宿主机网络，适合渗透测试)
+    # 如果需要更安全的隔离，可以改为 bridge
+    network_mode: host
+    
+    # 特权模式 (某些渗透测试工具需要，如tcpdump)
+    # 根据需要启用
+    privileged: true
+    
+    # 能力增强 (比privileged更安全的选择)
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    
+    # 挂载卷
+    volumes:
+      # 工作目录 - 保存你的扫描结果、脚本等
+      - ../workspace:/root/workspace
+      
+      # 工具配置持久化
+      - kali-tools-config:/root/.config
+      - kali-go-cache:/root/go
+      
+      # 如果需要访问宿主机的文件
+      # - /path/on/host:/path/in/container
+    
+    # 环境变量
+    environment:
+      - TZ=Asia/Shanghai
+      - LANG=C.UTF-8
+    
+    # 重启策略
+    restart: unless-stopped
+
+# 定义持久化卷
+volumes:
+  kali-tools-config:
+    driver: local
+  kali-go-cache:
+    driver: local

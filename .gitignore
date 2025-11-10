@@ -1,0 +1,32 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+dist/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Editors
+.vscode/
+.idea/
+
+# Environments
+.env
+venv/
+env/
+uv.lock
+# Logs and temporary files
+logs/
+*.log
+*.tmp
+*.swp
