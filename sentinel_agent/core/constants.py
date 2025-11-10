@@ -66,3 +66,30 @@ class MemoryConfig:
     # 如需启用向量搜索，请配置 OPENAI_API_KEY 环境变量
     OPENAI_EMBEDDING_DIMS = 1536  # OpenAI text-embedding-3-small 的维度
     EMBEDDING_MODEL = "openai:text-embedding-3-small"  # 嵌入模型
+
+
+# ==================== Agent 运行配置 ====================
+class AgentConfig:
+    """Agent 运行时配置"""
+    # 默认值（可通过环境变量覆盖）
+    DEFAULT_MAX_ATTEMPTS = 70  # 默认最大尝试次数
+    DEFAULT_RECURSION_LIMIT = 80  # 默认递归限制
+    DEFAULT_SINGLE_TASK_TIMEOUT = 600  # 默认单题超时（秒）- 10分钟
+
+    @staticmethod
+    def get_max_attempts() -> int:
+        """获取最大尝试次数（从环境变量或默认值）"""
+        import os
+        return int(os.getenv("MAX_ATTEMPTS", str(AgentConfig.DEFAULT_MAX_ATTEMPTS)))
+
+    @staticmethod
+    def get_recursion_limit() -> int:
+        """获取递归限制（从环境变量或默认值）"""
+        import os
+        return int(os.getenv("RECURSION_LIMIT", str(AgentConfig.DEFAULT_RECURSION_LIMIT)))
+
+    @staticmethod
+    def get_single_task_timeout() -> int:
+        """获取单题超时时间（从环境变量或默认值）"""
+        import os
+        return int(os.getenv("SINGLE_TASK_TIMEOUT", str(AgentConfig.DEFAULT_SINGLE_TASK_TIMEOUT)))

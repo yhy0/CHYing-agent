@@ -433,33 +433,59 @@ def view_challenge_hint(challenge_code: str) -> str:
 def submit_flag(challenge_code: str, flag: str) -> str:
     """
     提交赛题答案（flag）。
-    
-    答案格式通常为 flag{...} 或 FLAG{...}，大小写均可。
-    每个题目最多支持提交 100 次。
-    
+
+    ⚠️ 重要提示：
+    - FLAG 格式必须完整：flag{...}（必须包含开头的 'flag{' 和结尾的 '}'）
+    - 提交前会自动验证格式，如果格式不正确会拒绝提交并提示修正
+    - 每个题目最多支持提交 100 次，请确保 FLAG 完整后再提交
+
     Args:
         challenge_code: 赛题唯一标识码（如 "debugdemo1"）
         flag: 答案内容（如 "flag{e82fba66-3230-4818-8960-800ab47b0ba3}"）
-        
+
     Returns:
         提交结果信息
     """
+    from sentinel_agent.utils.flag_validator import validate_flag_format, suggest_flag_fix
+
+    # 1. 验证 FLAG 格式
+    is_valid, error_msg = validate_flag_format(flag)
+
+    if not is_valid:
+        # 格式错误，拒绝提交并提供修复建议
+        fix_suggestion = suggest_flag_fix(flag)
+        return (
+            f"❌ FLAG 格式错误，已拒绝提交！\n\n"
+            f"错误原因: {error_msg}\n"
+            f"{fix_suggestion}\n\n"
+            f"当前 FLAG: {flag}\n"
+            f"请修正后重新提交。"
+        )
+
+    # 2. 格式正确，提交到服务器
     try:
         client = get_api_client()
         data = client.submit_answer(challenge_code, flag)
-        
+
         correct = data.get("correct", False)
         earned_points = data.get("earned_points", 0)
         is_solved = data.get("is_solved", False)
-        
+
         if correct:
             if is_solved:
                 return f"✓ 答案正确！但该题目之前已解答过，本次不计分。"
             else:
                 return f"✓ 答案正确！获得 {earned_points} 分！"
         else:
-            return f"✗ 答案错误，请继续尝试。"
-        
+            return (
+                f"✗ 答案错误，请继续尝试。\n\n"
+                f"提交的 FLAG: {flag}\n"
+                f"提示：FLAG 格式正确，但内容可能有误。请检查：\n"
+                f"  - FLAG 内容是否完整（没有截断）\n"
+                f"  - 是否从正确的位置提取了 FLAG\n"
+                f"  - 是否需要进一步处理（解码、解密等）"
+            )
+
     except BusinessError as e:
         return f"提交失败: {str(e)}"
     except RateLimitError as e:

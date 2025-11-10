@@ -116,4 +116,9 @@ class PenetrationTesterState(TypedDict):
     
     # --- 多 Agent 协作 ---
     advisor_suggestion: Optional[str]  # 顾问 Agent 的建议（多 Agent 模式）
+    
+    # --- 智能路由控制（优化：减少不必要的 Advisor 调用）---
+    consecutive_failures: int  # 连续失败次数（用于判断是否需要 Advisor 介入）
+    last_action_type: Optional[str]  # 上次执行的操作类型（用于检测重复尝试）
+    request_advisor_help: bool  # Main Agent 主动请求 Advisor 帮助的标记
 

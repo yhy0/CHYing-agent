@@ -59,14 +59,7 @@ cp .env.example .env
 ### Running the Agent
 
 ```bash
-# Single agent mode
-python main.py
-
-# Multi-agent collaboration mode
-python main_multi_agent.py
-
-# Concurrent multi-agent mode (experimental)
-python main_multi_agent_concurrent.py
+uv run main.py
 ```
 
 ### Docker Management
@@ -101,7 +94,7 @@ docker-compose logs -f
 ### Graph Construction
 
 - **Single Agent**: `sentinel_agent/graph.py` - `build_graph()`
-- **Multi-Agent**: `sentinel_agent/multi_agent_graph.py` - `build_multi_agent_graph()`
+- **Multi-Agent**: `sentinel_agent/graph.py` - `build_multi_agent_graph()`
 
 Both use:
 - Dynamic system prompts via `_build_system_prompt(state)`
@@ -115,10 +108,12 @@ Both use:
 | `execute_command` | Shell commands | DockerExecutor |
 | `execute_python_poc` | Python PoC code | MicrosandboxExecutor |
 | `get_challenge_list` | Fetch CTF challenges | Competition API |
-| `submit_flag` | Submit FLAG | Competition API |
+| `submit_flag` | Submit FLAG (with auto-validation) | Competition API |
 | `view_challenge_hint` | Get hints (penalty) | Competition API |
 | `record_vulnerability_discovery` | Log findings | LangMem |
 | `query_historical_knowledge` | Search memory | LangMem |
+
+**Note**: `submit_flag` includes automatic FLAG format validation to prevent incomplete submissions (e.g., missing closing `}`). See `sentinel_agent/utils/flag_validator.py` for validation logic.
 
 ### Configuration (`sentinel_agent/config.py`)
 
@@ -149,7 +144,7 @@ def my_custom_tool(param: str) -> str:
 
 **Do NOT create new nodes**. Instead, modify the dynamic system prompt in:
 - `sentinel_agent/graph.py` → `_build_system_prompt()`
-- `sentinel_agent/multi_agent_graph.py` → `ADVISOR_SYSTEM_PROMPT` or `_build_main_system_prompt()`
+- `sentinel_agent/graph.py` → `ADVISOR_SYSTEM_PROMPT` or `_build_main_system_prompt()`
 
 The LangGraph pattern uses state-based prompts to guide behavior, not separate nodes.
 
@@ -164,20 +159,25 @@ The LangGraph pattern uses state-based prompts to guide behavior, not separate n
 The router (`should_continue`) detects common failure patterns:
 - Repeated curl quote/escape errors → suggests switching to Python
 - Identical repeated commands → prompts for new approach
-- Attempt limits (70 for single agent, 50 for multi-agent)
+- Attempt limits: Configurable via `MAX_ATTEMPTS` (default: 70)
 
 ## Environment Variables Reference
 
-| Variable | Required | Purpose | Example |
-|----------|----------|---------|---------|
-| `DEEPSEEK_API_KEY` | Yes | Main LLM API key | `sk-xxx` |
-| `DEEPSEEK_BASE_URL` | No | API endpoint | `https://api.deepseek.com/v1` |
-| `LLM_MODEL_NAME` | No | Model name | `deepseek-v3.1-terminus` |
-| `ENV_MODE` | No | Environment mode | `competition` (default) |
-| `DOCKER_CONTAINER_NAME` | Conditional | Kali container name | `kali-sandbox` |
-| `SANDBOX_ENABLED` | No | Enable Microsandbox | `true`/`false` |
-| `SILICONFLOW_API_KEY` | Multi-agent only | Advisor LLM key | `sk-xxx` |
-| `SILICONFLOW_MODEL` | No | Advisor model | `MiniMaxAI/MiniMax-M2` |
+| Variable | Required | Purpose | Default | Example |
+|----------|----------|---------|---------|---------|
+| `DEEPSEEK_API_KEY` | Yes | Main LLM API key | - | `sk-xxx` |
+| `DEEPSEEK_BASE_URL` | No | API endpoint | `https://api.deepseek.com/v1` | - |
+| `LLM_MODEL_NAME` | No | Model name | `deepseek-v3.1-terminus` | - |
+| `ENV_MODE` | No | Environment mode | `competition` | - |
+| `DOCKER_CONTAINER_NAME` | Conditional | Kali container name | - | `kali-sandbox` |
+| `SANDBOX_ENABLED` | No | Enable Microsandbox | `false` | `true`/`false` |
+| `SILICONFLOW_API_KEY` | Multi-agent only | Advisor LLM key | - | `sk-xxx` |
+| `SILICONFLOW_MODEL` | No | Advisor model | `MiniMaxAI/MiniMax-M2` | - |
+| **`MAX_ATTEMPTS`** | No | **单题最大尝试次数** | **70** | `70` |
+| **`RECURSION_LIMIT`** | No | **LangGraph 递归限制** | **80** | `80` |
+| **`SINGLE_TASK_TIMEOUT`** | No | **单题超时（秒）** | **600** | `600` |
+| `FETCH_INTERVAL_SECONDS` | No | 拉取题目间隔（秒） | `600` | `600` |
+| `MONITOR_INTERVAL_SECONDS` | No | 状态监控间隔（秒） | `300` | `300` |
 
 ## Code Quality Standards
 

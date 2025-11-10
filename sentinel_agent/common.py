@@ -66,34 +66,53 @@ class PlainFileFormatter(logging.Formatter):
         return ansi_escape.sub('', formatted)
 
 
-# 创建日志目录
-LOG_DIR = Path(__file__).parent.parent / "logs"
-LOG_DIR.mkdir(exist_ok=True)
+# 全局 logger 实例（单例模式）
+_logger_initialized = False
+logger = None
 
-# 生成日志文件名（按日期时间）
-log_filename = f"sentinel_agent_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-log_filepath = LOG_DIR / log_filename
 
-# 配置 logger
-logger = logging.getLogger("SentinelAgent")
-logger.setLevel(logging.INFO)
-logger.handlers.clear()
+def _init_logger():
+    """初始化 logger（单例模式，只执行一次）"""
+    global _logger_initialized, logger
 
-# 控制台处理器（带颜色）
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(ColoredConsoleFormatter(LOG_FORMAT, datefmt=DATE_FORMAT))
-logger.addHandler(console_handler)
+    if _logger_initialized:
+        return logger
 
-# 文件处理器（纯文本）
-file_handler = logging.FileHandler(log_filepath, encoding='utf-8')
-file_handler.setFormatter(PlainFileFormatter(LOG_FORMAT, datefmt=DATE_FORMAT))
-logger.addHandler(file_handler)
+    # 创建日志目录
+    LOG_DIR = Path(__file__).parent.parent / "logs"
+    LOG_DIR.mkdir(exist_ok=True)
 
-logger.propagate = False
+    # 生成日志文件名（按日期时间）
+    log_filename = f"sentinel_agent_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    log_filepath = LOG_DIR / log_filename
 
-# 记录日志文件位置
-print(f"📁 日志文件: {log_filepath}")
-print(f"📁 日志目录: {LOG_DIR}\n")
+    # 配置 logger
+    logger = logging.getLogger("SentinelAgent")
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()  # 清除已有的 handler
+
+    # 控制台处理器（带颜色）
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(ColoredConsoleFormatter(LOG_FORMAT, datefmt=DATE_FORMAT))
+    logger.addHandler(console_handler)
+
+    # 文件处理器（纯文本）
+    file_handler = logging.FileHandler(log_filepath, encoding='utf-8')
+    file_handler.setFormatter(PlainFileFormatter(LOG_FORMAT, datefmt=DATE_FORMAT))
+    logger.addHandler(file_handler)
+
+    logger.propagate = False
+
+    # 记录日志文件位置（只打印一次）
+    print(f"📁 日志文件: {log_filepath}")
+    print(f"📁 日志目录: {LOG_DIR}\n")
+
+    _logger_initialized = True
+    return logger
+
+
+# 初始化 logger（模块导入时执行一次）
+logger = _init_logger()
 
 
 def _apply_style(style: str, text: str) -> str:

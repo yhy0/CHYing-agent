@@ -11,7 +11,7 @@ def create_model(
     temperature: float = 0.1,
     max_tokens: int = 12800,
     timeout: int = 300,
-    max_retries: int = 2
+    max_retries: int = 10  # ⭐ 提升重试次数：2 → 10（应对并发速率限制）
 ) -> BaseChatModel:
     """
     创建模型实例
