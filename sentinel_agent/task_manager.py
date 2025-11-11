@@ -47,6 +47,17 @@ class ChallengeTaskManager:
         self.attempt_history: Dict[str, list] = {}  # challenge_code -> 历史尝试记录（每次读取时深拷贝）
         self.lock = asyncio.Lock()  # 线程安全锁
         self.max_retries = max_retries
+        # ⭐ 新增：任务完成回调函数（用于立即触发空位回填）
+        self.on_task_completed_callback = None
+
+    def set_completion_callback(self, callback):
+        """
+        设置任务完成回调函数
+        
+        Args:
+            callback: 异步函数，当任务完成或失败时调用
+        """
+        self.on_task_completed_callback = callback
 
     async def add_task(self, challenge_code: str, task: asyncio.Task) -> bool:
         """
@@ -119,6 +130,22 @@ class ChallengeTaskManager:
                     log_system_event(
                         f"[任务管理器] ❌ 任务失败: {challenge_code} (失败次数: {self.failed_challenges[challenge_code]})"
                     )
+
+        # ⭐ 新增：任务完成后触发回调（立即回填空位）
+        # 在锁外调用回调，避免死锁
+        if self.on_task_completed_callback:
+            try:
+                log_system_event(
+                    f"[任务管理器] 🔄 触发空位回填回调",
+                    {"challenge": challenge_code, "success": success}
+                )
+                # 使用 create_task 异步触发，不阻塞当前流程
+                asyncio.create_task(self.on_task_completed_callback())
+            except Exception as e:
+                log_system_event(
+                    f"[任务管理器] ⚠️ 回调执行失败: {str(e)}",
+                    level=logging.WARNING
+                )
 
     async def get_status(self) -> Dict:
         """获取当前状态"""

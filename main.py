@@ -125,6 +125,31 @@ async def main():
             concurrent_semaphore=concurrent_semaphore
         )
 
+    # ⭐ 新增：创建空位回填回调函数（立即重试）
+    async def refill_slots_callback():
+        """
+        任务完成后立即触发的空位回填回调
+        
+        作用：
+        - 失败任务完成后，立即启动重试或新任务
+        - 避免等待 10 分钟的定时任务
+        - 提高并发槽位利用率
+        """
+        log_system_event("[立即回填] 任务完成，触发空位回填...")
+        await check_and_start_pending_challenges(
+            api_client=api_client,
+            task_manager=task_manager,
+            retry_strategy=retry_strategy,
+            config=config,
+            langfuse_handler=langfuse_handler,
+            start_task_func=start_task_wrapper,
+            max_concurrent_tasks=MAX_CONCURRENT_TASKS
+        )
+
+    # ⭐ 设置任务完成回调
+    task_manager.set_completion_callback(refill_slots_callback)
+    log_system_event("[✓] 已设置立即回填机制（任务完成后自动填充空位）")
+
     # ==================== 6. 首次拉取题目并启动初始任务 ====================
     log_system_event("[*] 首次拉取题目...")
     await check_and_start_pending_challenges(

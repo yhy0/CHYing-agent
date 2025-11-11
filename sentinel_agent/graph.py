@@ -167,6 +167,9 @@ async def build_multi_agent_graph(
         # 执行基础工具调用
         result = await base_tool_node.ainvoke(state)
 
+        # ⭐ 修复：提前获取 state 中的 messages，避免变量作用域错误
+        messages = state.get("messages", [])
+
         # ⭐ 新增：检查工具输出长度，必要时进行总结
         # 从环境变量读取配置
         enable_summary = os.getenv("ENABLE_TOOL_SUMMARY", "true").lower() == "true"
@@ -204,8 +207,8 @@ async def build_multi_agent_graph(
                         msg.content = summary
 
         # ⭐ 获取本次执行的工具类型（用于智能路由）
+        # ⭐ 修复：messages 已在函数开头定义，无需重复获取
         current_action_type = None
-        messages = state.get("messages", [])
         if messages:
             last_message = messages[-1]
             if hasattr(last_message, "tool_calls") and last_message.tool_calls:
@@ -223,7 +226,7 @@ async def build_multi_agent_graph(
                     content = msg.content.lower()
                     
                     # 1. 检测答案正确的标记（成功）
-                    if "✓ 答案正确" in content or "答案正确！获得" in content:
+                    if "答案正确" in content or "答案正确！获得" in content:
                         # 从工具调用参数中提取 flag
                         if messages:
                             last_message = messages[-1]
@@ -241,7 +244,8 @@ async def build_multi_agent_graph(
                                             result["is_finished"] = True
                                             # ⭐ 重置失败计数
                                             result["consecutive_failures"] = 0
-                                            break
+                                            # ⭐ 立即返回，跳过后续失败检测
+                                            return result
                     
                     # 2. 检测失败标记
                     elif any(keyword in content for keyword in failure_keywords):
@@ -966,6 +970,7 @@ def _build_system_prompt(state: PenetrationTesterState) -> SystemMessage:
         difficulty = challenge.get("difficulty", "unknown")
         points = challenge.get("points", 0)
         hint_viewed = challenge.get("hint_viewed", False)
+        hint_content = challenge.get("hint_content", "")  # ⭐ 获取提示内容
         target_info = challenge.get("target_info", {})
         ip = target_info.get("ip", "unknown")
         ports = target_info.get("port", [])
@@ -981,6 +986,11 @@ def _build_system_prompt(state: PenetrationTesterState) -> SystemMessage:
             if hasattr(first_msg, 'content') and "🔍 系统自动侦察结果" in first_msg.content:
                 recon_hint = "\n\n**💡 提示**：系统已自动完成初步侦察，请查看消息历史中的侦察结果，无需重复基础信息收集。"
 
+        # ⭐ 构建提示信息（如果有提示内容）
+        hint_section = ""
+        if hint_content:
+            hint_section = f"\n\n### 💡 官方提示\n{hint_content}\n\n**重要**: 请仔细阅读上述提示，它可能包含解题的关键线索！"
+
         prompt_parts.append(f"""
 ## 🎯 当前攻击中：{code}
 
@@ -990,7 +1000,7 @@ def _build_system_prompt(state: PenetrationTesterState) -> SystemMessage:
 - **满分**：{points} 分
 - **目标**：{target_url}
 - **尝试次数**：{attempts}
-- **提示状态**：{"已查看 💡（扣分）" if hint_viewed else "未查看"}{recon_hint}
+- **提示状态**：{"已查看 💡（扣分）" if hint_viewed else "未查看"}{recon_hint}{hint_section}
 
 ### 攻击策略
 1. **信息收集**：
