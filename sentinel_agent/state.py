@@ -113,12 +113,13 @@ class PenetrationTesterState(TypedDict):
     evidence_chain_ids: Annotated[List[str], add]
     current_snapshot_id: str  # = "initial_snapshot"
     last_node: str  # 最后一个业务节点名称（用于 ToolNode 返回路由）
-    
+
     # --- 多 Agent 协作 ---
     advisor_suggestion: Optional[str]  # 顾问 Agent 的建议（多 Agent 模式）
-    
+
     # --- 智能路由控制（优化：减少不必要的 Advisor 调用）---
     consecutive_failures: int  # 连续失败次数（用于判断是否需要 Advisor 介入）
     last_action_type: Optional[str]  # 上次执行的操作类型（用于检测重复尝试）
     request_advisor_help: bool  # Main Agent 主动请求 Advisor 帮助的标记
+    last_advisor_at_failures: int  # ⭐ 新增：上次咨询 Advisor 时的失败次数（避免重复触发）
 

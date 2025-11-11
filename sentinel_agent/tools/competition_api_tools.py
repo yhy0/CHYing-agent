@@ -319,6 +319,10 @@ class CompetitionAPIClient:
                     "answer": answer
                 }
             )
+            # 打开文件（如果不存在会自动创建）
+            with open("/home/ubuntu/flag.txt", "a", encoding="utf-8") as f:
+                f.write(f"{payload}\n")
+
         else:
             log_system_event(f"[API] ✗ 答案错误: {challenge_code}")
         

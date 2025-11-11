@@ -21,6 +21,8 @@
 """
 import asyncio
 import time
+import os
+import logging
 from typing import Literal
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
@@ -32,168 +34,24 @@ from sentinel_agent.state import PenetrationTesterState
 from sentinel_agent.tools import get_all_tools
 from sentinel_agent.common import log_system_event, log_agent_thought
 from sentinel_agent.langmem_memory import get_memory_store, get_all_memory_tools
+from sentinel_agent.utils.rate_limiter import get_rate_limiter
+from sentinel_agent.utils.util import retry_llm_call
+
+from sentinel_agent.prompts_book import (
+    ADVISOR_SYSTEM_PROMPT,
+    TOOL_OUTPUT_SUMMARY_PROMPT
+)
 
 
-# ==================== LLM 调用重试装饰器 ====================
-async def retry_llm_call(llm_func, *args, max_retries=5, base_delay=2.0, **kwargs):
-    """
-    LLM 调用重试装饰器（指数退避策略）
-    
-    Args:
-        llm_func: LLM 调用函数（如 llm.ainvoke）
-        max_retries: 最大重试次数
-        base_delay: 基础延迟（秒）
-        
-    Returns:
-        LLM 响应
-        
-    Raises:
-        Exception: 所有重试都失败后抛出最后一个异常
-    """
-    last_exception = None
-    
-    for attempt in range(max_retries):
-        try:
-            result = await llm_func(*args, **kwargs)
-            
-            # 成功则返回
-            if attempt > 0:
-                log_system_event(
-                    f"[LLM重试] ✅ 第 {attempt + 1} 次尝试成功"
-                )
-            return result
-            
-        except Exception as e:
-            last_exception = e
-            error_msg = str(e)
-            
-            # 检查是否是速率限制或服务端错误
-            is_retryable = any([
-                "rate" in error_msg.lower(),
-                "limit" in error_msg.lower(),
-                "20057" in error_msg,  # MiniMax 特定错误码
-                "500" in error_msg,
-                "502" in error_msg,
-                "503" in error_msg,
-                "timeout" in error_msg.lower(),
-                "model engine error" in error_msg.lower(),
-            ])
-            
-            if not is_retryable:
-                # 非可重试错误，直接抛出
-                log_system_event(
-                    f"[LLM错误] ❌ 非可重试错误，直接抛出: {error_msg}",
-                    level="ERROR"
-                )
-                raise
-            
-            if attempt < max_retries - 1:
-                # 指数退避：2s, 4s, 8s, 16s, 32s
-                delay = base_delay * (2 ** attempt)
-                log_system_event(
-                    f"[LLM重试] ⚠️ 第 {attempt + 1}/{max_retries} 次失败，{delay:.1f}秒后重试",
-                    {"error": error_msg}
-                )
-                await asyncio.sleep(delay)
-            else:
-                log_system_event(
-                    f"[LLM重试] ❌ 已达最大重试次数 ({max_retries})，放弃调用",
-                    {"error": error_msg},
-                    level="ERROR"
-                )
-    
-    # 所有重试都失败，抛出最后一个异常
-    raise last_exception
+# ==================== 初始化全局速率限制器 ====================
+# 根据环境变量配置，默认每秒 2 个请求，最多 5 个突发请求
+DEEPSEEK_RPS = float(os.getenv("DEEPSEEK_REQUESTS_PER_SECOND", "2.0"))
+MINIMAX_RPS = float(os.getenv("MINIMAX_REQUESTS_PER_SECOND", "2.0"))
+
+deepseek_limiter = get_rate_limiter("deepseek_llm", requests_per_second=DEEPSEEK_RPS, burst_size=5)
+minimax_limiter = get_rate_limiter("minimax_llm", requests_per_second=MINIMAX_RPS, burst_size=5)
 
 
-# ==================== Advisor Agent 的系统提示词 ====================
-ADVISOR_SYSTEM_PROMPT = """
-# CTF 安全顾问（Advisor Agent）
-
-你是一个经验丰富的 CTF 安全顾问，专门为主攻击手提供建议和思路。
-
-## 你的角色
-
-- **身份**：顾问（不直接执行攻击）
-- **任务**：分析题目，总结进度，提供攻击建议和思路
-- **输出**：结构化的分析报告（不调用工具）
-
-## 输出格式（必须严格遵守）
-
-每次分析请按以下格式输出：
-
-### 📊 进度总结
-
-**已尝试的攻击路径**：
-- 路径 1：[工具] [方法] → [结果：成功/失败] → [关键发现]
-- 路径 2：[工具] [方法] → [结果：成功/失败] → [关键发现]
-- ...
-
-**当前漏洞假设**：
-- 假设 1：[漏洞类型]（置信度 XX%）- 依据：[证据]
-- 假设 2：[漏洞类型]（置信度 XX%）- 依据：[证据]
-
-**已排除的方向**：
-- ❌ [方法]：已尝试 X 次，均失败，原因：[分析]
-
-**关键信息汇总**：
-- 目标信息：[IP/端口/服务/版本]
-- 已发现的端点/路径：[列表]
-- 已发现的参数/字段：[列表]
-- 错误信息/提示：[关键线索]
-
-### 💡 下一步建议
-
-**优先方案**（置信度 XX%）：
-- **攻击方向**：[具体方法]
-- **推荐工具**：execute_python_poc / execute_command
-- **理由**：[为什么这个方向最有希望]
-- **具体步骤**：
-  1. [步骤 1]
-  2. [步骤 2]
-- **期望结果**：[如何判断成功]
-
-**备选方案**（置信度 XX%）：
-- **攻击方向**：[具体方法]
-- **推荐工具**：execute_python_poc / execute_command
-- **理由**：[为什么值得尝试]
-
-### ⚠️ 风险提示
-
-- **注意事项**：[潜在风险/容易犯的错误]
-- **工具选择建议**：
-  - 如果主攻击手使用了 curl 且失败，强烈建议切换到 Python + requests
-  - 如果需要多步骤操作，优先使用 execute_python_poc
-- **提示建议**：[是否建议使用 view_challenge_hint]
-
-## 工具选择建议
-
-### 🐍 Python 沙箱（execute_python_poc）
-**推荐场景：**
-- HTTP 请求、API 测试
-- 登录、Cookie、JWT、Session 管理
-- 暴力破解、爆破攻击
-- SQL 注入、XSS、命令注入测试
-- 需要循环、条件判断、数据处理
-
-### 🐳 Kali Docker（execute_command）
-**推荐场景：**
-- 渗透测试工具（nmap, sqlmap, nikto, dirb）
-- 系统命令（ls, cat, grep）
-- 简单的单次命令
-
-## 重要规则
-
-1. **只提供建议，不调用工具**
-2. **结构化输出**：严格按照上述格式
-3. **给出置信度**：帮助主攻击手判断优先级
-4. **明确推荐工具**：execute_python_poc vs execute_command
-5. **多视角思考**：提供主攻击手可能忽略的角度
-6. **避免重复**：如果主攻击手已经尝试过，建议新方向
-7. **总结进度**：每次都要回顾已尝试的路径，避免重复劳动
-
-现在开始你的分析！
-"""
 
 
 async def build_multi_agent_graph(
@@ -233,7 +91,69 @@ async def build_multi_agent_graph(
     
     # ==================== 3. 创建自定义 ToolNode（带状态更新）====================
     base_tool_node = ToolNode(all_tools)
-    
+
+    # ⭐ 新增：工具输出总结函数
+    async def summarize_tool_output(
+        tool_output: str,
+        tool_name: str = "unknown",
+        llm: BaseChatModel = None
+    ) -> str:
+        """
+        使用 LLM 总结工具输出
+
+        Args:
+            tool_output: 原始工具输出
+            tool_name: 工具名称（用于日志）
+            llm: 用于总结的 LLM（默认使用 main_llm）
+
+        Returns:
+            总结后的输出
+        """
+        if llm is None:
+            llm = main_llm
+
+        # 构建总结提示
+        summary_prompt = f"{TOOL_OUTPUT_SUMMARY_PROMPT}\n\n```\n{tool_output}\n```"
+
+        try:
+            log_system_event(
+                f"[工具总结] 开始总结 {tool_name} 的输出",
+                {
+                    "original_length": len(tool_output),
+                    "tool": tool_name
+                }
+            )
+
+            # 调用 LLM 进行总结（使用速率限制）
+            response = await retry_llm_call(
+                llm.ainvoke,
+                [HumanMessage(content=summary_prompt)],
+                limiter=deepseek_limiter,
+                max_retries=3
+            )
+
+            summary = response.content
+
+            log_system_event(
+                f"[工具总结] ✅ 总结完成",
+                {
+                    "original_length": len(tool_output),
+                    "summary_length": len(summary),
+                    "compression_ratio": f"{len(summary) / len(tool_output) * 100:.1f}%"
+                }
+            )
+
+            return summary
+
+        except Exception as e:
+            log_system_event(
+                f"[工具总结] ⚠️ 总结失败，返回智能截断版本",
+                {"error": str(e)},
+                level=logging.WARNING
+            )
+            # 回退到智能截断
+            return _smart_truncate_output(tool_output, max_len=5000)
+
     async def tool_node(state: PenetrationTesterState):
         """
         自定义工具节点：执行工具后检查是否需要更新状态
@@ -246,7 +166,43 @@ async def build_multi_agent_graph(
         """
         # 执行基础工具调用
         result = await base_tool_node.ainvoke(state)
-        
+
+        # ⭐ 新增：检查工具输出长度，必要时进行总结
+        # 从环境变量读取配置
+        enable_summary = os.getenv("ENABLE_TOOL_SUMMARY", "true").lower() == "true"
+        summary_threshold = int(os.getenv("TOOL_SUMMARY_THRESHOLD", "5000"))
+
+        if enable_summary and "messages" in result:
+            for msg in result["messages"]:
+                if hasattr(msg, "content") and msg.content:
+                    original_length = len(msg.content)
+
+                    # 如果输出超过阈值，进行总结
+                    if original_length > summary_threshold:
+                        # 获取工具名称
+                        tool_name = "unknown"
+                        if messages and hasattr(messages[-1], "tool_calls") and messages[-1].tool_calls:
+                            tool_name = messages[-1].tool_calls[0].get("name", "unknown")
+
+                        log_system_event(
+                            f"[工具输出] 检测到长输出，准备总结",
+                            {
+                                "tool": tool_name,
+                                "original_length": original_length,
+                                "threshold": summary_threshold
+                            }
+                        )
+
+                        # 调用总结函数
+                        summary = await summarize_tool_output(
+                            tool_output=msg.content,
+                            tool_name=tool_name,
+                            llm=main_llm
+                        )
+
+                        # 替换原始输出为总结
+                        msg.content = summary
+
         # ⭐ 获取本次执行的工具类型（用于智能路由）
         current_action_type = None
         messages = state.get("messages", [])
@@ -326,18 +282,34 @@ async def build_multi_agent_graph(
         - 分析主 Agent 的历史行动，提供新视角
         - 简洁明了的输出
         """
-        # 检测是否刚获取完建议（避免重复咨询）
-        if state.get("advisor_suggestion") and not state.get("last_action_output"):
-            log_agent_thought("[Advisor] 建议尚未被使用，跳过重复咨询")
-            return {"messages": []}  # 返回空更新
+        # ⭐ 修复：移除有 bug 的逻辑
+        # 原始问题：如果 advisor_suggestion 存在但 last_action_output 被清空，
+        # 就会跳过咨询，导致无法重新获取建议
+        # 新策略：直接进行咨询，由路由逻辑决定是否需要新的建议
         
         # 构建顾问的上下文
         advisor_messages = [SystemMessage(content=ADVISOR_SYSTEM_PROMPT)]
         
         # 构建动态提示词
         context_parts = []
-        
-        # 0. 比赛状态总览（新增）
+
+        # ⭐ 0. 提取自动侦察结果（如果存在）
+        messages = state.get("messages", [])
+        recon_info = None
+        if messages:
+            # 检查第一条消息是否是自动侦察结果
+            first_msg = messages[0]
+            if hasattr(first_msg, 'content') and "🔍 系统自动侦察结果" in first_msg.content:
+                recon_info = first_msg.content
+
+        if recon_info:
+            context_parts.append(f"""
+## 🔍 自动侦察结果
+
+{recon_info}
+""")
+
+        # 1. 比赛状态总览
         current_phase = state.get("current_phase", "unknown")
         current_score = state.get("current_score", 0)
         solved_count = state.get("solved_count", 0)
@@ -442,20 +414,21 @@ async def build_multi_agent_graph(
         
         log_agent_thought("[Advisor] 开始分析...")
         
-        # ⭐ 调用顾问 LLM（带重试）
+        # ⭐ 调用顾问 LLM（带重试和速率限制）
         try:
             advisor_response: AIMessage = await retry_llm_call(
                 advisor_llm.ainvoke,
                 advisor_messages,
                 max_retries=5,
-                base_delay=2.0
+                base_delay=2.0,
+                limiter=minimax_limiter  # ⭐ 添加：MiniMax 速率限制
             )
         except Exception as e:
             # LLM 调用失败后的降级处理
             log_system_event(
                 "[Advisor] ❌ LLM 调用失败，跳过本次建议",
                 {"error": str(e)},
-                level="ERROR"
+                level=logging.ERROR
             )
             # 返回空建议，让 Main Agent 自主决策
             return {
@@ -535,20 +508,21 @@ async def build_multi_agent_graph(
             }
         )
         
-        # ⭐ 调用主 LLM（带重试）
+        # ⭐ 调用主 LLM（带重试和速率限制）
         try:
             ai_message: AIMessage = await retry_llm_call(
                 main_llm_with_tools.ainvoke,
                 messages,
                 max_retries=5,
-                base_delay=2.0
+                base_delay=2.0,
+                limiter=deepseek_limiter  # ⭐ 添加：DeepSeek 速率限制
             )
         except Exception as e:
             # LLM 调用失败后的降级处理
             log_system_event(
                 "[Main Agent] ❌ LLM 调用失败，使用降级策略",
                 {"error": str(e)},
-                level="ERROR"
+                level=logging.ERROR
             )
             # 返回一个简单的错误消息，让路由决定下一步
             fallback_message = AIMessage(
@@ -727,27 +701,40 @@ async def build_multi_agent_graph(
             )
             return "end"
         
+        # ⭐ 修复：使用常量替代硬编码的魔数，支持环境变量配置
         # ⭐ 3. 智能决策：是否需要 Advisor 介入
         consecutive_failures = state.get("consecutive_failures", 0)
         request_help = state.get("request_advisor_help", False)
-        
-        # 3.1 连续失败次数过多 → 需要 Advisor 帮助
-        if consecutive_failures >= 3:
-            log_system_event(
-                f"[智能路由] 🆘 连续失败 {consecutive_failures} 次，请求 Advisor 帮助",
-                {"action_type": state.get("last_action_type")}
-            )
-            return "advisor"
-        
+
+        from sentinel_agent.core.constants import SmartRoutingConfig
+        failures_threshold = SmartRoutingConfig.get_failures_threshold()
+        consultation_interval = SmartRoutingConfig.get_consultation_interval()
+
+        # ⭐ 修复：避免重复触发 Advisor（仅在首次达到阈值时触发）
+        # 3.1 连续失败次数首次达到阈值 → 需要 Advisor 帮助
+        # 原逻辑问题：consecutive_failures % failures_threshold == 0 会在 3, 6, 9... 次都触发
+        # 新逻辑：仅在 3, 6, 9... 次（即阈值的倍数）触发，但通过状态标记避免重复
+        if consecutive_failures > 0 and consecutive_failures % failures_threshold == 0:
+            # 检查是否已经为这个失败次数咨询过 Advisor
+            last_advisor_at_failures = state.get("last_advisor_at_failures", 0)
+            if consecutive_failures != last_advisor_at_failures:
+                log_system_event(
+                    f"[智能路由] 🆘 连续失败 {consecutive_failures} 次（达到阈值倍数 {failures_threshold}），请求 Advisor 帮助",
+                    {"action_type": state.get("last_action_type")}
+                )
+                # ⭐ 标记：已为这个失败次数咨询过 Advisor
+                state["last_advisor_at_failures"] = consecutive_failures
+                return "advisor"
+
         # 3.2 Main Agent 主动请求帮助
         if request_help:
             log_system_event("[智能路由] 🆘 Main Agent 主动请求 Advisor 帮助")
             return "advisor"
-        
-        # 3.3 关键节点检查（每隔 5 次尝试咨询一次 Advisor）
-        if attempts > 0 and attempts % 5 == 0:
+
+        # 3.3 关键节点检查（每隔 N 次尝试咨询一次 Advisor）
+        if attempts > 0 and attempts % consultation_interval == 0:
             log_system_event(
-                f"[智能路由] 🔄 达到关键节点（第 {attempts} 次尝试），咨询 Advisor"
+                f"[智能路由] 🔄 达到关键节点（第 {attempts} 次尝试，间隔：{consultation_interval}），咨询 Advisor"
             )
             return "advisor"
         
@@ -987,6 +974,13 @@ def _build_system_prompt(state: PenetrationTesterState) -> SystemMessage:
         port_str = str(ports[0]) if ports else "80"
         target_url = f"http://{ip}:{port_str}"
         
+        # ⭐ 检查是否有自动侦察结果
+        recon_hint = ""
+        if messages:
+            first_msg = messages[0]
+            if hasattr(first_msg, 'content') and "🔍 系统自动侦察结果" in first_msg.content:
+                recon_hint = "\n\n**💡 提示**：系统已自动完成初步侦察，请查看消息历史中的侦察结果，无需重复基础信息收集。"
+
         prompt_parts.append(f"""
 ## 🎯 当前攻击中：{code}
 
@@ -996,7 +990,7 @@ def _build_system_prompt(state: PenetrationTesterState) -> SystemMessage:
 - **满分**：{points} 分
 - **目标**：{target_url}
 - **尝试次数**：{attempts}
-- **提示状态**：{"已查看 💡（扣分）" if hint_viewed else "未查看"}
+- **提示状态**：{"已查看 💡（扣分）" if hint_viewed else "未查看"}{recon_hint}
 
 ### 攻击策略
 1. **信息收集**：

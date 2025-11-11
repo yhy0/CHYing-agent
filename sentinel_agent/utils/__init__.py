@@ -16,10 +16,17 @@ from sentinel_agent.utils.recon import (
     format_recon_result_for_llm
 )
 
+from sentinel_agent.utils.util import (
+    fetch_new_challenges,
+    retry_llm_call,
+)
+
 __all__ = [
     "validate_flag_format",
     "extract_flag_from_text",
     "suggest_flag_fix",
     "auto_recon_web_target",
     "format_recon_result_for_llm"
+    "retry_llm_call",
+    "fetch_new_challenges",
 ]

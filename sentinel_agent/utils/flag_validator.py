@@ -28,9 +28,9 @@ def validate_flag_format(flag: str) -> Tuple[bool, str]:
     if not flag:
         return False, "FLAG 不能为空"
 
-    # 检查是否以 'flag{' 或 'FLAG{' 开头（大小写不敏感）
-    if not (flag.startswith("flag{") or flag.startswith("FLAG{")):
-        return False, f"FLAG 必须以 'flag{{' 或 'FLAG{{' 开头，当前: {flag[:10]}..."
+    # ⭐ 检查是否以 'flag{' 开头（忽略大小写）
+    if not flag.lower().startswith("flag{"):
+        return False, f"FLAG 必须以 'flag{{' 或 'FLAG{{' 开头（忽略大小写），当前: {flag[:10]}..."
 
     # 检查是否以 '}' 结尾
     if not flag.endswith("}"):
@@ -78,7 +78,8 @@ def suggest_flag_fix(incomplete_flag: str) -> str:
     """
     suggestions = []
 
-    if not incomplete_flag.startswith("flag{"):
+    # ⭐ 忽略大小写检查前缀
+    if not incomplete_flag.lower().startswith("flag{"):
         suggestions.append("添加 'flag{' 前缀")
 
     if not incomplete_flag.endswith("}"):
@@ -94,6 +95,9 @@ def suggest_flag_fix(incomplete_flag: str) -> str:
 if __name__ == "__main__":
     test_cases = [
         "flag{hahahahaha_this_is_demo_test_flag}",  # ✓ 正确
+        "FLAG{hahahahaha_this_is_demo_test_flag}",  # ✓ 正确（大写）
+        "Flag{test_mixed_case}",                     # ✓ 正确（混合大小写）
+        "FlaG{another_test}",                        # ✓ 正确（混合大小写）
         "flag{hahahahaha_this_is_demo_test_flag",   # ✗ 缺少 }
         "hahahahaha_this_is_demo_test_flag}",       # ✗ 缺少 flag{
         "flag{}",                                    # ✗ 内容为空
@@ -101,6 +105,9 @@ if __name__ == "__main__":
         "flag{test@#$}",                             # ⚠️ 特殊字符
     ]
 
+    print("=" * 60)
+    print("FLAG 格式验证测试")
+    print("=" * 60)
     for flag in test_cases:
         is_valid, msg = validate_flag_format(flag)
         status = "✓" if is_valid else "✗"

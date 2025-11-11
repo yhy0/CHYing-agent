@@ -72,7 +72,8 @@ def auto_recon_web_target(target_ip: str, target_port: int, timeout: int = 10) -
                 "content_length": result["html_length"],
                 "title": result["title"][:50] if result["title"] else "无标题",
                 "server": result["headers"].get("Server", "未知"),
-                "content_type": result["headers"].get("Content-Type", "未知")
+                "content_type": result["headers"].get("Content-Type", "未知"),
+                "text": response.text
             }
         )
 

@@ -93,3 +93,27 @@ class AgentConfig:
         """获取单题超时时间（从环境变量或默认值）"""
         import os
         return int(os.getenv("SINGLE_TASK_TIMEOUT", str(AgentConfig.DEFAULT_SINGLE_TASK_TIMEOUT)))
+
+
+# ==================== 智能路由配置 ====================
+class SmartRoutingConfig:
+    """智能路由决策的配置常数"""
+    # 连续失败次数阈值（超过此值触发 Advisor 介入）
+    CONSECUTIVE_FAILURES_THRESHOLD = 3
+    
+    # 定期咨询 Advisor 的间隔（每隔多少次尝试咨询一次）
+    ADVISOR_CONSULTATION_INTERVAL = 5
+    
+    @staticmethod
+    def get_failures_threshold() -> int:
+        """获取连续失败阈值（从环境变量或默认值）"""
+        import os
+        return int(os.getenv("CONSECUTIVE_FAILURES_THRESHOLD", 
+                            str(SmartRoutingConfig.CONSECUTIVE_FAILURES_THRESHOLD)))
+    
+    @staticmethod
+    def get_consultation_interval() -> int:
+        """获取咨询间隔（从环境变量或默认值）"""
+        import os
+        return int(os.getenv("ADVISOR_CONSULTATION_INTERVAL",
+                            str(SmartRoutingConfig.ADVISOR_CONSULTATION_INTERVAL)))

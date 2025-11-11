@@ -40,6 +40,56 @@ Two execution environments:
    - Used for: HTTP requests, custom exploits, data processing
    - Configured via `SANDBOX_ENABLED`
 
+## Modular Architecture (v2.0)
+
+The project has been fully refactored into a modular architecture for better maintainability:
+
+### Core Modules
+
+1. **`sentinel_agent/task_manager.py`** - Task lifecycle management
+   - Tracks active/completed/failed tasks
+   - Manages retry counts and attempt history
+   - Determines retry eligibility
+
+2. **`sentinel_agent/retry_strategy.py`** - Intelligent retry with role swapping
+   - Swaps DeepSeek ↔ MiniMax on retry attempts
+   - Formats historical failure records
+   - Extracts attempt summaries
+
+3. **`sentinel_agent/challenge_solver.py`** - Single challenge solving logic
+   - Auto-reconnaissance injection
+   - Historical record inheritance
+   - Concurrent semaphore management
+   - Complete exception isolation
+
+4. **`sentinel_agent/task_launcher.py`** - Task creation and launching
+   - Checks task status (avoid duplicates)
+   - Selects LLM pairs based on retry count
+   - Creates async tasks
+
+5. **`sentinel_agent/scheduler.py`** - Scheduling and monitoring
+   - Dynamic slot filling (⭐ key optimization)
+   - Periodic challenge fetching
+   - Status monitoring
+   - Final status reporting
+
+6. **`sentinel_agent/utils/utils.py`** - Utility functions
+   - Challenge fetching
+   - Solved challenge filtering
+
+7. **`main_refactored.py`** - Main coordinator (150 lines vs 750+ original)
+   - Initialization only
+   - Delegates to specialized modules
+
+### Key Optimizations
+
+- **Dynamic Slot Filling**: Tasks complete → immediately check for pending challenges (no 10-minute wait)
+- **Role Swapping**: Retry 1 (DeepSeek main) → Retry 2 (MiniMax main) → Retry 3 (DeepSeek main)
+- **Historical Inheritance**: Failed methods and key findings passed to retry attempts
+- **Exception Isolation**: Single task failure never affects other concurrent tasks
+
+See [REFACTORING_SUMMARY.md](REFACTORING_SUMMARY.md) for detailed architecture documentation.
+
 ## Development Commands
 
 ### Environment Setup
@@ -59,6 +109,10 @@ cp .env.example .env
 ### Running the Agent
 
 ```bash
+# Use refactored version (recommended)
+uv run main_refactored.py
+
+# Or use original version
 uv run main.py
 ```
 
