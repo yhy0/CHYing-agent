@@ -11,11 +11,13 @@ dependencies = [
     "langchain-deepseek>=1.0.0",
     "langfuse>=3.8.1",
     "langgraph>=1.0.1",
-    "langgraph-checkpoint-sqlite>=3.0.0",  # SQLite checkpoint 支持
+    "langgraph-checkpoint-sqlite>=3.0.0", 
     "langmem",
     "python-dotenv>=1.2.1",
-    "tenacity>=8.2.0",  # 重试机制
-    "pydantic>=2.0.0",  # 数据验证
+    "tenacity>=8.2.0",
+    "pydantic>=2.0.0",
+    "beautifulsoup4>=4.14.2",
+    "lxml>=6.0.2",
 ]
 
 [[tool.uv.index]]

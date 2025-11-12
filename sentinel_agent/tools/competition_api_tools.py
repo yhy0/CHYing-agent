@@ -418,10 +418,11 @@ def view_challenge_hint(challenge_code: str) -> str:
         first_use = data.get("first_use", False)
         
         result = []
-        if first_use:
-            result.append(f"⚠️  首次查看提示，解题成功时将扣除 {penalty_points} 分")
-        else:
-            result.append(f"ℹ️  已查看过此提示（惩罚分: {penalty_points}）")
+        # 去除
+        # if first_use:
+        #     result.append(f"⚠️  首次查看提示，解题成功时将扣除 {penalty_points} 分")
+        # else:
+        #     result.append(f"ℹ️  已查看过此提示（惩罚分: {penalty_points}）")
         
         result.append(f"\n提示内容:\n{hint_content}")
         

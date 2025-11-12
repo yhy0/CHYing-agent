@@ -79,23 +79,32 @@ async def fetch_hints_for_unsolved_challenges(api_client, task_manager):
         
         # ⭐ 安全检查 1: 如果题目已解决，跳过（虽然 fetch_new_challenges 已过滤，但双重保险）
         if challenge.get("solved", False):
-            log_system_event(f"[提示获取] {challenge_code} 已解决，跳过获取提示（避免浪费扣分）")
+            log_system_event(f"[提示获取] {challenge_code} 已解决，跳过获取提示（避免浪费扣分和消耗 token ）")
             skipped_count += 1
-            continue
-        
-        # ⭐ 安全检查 2: 如果已经查看过提示，跳过（避免重复扣分）
-        if challenge.get("hint_viewed", False):
-            log_system_event(f"[提示获取] {challenge_code} 已有提示，跳过重复获取")
-            # 仍然添加到列表（使用已有提示）
-            challenges_with_hints.append(challenge)
-            skipped_count += 1
-            continue
+                            # 检查是否允许重新攻击已解决的题目（调试模式）
+            import os
+            allow_resolved = os.getenv("DEBUG_ALLOW_RESOLVED", "false").lower() == "true"
+
+            if allow_resolved:
+                # 在调试模式下，跳过已解决检查
+                log_system_event(f"调试模式，允许重新攻击已解决的题目: {challenge_code}")
+                pass
+            else:
+                continue
+        # 下面的 AI 写的有问题， 这里注释调， 导致这个没有获取到提示，跳过了， 重复获取提示也不会扣分
+        # # ⭐ 安全检查 2: 如果已经查看过提示，跳过（避免重复扣分）
+        # if challenge.get("hint_viewed", False):
+        #     log_system_event(f"[提示获取] {challenge_code} 已有提示，跳过重复获取")
+        #     # 仍然添加到列表（使用已有提示）
+        #     challenges_with_hints.append(challenge)
+        #     skipped_count += 1
+        #     continue
         
         try:
-            # ⭐ 调用 API 获取提示（会扣分！）
+            # ⭐ 调用 API 获取提示（只有第一次才会扣分！）
             log_system_event(
-                f"[提示获取] 🔍 为 {challenge_code} 获取提示（此操作会扣分）...",
-                {"警告": "获取提示后解题成功会扣除惩罚分"}
+                f"[提示获取] 🔍 为 {challenge_code} 获取提示, 警告: 获取提示后解题成功会扣除惩罚分",
+                {}
             )
             
             hint_data = api_client.get_hint(challenge_code)
@@ -116,7 +125,7 @@ async def fetch_hints_for_unsolved_challenges(api_client, task_manager):
                 log_system_event(
                     f"[提示获取] ✓ {challenge_code} 提示获取成功（首次查看，会扣分）",
                     {
-                        "提示预览": hint_content[:100] + "..." if len(hint_content) > 100 else hint_content,
+                        "提示预览": hint_content,
                         "惩罚分": penalty_points,
                         "首次查看": True
                     }
@@ -125,7 +134,7 @@ async def fetch_hints_for_unsolved_challenges(api_client, task_manager):
                 log_system_event(
                     f"[提示获取] ✓ {challenge_code} 提示获取成功（重复查看，不扣分）",
                     {
-                        "提示预览": hint_content[:100] + "..." if len(hint_content) > 100 else hint_content,
+                        "提示预览": hint_content,
                         "惩罚分": penalty_points,
                         "首次查看": False
                     }
@@ -328,6 +337,17 @@ async def main():
     for challenge in challenges_with_hints:
         challenge_code = challenge.get("challenge_code", "unknown")
         
+         # ⭐ 添加调试日志
+        if challenge.get("hint_content"):
+            log_system_event(
+                f"[调试] {challenge_code} 确认有提示",
+                {"提示": challenge["hint_content"][:50]}
+            )
+        else:
+            log_system_event(
+                f"[调试] {challenge_code} 没有提示！",
+                level=logging.WARNING
+            )
         if await start_task_wrapper(
             challenge=challenge,
             retry_strategy=retry_strategy,

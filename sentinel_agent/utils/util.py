@@ -14,21 +14,21 @@ async def fetch_new_challenges(api_client) -> List[Dict]:
         allow_resolved = os.getenv("DEBUG_ALLOW_RESOLVED", "false").lower() == "true"
 
         if allow_resolved:
-            # 在调试模式下，将题目复制8次以测试并发
+            # 在调试模式下，将题目复制3次以测试并发
             original_count = len(all_challenges)
             unsolved_challenges = []
-            for i in range(8):
+            for i in range(1):
                 for ch in all_challenges[:original_count]:
                     challenge_copy = ch.copy()
-                    # 为每个副本添加唯一的标识符，避免冲突
-                    challenge_copy['debug_copy_id'] = i
-                    # 同时修改 challenge_code 和 code，确保任务管理器认为它们是不同的题目
-                    original_challenge_code = challenge_copy.get('challenge_code', '')
-                    original_code = challenge_copy.get('code', '')
-                    if original_challenge_code and not original_challenge_code.endswith(f"_{i}"):
-                        challenge_copy['challenge_code'] = f"{original_challenge_code}_{i}"
-                    if original_code and not original_code.endswith(f"_{i}"):
-                        challenge_copy['code'] = f"{original_code}_{i}"
+                    # # 为每个副本添加唯一的标识符，避免冲突
+                    # challenge_copy['debug_copy_id'] = i
+                    # # 同时修改 challenge_code 和 code，确保任务管理器认为它们是不同的题目
+                    # original_challenge_code = challenge_copy.get('challenge_code', '')
+                    # original_code = challenge_copy.get('code', '')
+                    # if original_challenge_code and not original_challenge_code.endswith(f"_{i}"):
+                    #     challenge_copy['challenge_code'] = f"{original_challenge_code}_{i}"
+                    # if original_code and not original_code.endswith(f"_{i}"):
+                    #     challenge_copy['code'] = f"{original_code}_{i}"
                     unsolved_challenges.append(challenge_copy)
             
             log_system_event(

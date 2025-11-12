@@ -72,9 +72,9 @@ class MemoryConfig:
 class AgentConfig:
     """Agent 运行时配置"""
     # 默认值（可通过环境变量覆盖）
-    DEFAULT_MAX_ATTEMPTS = 70  # 默认最大尝试次数
-    DEFAULT_RECURSION_LIMIT = 80  # 默认递归限制
-    DEFAULT_SINGLE_TASK_TIMEOUT = 600  # 默认单题超时（秒）- 10分钟
+    DEFAULT_MAX_ATTEMPTS = 90  # 默认最大尝试次数
+    DEFAULT_RECURSION_LIMIT = 100  # 默认递归限制
+    DEFAULT_SINGLE_TASK_TIMEOUT = 900  # 默认单题超时（秒）- 15 分钟
 
     @staticmethod
     def get_max_attempts() -> int:

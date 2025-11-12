@@ -30,7 +30,7 @@ def validate_flag_format(flag: str) -> Tuple[bool, str]:
 
     # ⭐ 检查是否以 'flag{' 开头（忽略大小写）
     if not flag.lower().startswith("flag{"):
-        return False, f"FLAG 必须以 'flag{{' 或 'FLAG{{' 开头（忽略大小写），当前: {flag[:10]}..."
+        return False, f"FLAG 必须以 'flag{{' 或 'FLAG{{' 开头（忽略大小写），当前: {flag}..."
 
     # 检查是否以 '}' 结尾
     if not flag.endswith("}"):

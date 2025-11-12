@@ -136,44 +136,81 @@ async def solve_single_challenge(
 
     # ⭐ 1. 自动侦察（优先注入）
     if target_ip and target_ports:
-        # 使用第一个端口进行侦察（通常是 HTTP 端口）
-        target_port = target_ports[0] if isinstance(target_ports, list) else target_ports
-
+        # ⭐ 修复：对所有端口进行侦察（支持多端口场景）
+        ports_to_scan = target_ports if isinstance(target_ports, list) else [target_ports]
+        
         log_system_event(
-            f"[自动侦察] 开始收集目标信息: {target_ip}:{target_port}",
-            {"challenge_code": challenge_code}
+            f"[自动侦察] 开始收集目标信息: {target_ip}",
+            {
+                "challenge_code": challenge_code,
+                "ports": ports_to_scan
+            }
         )
 
         try:
             from sentinel_agent.utils.recon import auto_recon_web_target, format_recon_result_for_llm
 
-            # 执行自动侦察（提高超时时间到 30 秒）
-            recon_result = auto_recon_web_target(target_ip, target_port, timeout=30)
+            # ⭐ 对每个端口进行侦察
+            all_recon_summaries = []
+            successful_ports = []
+            failed_ports = []
 
-            # 将侦察结果格式化并注入到初始状态
-            recon_summary = format_recon_result_for_llm(recon_result)
+            for target_port in ports_to_scan:
+                try:
+                    # 执行自动侦察（提高超时时间到 30 秒）
+                    recon_result = auto_recon_web_target(target_ip, target_port, timeout=30)
 
-            messages_to_inject.append(
-                HumanMessage(content=f"🔍 系统自动侦察结果：\n\n{recon_summary}")
-            )
+                    # 将侦察结果格式化
+                    recon_summary = format_recon_result_for_llm(recon_result)
+                    all_recon_summaries.append(
+                        f"### 端口 {target_port}\n{recon_summary}"
+                    )
 
-            # 同时添加到 action_history 用于统计
-            initial_state["action_history"].append(
-                f"[自动侦察] 已完成目标 {target_ip}:{target_port} 的基础信息收集"
-            )
+                    successful_ports.append(target_port)
+                    
+                    log_system_event(
+                        f"[自动侦察] ✅ 端口 {target_port} 信息收集完成",
+                        {
+                            "success": recon_result["success"],
+                            "status_code": recon_result.get("status_code"),
+                            "content_length": recon_result.get("html_length", 0)
+                        }
+                    )
 
-            log_system_event(
-                f"[自动侦察] ✅ 信息收集完成",
-                {
-                    "success": recon_result["success"],
-                    "status_code": recon_result.get("status_code"),
-                    "content_length": recon_result.get("html_length", 0)
-                }
-            )
+                except Exception as port_error:
+                    failed_ports.append(target_port)
+                    log_system_event(
+                        f"[自动侦察] ⚠️ 端口 {target_port} 侦察失败: {str(port_error)}",
+                        level=logging.WARNING
+                    )
+                    all_recon_summaries.append(
+                        f"### 端口 {target_port}\n⚠️ 侦察失败: {str(port_error)}"
+                    )
+
+            # ⭐ 汇总所有端口的侦察结果
+            if all_recon_summaries:
+                combined_summary = "\n\n".join(all_recon_summaries)
+                messages_to_inject.append(
+                    HumanMessage(content=f"🔍 系统自动侦察结果：\n\n{combined_summary}")
+                )
+
+                # 记录到 action_history
+                initial_state["action_history"].append(
+                    f"[自动侦察] 已扫描 {len(ports_to_scan)} 个端口：成功 {len(successful_ports)} 个，失败 {len(failed_ports)} 个"
+                )
+
+            # ⭐ 如果全部端口都失败，额外提示
+            if len(failed_ports) == len(ports_to_scan):
+                messages_to_inject.append(
+                    HumanMessage(
+                        content=f"⚠️ 所有端口自动侦察均失败\n\n"
+                        f"建议: 请使用 execute_python_poc 或 execute_command 手动收集目标信息"
+                    )
+                )
 
         except Exception as recon_error:
             log_system_event(
-                f"[自动侦察] ⚠️ 侦察失败: {str(recon_error)}",
+                f"[自动侦察] ⚠️ 侦察模块异常: {str(recon_error)}",
                 level=logging.WARNING
             )
             # ⭐ 改进：侦察失败时也注入失败信息，让 Agent 知道需要手动收集

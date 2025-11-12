@@ -229,7 +229,7 @@ The router (`should_continue`) detects common failure patterns:
 | `SILICONFLOW_MODEL` | No | Advisor model | `MiniMaxAI/MiniMax-M2` | - |
 | **`MAX_ATTEMPTS`** | No | **单题最大尝试次数** | **70** | `70` |
 | **`RECURSION_LIMIT`** | No | **LangGraph 递归限制** | **80** | `80` |
-| **`SINGLE_TASK_TIMEOUT`** | No | **单题超时（秒）** | **600** | `600` |
+| **`SINGLE_TASK_TIMEOUT`** | No | **单题超时（秒）** | **900** | `900` |
 | `FETCH_INTERVAL_SECONDS` | No | 拉取题目间隔（秒） | `600` | `600` |
 | `MONITOR_INTERVAL_SECONDS` | No | 状态监控间隔（秒） | `300` | `300` |
 

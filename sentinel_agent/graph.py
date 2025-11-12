@@ -36,6 +36,7 @@ from sentinel_agent.common import log_system_event, log_agent_thought
 from sentinel_agent.langmem_memory import get_memory_store, get_all_memory_tools
 from sentinel_agent.utils.rate_limiter import get_rate_limiter
 from sentinel_agent.utils.util import retry_llm_call
+from sentinel_agent.utils.failure_detector import detect_failure_with_llm
 
 from sentinel_agent.prompts_book import (
     ADVISOR_SYSTEM_PROMPT,
@@ -139,7 +140,8 @@ async def build_multi_agent_graph(
                 {
                     "original_length": len(tool_output),
                     "summary_length": len(summary),
-                    "compression_ratio": f"{len(summary) / len(tool_output) * 100:.1f}%"
+                    "compression_ratio": f"{len(summary) / len(tool_output) * 100:.1f}%",
+                    "summary": summary
                 }
             )
 
@@ -173,7 +175,7 @@ async def build_multi_agent_graph(
         # ⭐ 新增：检查工具输出长度，必要时进行总结
         # 从环境变量读取配置
         enable_summary = os.getenv("ENABLE_TOOL_SUMMARY", "true").lower() == "true"
-        summary_threshold = int(os.getenv("TOOL_SUMMARY_THRESHOLD", "5000"))
+        summary_threshold = int(os.getenv("TOOL_SUMMARY_THRESHOLD", "10000"))
 
         if enable_summary and "messages" in result:
             for msg in result["messages"]:
@@ -217,15 +219,18 @@ async def build_multi_agent_graph(
         
         # ⭐ 分析本次执行是否失败（用于智能路由）
         is_failure = False
-        failure_keywords = ["error", "failed", "exception", "无法", "错误", "失败", "not found", "denied"]
-        
+        failure_reason = ""
+
+        # 从环境变量读取配置
+        enable_smart_detection = os.getenv("ENABLE_SMART_FAILURE_DETECTION", "true").lower() == "true"
+
         # 检查工具执行结果
         if "messages" in result:
             for msg in result["messages"]:
                 if hasattr(msg, "content") and msg.content:
-                    content = msg.content.lower()
-                    
-                    # 1. 检测答案正确的标记（成功）
+                    content = msg.content
+
+                    # 1. 优先检测答案正确的标记（成功）
                     if "答案正确" in content or "答案正确！获得" in content:
                         # 从工具调用参数中提取 flag
                         if messages:
@@ -246,10 +251,42 @@ async def build_multi_agent_graph(
                                             result["consecutive_failures"] = 0
                                             # ⭐ 立即返回，跳过后续失败检测
                                             return result
-                    
-                    # 2. 检测失败标记
-                    elif any(keyword in content for keyword in failure_keywords):
-                        is_failure = True
+
+                    # 2. ⭐ 使用智能失败检测（同时提取关键信息）
+                    else:
+                        if enable_smart_detection:
+                            # 使用 LLM 语义判断（返回三元组：失败状态、原因、关键信息）
+                            is_failure, failure_reason, key_info = await detect_failure_with_llm(
+                                tool_output=content,
+                                tool_name=current_action_type or "unknown",
+                                llm=main_llm,
+                                limiter=deepseek_limiter
+                            )
+                            
+                            # ⭐ 关键改进：将提取的关键信息注入到工具输出中
+                            # 这样 Agent 可以看到结构化的关键信息，而不是完全黑盒
+                            if key_info:
+                                # 在原始输出后追加分析摘要
+                                analysis_summary = f"\n\n{'='*60}\n[🤖 智能分析摘要]\n{key_info}\n{'='*60}"
+                                msg.content = msg.content + analysis_summary
+                                
+                                log_system_event(
+                                    f"[关键信息注入] 已将分析结果注入到消息流",
+                                    {
+                                        "tool": current_action_type,
+                                        "status": "失败" if is_failure else "成功",
+                                        "key_info_length": len(key_info)
+                                    }
+                                )
+                        else:
+                            # 回退到关键字检测
+                            failure_keywords = [
+                                "error", "failed", "exception", "无法", "错误", "失败",
+                                "not found", "denied", "incorrect", "unauthorized",
+                                "alert-danger", "not authenticated", "invalid credentials"
+                            ]
+                            is_failure = any(kw in content.lower() for kw in failure_keywords)
+                            failure_reason = "关键字匹配检测" if is_failure else ""
         
         # ⭐ 更新失败计数和操作类型（用于智能路由）
         last_action_type = state.get("last_action_type")
@@ -262,10 +299,13 @@ async def build_multi_agent_graph(
             else:
                 # 切换了操作类型，重置计数
                 consecutive_failures = 1
-            
+
             log_system_event(
                 f"[智能路由] 检测到失败，连续失败次数: {consecutive_failures}",
-                {"action_type": current_action_type}
+                {
+                    "action_type": current_action_type,
+                    "failure_reason": failure_reason
+                }
             )
         else:
             # 成功或无明显错误，重置计数
@@ -291,8 +331,15 @@ async def build_multi_agent_graph(
         # 就会跳过咨询，导致无法重新获取建议
         # 新策略：直接进行咨询，由路由逻辑决定是否需要新的建议
         
+        hin_content_sys = ""
+        if state.get("current_challenge"):
+            challenge = state["current_challenge"]
+            hin_content_sys = challenge.get("hint_content", "")  # ⭐ 提取 hint 内容
         # 构建顾问的上下文
-        advisor_messages = [SystemMessage(content=ADVISOR_SYSTEM_PROMPT)]
+        advisor_sys_prompt  = ADVISOR_SYSTEM_PROMPT
+        if hin_content_sys != "":
+            advisor_sys_prompt = ADVISOR_SYSTEM_PROMPT + f"## **题目提示**(**非常重要**): \n\n{hin_content_sys}\n\n"
+        advisor_messages = [SystemMessage(content=advisor_sys_prompt)]
         
         # 构建动态提示词
         context_parts = []
@@ -360,19 +407,25 @@ async def build_multi_agent_graph(
             difficulty = challenge.get("difficulty", "unknown")
             points = challenge.get("points", 0)
             hint_viewed = challenge.get("hint_viewed", False)
+            hint_content = challenge.get("hint_content", "")  # ⭐ 提取 hint 内容
             target_info = challenge.get("target_info", {})
             ip = target_info.get("ip", "unknown")
             ports = target_info.get("port", [])
+            
+            # ⭐ 构建提示信息（如果存在）
+            hint_section = ""
+            if hint_content:
+                hint_section = f"""
+- **💡 官方提示（重要！）**: {hint_content}
+  **⚠️ 这是出题人给出的关键线索，请务必深入分析！**"""
             
             context_parts.append(f"""
 ## 🎯 当前攻击目标
 
 - **题目代码**: {code}
-- **难度**: {difficulty.upper()}
-- **满分**: {points} 分
 - **目标**: {ip}:{','.join(map(str, ports))}
 - **已尝试次数**: {attempts}
-- **提示状态**: {"已查看 💡（得分会扣除惩罚分）" if hint_viewed else "未查看"}
+- **提示状态**: {"已查看（得分会扣除惩罚分）" if hint_viewed else "未查看"}{hint_section}
 """)
         
         # 3. 历史操作
@@ -463,10 +516,10 @@ async def build_multi_agent_graph(
         - 调用工具执行攻击
         - 最终决策权在主 Agent
         """
-        from sentinel_agent.prompts import SYSTEM_PROMPT
-        
         # 构建主 Agent 的系统提示词
-        system_prompt_parts = [SYSTEM_PROMPT]
+        # ⭐ 修复：不要在这里添加 SYSTEM_PROMPT，让 _build_system_prompt 来添加
+        # 避免 SYSTEM_PROMPT 重复出现两次
+        system_prompt_parts = []
         
         # 如果有顾问建议，添加到系统提示词
         advisor_suggestion = state.get("advisor_suggestion")
@@ -474,6 +527,7 @@ async def build_multi_agent_graph(
             system_prompt_parts.append(f"""
 ---
 
+**下面是顾问的建议，你应该深入分析和参考**
 ## 🤝 团队顾问的建议
 
 {advisor_suggestion}
@@ -496,8 +550,17 @@ async def build_multi_agent_graph(
         system_message = _build_main_system_prompt(state, system_prompt_parts)
         
         # 获取对话历史
+        # ⭐ 建议优化: 保留最近 20 条消息 + 自动侦察结果
         messages = list(state.get("messages", []))
-        
+
+        if len(messages) > 21:  # 20 条历史 + 1 条侦察
+            # 保留第一条(自动侦察)和最近 20 条
+            messages = [messages[0]] + messages[-20:]
+            log_system_event(
+                f"[上下文管理] 清理旧消息,保留 {len(messages)} 条",
+                {"dropped": len(state.get("messages", [])) - len(messages)}
+            )
+
         # 添加或更新系统消息
         if not messages or not isinstance(messages[0], SystemMessage):
             messages.insert(0, system_message)
@@ -865,11 +928,26 @@ def _format_action_history(action_history: list) -> str:
 
 
 def _build_main_system_prompt(state: PenetrationTesterState, base_parts: list) -> SystemMessage:
-    """构建主 Agent 的动态系统提示词"""
+    """
+    构建主 Agent 的动态系统提示词
+    
+    Args:
+        state: 当前状态
+        base_parts: 额外的提示词片段（如 Advisor 建议），会插入到 SYSTEM_PROMPT 和动态上下文之间
+    
+    Returns:
+        SystemMessage 包含完整的系统提示词
+    """
+    # 获取完整的动态提示词（包含 SYSTEM_PROMPT + 动态上下文）
     original_prompt = _build_system_prompt(state)
     
-    # 合并基础部分和动态部分
-    combined = "\n\n".join(base_parts) + "\n\n" + original_prompt.content
+    # 如果有额外的片段（如 Advisor 建议），插入到 SYSTEM_PROMPT 之后
+    if base_parts:
+        # 拼接顺序：SYSTEM_PROMPT + base_parts + 动态上下文
+        combined = original_prompt.content + "\n\n" + "\n\n".join(base_parts)
+    else:
+        # 没有额外片段，直接返回原始提示词
+        combined = original_prompt.content
     
     return SystemMessage(content=combined)
 
@@ -989,7 +1067,7 @@ def _build_system_prompt(state: PenetrationTesterState) -> SystemMessage:
         # ⭐ 构建提示信息（如果有提示内容）
         hint_section = ""
         if hint_content:
-            hint_section = f"\n\n### 💡 官方提示\n{hint_content}\n\n**重要**: 请仔细阅读上述提示，它可能包含解题的关键线索！"
+            hint_section = f"\n\n### 💡 官方提示\n**{hint_content}**\n\n**重要**: 请仔细阅读上述提示，它可能包含解题的关键线索！"
 
         prompt_parts.append(f"""
 ## 🎯 当前攻击中：{code}
@@ -1029,44 +1107,70 @@ def _build_system_prompt(state: PenetrationTesterState) -> SystemMessage:
    - 找到后使用 `submit_flag` 提交
 """)
         
-        # 检测失败模式并提供警告
-        action_history = state.get("action_history", [])
-        if len(action_history) >= 3:
-            recent_actions = action_history[-5:]  # 检查最近 5 次操作
-            recent_text = " ".join(str(a) for a in recent_actions)
-            
-            # 检测 curl 引号/转义错误
-            if recent_text.count("curl") >= 2 and ("Exit Code: 2" in recent_text or "unexpected EOF" in recent_text):
-                prompt_parts.append("""
-### ⚠️ 检测到失败模式：curl 引号/转义问题
-**警告**：你已经多次遇到 curl 命令的引号转义错误（Exit Code: 2 或 unexpected EOF）。
+        # ⭐ 检测失败模式并提供警告
+        messages = state.get("messages", [])
+        if len(messages) >= 10:
+            # 提取最近的工具调用（仅检查有工具调用的消息）
+            recent_tool_calls = []
+            for msg in messages[-10:]:  # 检查最近 10 条消息
+                if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        # 构造工具调用的标识（工具名 + 参数）
+                        tool_signature = f"{tc['name']}:{str(tc.get('args', {}))}"
+                        recent_tool_calls.append(tool_signature)
 
-**立即切换策略**：
-- ❌ **停止尝试修复 curl 引号** - 这会浪费宝贵的尝试次数
-- ✅ **立即使用 `execute_python_poc`** - Python requests 库会自动处理所有引号、Cookie、会话问题
+            # ⭐ 检测 1: 完全相同的工具调用重复 5 次
+            if len(recent_tool_calls) >= 5:
+                from collections import Counter
+                call_counts = Counter(recent_tool_calls[-5:])
+                most_common_call, count = call_counts.most_common(1)[0]
 
-**示例代码**：
-```python
-import requests
-session = requests.Session()
-# 登录
-resp = session.post("http://target/login", data={"username": "demo", "password": "demo"})
-# session 会自动保持 Cookie
-data = session.get("http://target/protected").text
-print(data)
-```
+                if count >= 5:
+                    prompt_parts.append("""
+### 🚨 系统警告：检测到重复操作
+- 已连续 5 次执行完全相同的操作但持续失败
+- 建议：尝试完全不同的攻击思路或工具
+- 提示：如果某个方法失败了,继续重复不会产生不同结果
 """)
-            
-            # 检测重复相同命令
-            if len(set(recent_actions[-3:])) == 1:
-                prompt_parts.append("""
-### ⚠️ 检测到失败模式：重复相同命令
-**警告**：你正在重复执行相同的命令，这不会产生新的结果。
 
-**建议行动**：
-1. 分析为什么上次失败
-2. 尝试完全不同的方法
-3. 考虑换一个攻击角度
+            # ⭐ 检测 2: 工具调用错误重复 5 次（检查消息内容中的错误模式）
+            recent_errors = []
+            for msg in messages[-10:]:
+                if hasattr(msg, 'content') and msg.content:
+                    content_lower = str(msg.content).lower()
+                    # 识别常见错误模式
+                    if 'error' in content_lower or 'exception' in content_lower:
+                        # 提取错误类型（简化的启发式方法）
+                        if '400' in content_lower or 'bad request' in content_lower:
+                            recent_errors.append('HTTP_400')
+                        elif '401' in content_lower or 'unauthorized' in content_lower:
+                            recent_errors.append('HTTP_401')
+                        elif '403' in content_lower or 'forbidden' in content_lower:
+                            recent_errors.append('HTTP_403')
+                        elif '404' in content_lower or 'not found' in content_lower:
+                            recent_errors.append('HTTP_404')
+                        elif '500' in content_lower or 'internal server error' in content_lower:
+                            recent_errors.append('HTTP_500')
+                        elif 'timeout' in content_lower or 'timed out' in content_lower:
+                            recent_errors.append('TIMEOUT')
+                        elif 'connection' in content_lower and ('refused' in content_lower or 'failed' in content_lower):
+                            recent_errors.append('CONNECTION_ERROR')
+                        else:
+                            recent_errors.append('UNKNOWN_ERROR')
+
+            # 如果最近 5 条消息中有相同错误重复出现
+            if len(recent_errors) >= 5:
+                from collections import Counter
+                error_counts = Counter(recent_errors[-5:])
+                most_common_error, error_count = error_counts.most_common(1)[0]
+
+                if error_count >= 5:
+                    prompt_parts.append(f"""
+### 🚨 系统警告：检测到重复错误
+- 已连续 5 次遇到相同类型的错误
+- 错误类型：{most_common_error.replace('_', ' ')}
+- 建议：当前方法可能不适用,尝试切换攻击向量或工具
+- 提示：考虑是否需要调整 payload、修改请求方法、或尝试其他漏洞类型
 """)
         
         # 如果有上次尝试结果，添加反馈

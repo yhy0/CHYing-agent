@@ -26,7 +26,6 @@ venv/
 env/
 uv.lock
 # Logs and temporary files
-logs/
-*.log
+
 *.tmp
 *.swp
