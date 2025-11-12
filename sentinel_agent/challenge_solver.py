@@ -140,11 +140,8 @@ async def solve_single_challenge(
         ports_to_scan = target_ports if isinstance(target_ports, list) else [target_ports]
         
         log_system_event(
-            f"[自动侦察] 开始收集目标信息: {target_ip}",
-            {
-                "challenge_code": challenge_code,
-                "ports": ports_to_scan
-            }
+            f"[自动侦察] 开始收集目标信息: {target_ip}, challenge_code: {challenge_code}, ports: {ports_to_scan}",
+            {}
         )
 
         try:

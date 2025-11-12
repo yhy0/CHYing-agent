@@ -47,11 +47,12 @@ class DockerExecutor(BaseExecutor):
         try:
             self.client = docker.from_env()
             self.container = self.client.containers.get(self.container_name)
-            log_system_event(
-                f"[Executor] 成功连接到 Docker 容器 '{self.container_name}'", 
-                {"container_id": self.container.short_id}
-            )
-        except (DockerException, NotFound) as e:
+            # 这个日志不记录了，避免日志过多，只记录失败的
+            # log_system_event(
+            #     f"[Executor] 成功连接到 Docker 容器 '{self.container_name}'", 
+            #     {"container_id": self.container.short_id}
+            # )
+        except Exception as e:
             log_system_event(
                 f"[Executor] 无法连接到 Docker 容器 '{self.container_name}'", 
                 {"error": str(e)}, 

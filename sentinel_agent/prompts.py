@@ -80,7 +80,7 @@ SYSTEM_PROMPT = """
 | **SQL注入** | "database", "query", "search", "filter", "login bypass" | ⚠️ 视情况 | 测试 `'`, `"`, `OR 1=1--`, `UNION SELECT` | 🔥 极高 |
 | **命令注入** | "ping", "execute", "command", "system", "shell" | ⚠️ 视情况 | 测试 `; ls`, `| whoami`, `&& cat flag.txt` | 🔥 极高 |
 | **认证绕过** | "login", "admin", "bypass", "auth", "weak credential" | ❌ 不需要 | 默认凭证 (admin/admin), SQL注入, 逻辑漏洞 | 🔴 高 |
-| **SSTI (模板注入)** | "template", "render", "{{", "jinja", "flask" | ⚠️ 视情况 | 测试 `{{7*7}}`, `{{config}}`, `{{''.__class__}}` | 🔴 高 |
+| **SSTI (模板注入)** | "template", "render", "{{", "jinja", "flask", "动态 JS", "Django 模板" | ⚠️ 视情况 | 测试 `{{7*7}}`, `{{config}}`, `{{''.__class__}}` | 🔴 高 |
 | **文件上传** | "upload", "avatar", "file", "image" | ⚠️ 视情况 | 上传 `.php`, `.jsp`, `.war`; 双扩展名 `.php.jpg` | 🔴 高 |
 | **文件包含 (LFI/RFI)** | "include", "page", "file", "path", "template" | ⚠️ 视情况 | 测试 `../../../etc/passwd`, `php://filter/...` | 🔴 高 |
 | **XSS (跨站脚本)** | "display", "render", "comment", "input", "sanitize" | ⚠️ 视情况 | 注入 `<script>alert(1)</script>`, `<img src=x onerror=...>` | 🔴 高 |

@@ -332,13 +332,18 @@ async def build_multi_agent_graph(
         # 新策略：直接进行咨询，由路由逻辑决定是否需要新的建议
         
         hin_content_sys = ""
+        target_info_msg = ""
         if state.get("current_challenge"):
             challenge = state["current_challenge"]
             hin_content_sys = challenge.get("hint_content", "")  # ⭐ 提取 hint 内容
+            target_info = challenge.get("target_info", {})
+            ip = target_info.get("ip", "unknown")
+            ports = target_info.get("port", [])
+            target_info_msg = f"- **目标**: {ip}:{','.join(map(str, ports))}"
         # 构建顾问的上下文
         advisor_sys_prompt  = ADVISOR_SYSTEM_PROMPT
         if hin_content_sys != "":
-            advisor_sys_prompt = ADVISOR_SYSTEM_PROMPT + f"## **题目提示**(**非常重要**): \n\n{hin_content_sys}\n\n"
+            advisor_sys_prompt = ADVISOR_SYSTEM_PROMPT + f"\n## 目标##\n{target_info_msg}\n## 题目提示(**非常重要**): \n\n{hin_content_sys}\n\n"
         advisor_messages = [SystemMessage(content=advisor_sys_prompt)]
         
         # 构建动态提示词
@@ -1067,7 +1072,7 @@ def _build_system_prompt(state: PenetrationTesterState) -> SystemMessage:
         # ⭐ 构建提示信息（如果有提示内容）
         hint_section = ""
         if hint_content:
-            hint_section = f"\n\n### 💡 官方提示\n**{hint_content}**\n\n**重要**: 请仔细阅读上述提示，它可能包含解题的关键线索！"
+            hint_section = f"\n\n### 💡 **官方提示**\n**{hint_content}**\n\n**重要**: 请仔细阅读上述提示，**必须重点分析其含义和指向**，**它包含解题的关键线索**！\n\n**你应该根据官方提示制定策略**"
 
         prompt_parts.append(f"""
 ## 🎯 当前攻击中：{code}

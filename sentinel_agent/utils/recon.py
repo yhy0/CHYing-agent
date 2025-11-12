@@ -41,8 +41,8 @@ def auto_recon_web_target(target_ip: str, target_port: int, timeout: int = 10) -
     url = f"http://{target_ip}:{target_port}"
 
     log_system_event(
-        f"[自动侦察] 开始收集目标信息: {url}",
-        {"timeout": timeout}
+        f"[自动侦察] 开始收集目标信息: {url}, timeout: {timeout}",
+        {}
     )
 
     result = {

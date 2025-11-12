@@ -22,10 +22,11 @@ wheels/
 
 # Environments
 .env
-venv/
+.venv/
 env/
 uv.lock
 # Logs and temporary files
+logs/
 
 *.tmp
 *.swp
