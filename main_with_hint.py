@@ -319,17 +319,76 @@ async def main():
     
     # ==================== 8. 创建任务启动函数 ====================
     async def start_task_wrapper(challenge, retry_strategy, config, langfuse_handler):
-        """任务启动包装函数（带提示注入）"""
+        """任务启动包装函数（带提示注入 + 历史经验分析）"""
         challenge_code = challenge.get("challenge_code", "unknown")
-        
-        # ⭐ 核心：将提示注入到任务中
-        hint_content = challenge.get("hint_content")
-        if hint_content:
+
+        try:
+            # ⭐ 核心 1：将提示注入到任务中
+            hint_content = challenge.get("hint_content")
+            if hint_content:
+                log_system_event(
+                    f"[提示注入] 为 {challenge_code} 注入提示",
+                    {"提示长度": len(hint_content)}
+                )
+
+            # ⭐ 核心 2：在重试前，让 LLM 分析之前的尝试记录
+            retry_count = await task_manager.get_retry_count(challenge_code)
+
+            if retry_count > 0:
+                # 获取之前的尝试历史
+                attempt_history = await task_manager.get_attempt_history(challenge_code)
+
+                if attempt_history:
+                    log_system_event(
+                        f"[历史分析] {challenge_code} 第 {retry_count} 次重试，开始分析之前的 {len(attempt_history)} 次尝试...",
+                        {"retry_count": retry_count, "history_count": len(attempt_history)}
+                    )
+
+                    # 使用 LLM 分析历史记录，提取关键信息
+                    analyzed_summary = await analyze_attempt_history_with_llm(
+                        challenge=challenge,
+                        attempt_history=attempt_history,
+                        retry_strategy=retry_strategy,
+                        retry_count=retry_count
+                    )
+
+                    if analyzed_summary:
+                        # 将分析结果注入到 task_manager 的历史记录中
+                        async with task_manager.lock:
+                            # ⭐ 安全检查：确保 challenge_code 在字典中
+                            if challenge_code not in task_manager.attempt_history:
+                                task_manager.attempt_history[challenge_code] = []
+
+                            # 添加一个特殊的"分析摘要"记录
+                            task_manager.attempt_history[challenge_code].append({
+                                "strategy": f"LLM 分析摘要（第 {retry_count} 次重试前）",
+                                "attempts": 0,  # 这不是实际尝试，而是分析
+                                "failed_methods": analyzed_summary.get("failed_methods", []),
+                                "key_findings": analyzed_summary.get("key_findings", []),
+                                "successful_steps": analyzed_summary.get("successful_steps", []),
+                                "vulnerabilities_found": analyzed_summary.get("vulnerabilities_found", []),
+                                "next_suggestions": analyzed_summary.get("next_suggestions", [])
+                            })
+
+                        log_system_event(
+                            f"[历史分析] ✓ 分析完成，已注入到历史记录",
+                            {
+                                "成功步骤": len(analyzed_summary.get("successful_steps", [])),
+                                "失败方法": len(analyzed_summary.get("failed_methods", [])),
+                                "发现漏洞": len(analyzed_summary.get("vulnerabilities_found", [])),
+                                "下一步建议": len(analyzed_summary.get("next_suggestions", []))
+                            }
+                        )
+
+        except Exception as e:
+            # ⭐ 最外层异常捕获：即使历史分析失败，也要继续启动任务
             log_system_event(
-                f"[提示注入] 为 {challenge_code} 注入提示",
-                {"提示长度": len(hint_content)}
+                f"[任务启动] ⚠️ {challenge_code} 历史分析过程出错，将继续启动任务: {str(e)}",
+                {"error_type": type(e).__name__, "challenge": challenge_code},
+                level=logging.WARNING
             )
-        
+
+        # ⭐ 无论历史分析是否成功，都要启动任务
         return await start_challenge_task(
             challenge=challenge,
             retry_strategy=retry_strategy,
@@ -338,6 +397,144 @@ async def main():
             task_manager=task_manager,
             concurrent_semaphore=concurrent_semaphore
         )
+
+    # ==================== 8.1 历史记录分析函数 ====================
+    async def analyze_attempt_history_with_llm(challenge, attempt_history, retry_strategy, retry_count):
+        """
+        使用 LLM 分析之前的尝试历史，提取关键信息
+
+        Args:
+            challenge: 题目信息
+            attempt_history: 历史尝试记录
+            retry_strategy: 重试策略（用于获取 LLM）
+            retry_count: 当前重试次数
+
+        Returns:
+            分析摘要字典，包含：
+            - successful_steps: 成功的步骤
+            - failed_methods: 失败的方法
+            - vulnerabilities_found: 发现的漏洞
+            - key_findings: 关键发现
+            - next_suggestions: 下一步建议
+        """
+        try:
+            # 获取一个 LLM 用于分析（使用 DeepSeek，因为它更擅长分析）
+            analysis_llm, _, _ = retry_strategy.get_llm_pair(0)
+
+            # 构建分析提示词
+            challenge_code = challenge.get("challenge_code", "unknown")
+            hint_content = challenge.get("hint_content", "")
+
+            # 格式化历史记录
+            history_text = retry_strategy.format_attempt_history(attempt_history)
+
+            analysis_prompt = f"""你是一个渗透测试专家，正在分析之前的攻击尝试记录。
+
+## 题目信息
+- 题目代码: {challenge_code}
+- 当前重试次数: {retry_count}
+- 官方提示: {hint_content}
+
+## 之前的尝试记录
+{history_text}
+
+## 你的任务
+请仔细分析上述尝试记录，提取以下关键信息（以 JSON 格式返回）：
+
+1. **successful_steps**: 成功的步骤（例如：成功读取了 /etc/passwd，证明 LFI 漏洞存在）
+2. **failed_methods**: 失败的方法（例如：使用 id 参数无法读取 FLAG.php）
+3. **vulnerabilities_found**: 发现的漏洞（例如：确认存在 LFI 漏洞）
+4. **key_findings**: 关键发现（例如：id 参数可能不是文件包含参数）
+5. **next_suggestions**: 下一步建议（例如：尝试其他参数名如 page, file, path）
+
+**重要**：
+- 只提取**已经验证过的事实**，不要猜测
+- 重点关注**成功的步骤**和**关键发现**
+- 下一步建议要**具体可行**，避免重复之前失败的方法
+- 这是第 {retry_count} 次重试，必须尝试**完全不同的方向**
+
+返回格式（纯 JSON，不要有其他文字）：
+{{
+  "successful_steps": ["步骤1", "步骤2"],
+  "failed_methods": ["方法1", "方法2"],
+  "vulnerabilities_found": ["漏洞1"],
+  "key_findings": ["发现1", "发现2"],
+  "next_suggestions": ["建议1", "建议2"]
+}}
+"""
+
+            log_system_event(
+                f"[历史分析] 调用 LLM 分析历史记录（第 {retry_count} 次重试）...",
+                {"prompt_length": len(analysis_prompt), "retry_count": retry_count}
+            )
+
+            # 调用 LLM 分析
+            response = await analysis_llm.ainvoke(analysis_prompt)
+
+            # ⭐ 安全检查：确保 response 有 content 属性
+            if not hasattr(response, 'content') or response.content is None:
+                raise ValueError(f"LLM 响应缺少 content 属性: {response}")
+
+            response_text = response.content.strip()
+
+            # ⭐ 安全检查：确保响应不为空
+            if not response_text:
+                raise ValueError("LLM 返回了空响应")
+
+            # 尝试解析 JSON
+            import json
+            import re
+
+            # 多种策略提取 JSON，增强鲁棒性
+            analyzed_summary = None
+
+            # 策略 1: 提取 ```json ``` 包裹的 JSON
+            json_match = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+            if json_match:
+                try:
+                    analyzed_summary = json.loads(json_match.group(1))
+                except json.JSONDecodeError:
+                    pass
+
+            # 策略 2: 提取第一个完整的 JSON 对象（贪婪匹配）
+            if not analyzed_summary:
+                json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response_text, re.DOTALL)
+                if json_match:
+                    try:
+                        analyzed_summary = json.loads(json_match.group(0))
+                    except json.JSONDecodeError:
+                        pass
+
+            # 策略 3: 直接解析整个响应
+            if not analyzed_summary:
+                try:
+                    analyzed_summary = json.loads(response_text)
+                except json.JSONDecodeError:
+                    pass
+
+            # 如果所有策略都失败，返回 None（会被外层 try-except 捕获）
+            if not analyzed_summary:
+                raise ValueError(f"无法从 LLM 响应中提取有效的 JSON: {response_text[:200]}")
+
+            log_system_event(
+                f"[历史分析] ✓ LLM 分析成功",
+                {
+                    "成功步骤数": len(analyzed_summary.get("successful_steps", [])),
+                    "失败方法数": len(analyzed_summary.get("failed_methods", [])),
+                    "漏洞数": len(analyzed_summary.get("vulnerabilities_found", [])),
+                    "建议数": len(analyzed_summary.get("next_suggestions", []))
+                }
+            )
+
+            return analyzed_summary
+
+        except Exception as e:
+            log_system_event(
+                f"[历史分析] ✗ LLM 分析失败: {str(e)}",
+                {"error_type": type(e).__name__},
+                level=logging.WARNING
+            )
+            return None
     
     # ==================== 9. 启动带提示的解题任务 ====================
     log_system_event(
