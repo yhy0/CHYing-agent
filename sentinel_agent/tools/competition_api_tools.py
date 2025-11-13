@@ -45,7 +45,7 @@ class BusinessError(CompetitionAPIError):
     pass
 
 
-def retry_on_rate_limit(max_retries: int = 3, base_delay: float = 2.0):
+def retry_on_rate_limit(max_retries: int = 5, base_delay: float = 2.0):
     """
     自动重试装饰器 - 处理请求频率限制、网络错误和临时服务器错误
     
@@ -207,7 +207,7 @@ class CompetitionAPIClient:
             log_system_event(f"[API] 未知错误: {status_code} - {error_detail}")
             raise CompetitionAPIError(f"API 错误 ({status_code}): {error_detail}")
     
-    @retry_on_rate_limit(max_retries=3, base_delay=2.0)
+    @retry_on_rate_limit(max_retries=5, base_delay=2.0)
     def get_challenges(self) -> Dict[str, Any]:
         """
         获取当前阶段赛题列表（带自动重试）
@@ -246,7 +246,7 @@ class CompetitionAPIClient:
         
         return data
     
-    @retry_on_rate_limit(max_retries=3, base_delay=2.0)
+    @retry_on_rate_limit(max_retries=5, base_delay=2.0)
     def get_hint(self, challenge_code: str) -> Dict[str, Any]:
         """
         查看指定赛题的提示信息（带自动重试）
@@ -281,7 +281,7 @@ class CompetitionAPIClient:
         
         return data
     
-    @retry_on_rate_limit(max_retries=3, base_delay=2.0)
+    @retry_on_rate_limit(max_retries=5, base_delay=2.0)
     def submit_answer(self, challenge_code: str, answer: str) -> Dict[str, Any]:
         """
         提交赛题答案（带自动重试）

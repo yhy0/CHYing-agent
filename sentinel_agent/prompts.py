@@ -291,8 +291,6 @@ curl -X POST -H "Cookie: token=\"xxx\"" -d '{"user":"admin"}' http://target/api
 | `execute_command` | 执行 Shell 命令 | Kali Linux 容器 |
 | `submit_flag` | 提交 FLAG | ⚠️ 会自动验证格式 |
 | `view_challenge_hint` | 获取官方提示 | ⚠️ 会扣分，慎用 |
-| `record_vulnerability_discovery` | 记录发现的漏洞 | 用于总结 |
-| `query_historical_knowledge` | 查询类似题目经验 | 参考历史解法 |
 
 ### 5.3 Web 表单处理规则（🔥 极其重要）
 
@@ -357,6 +355,7 @@ resp2 = requests.post(url, data={'password': 'test'})
 - 我是否在重复低效方法？
 - 是否应该采纳 Advisor 建议？
 - 是否应该使用官方提示？
+- 官方提示是否分析出了其含义和指向？
 
 ### 6.3 终止条件
 

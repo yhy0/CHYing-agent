@@ -32,7 +32,9 @@ from sentinel_agent.scheduler import (
 from sentinel_agent.common import log_system_event
 from sentinel_agent.utils.util import fetch_new_challenges
 
+from dotenv import load_dotenv
 
+load_dotenv()  # 确保.env文件被加载
 # ==================== 配置 ====================
 HINT_DELAY_HOURS = float(os.getenv("HINT_DELAY_HOURS", "2.0"))  # 默认 2 小时
 MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "8"))
@@ -81,8 +83,8 @@ async def fetch_hints_for_unsolved_challenges(api_client, task_manager):
         if challenge.get("solved", False):
             log_system_event(f"[提示获取] {challenge_code} 已解决，跳过获取提示（避免浪费扣分和消耗 token ）")
             skipped_count += 1
-                            # 检查是否允许重新攻击已解决的题目（调试模式）
-            import os
+            # 检查是否允许重新攻击已解决的题目（调试模式）
+
             allow_resolved = os.getenv("DEBUG_ALLOW_RESOLVED", "false").lower() == "true"
 
             if allow_resolved:
@@ -182,8 +184,15 @@ async def main():
     print(f"⏱️  启动时间: {wake_time.strftime('%Y-%m-%d %H:%M:%S')}")
     print("="*80 + "\n")
     
+
     # ==================== 1. 等待指定时间 ====================
-    sleep_seconds = HINT_DELAY_HOURS * 3600
+    allow_resolved = os.getenv("DEBUG_ALLOW_RESOLVED", "false").lower().strip() == "true"
+    # 检查是否允许重新攻击已解决的题目（调试模式）
+    
+    if allow_resolved:
+        sleep_seconds = 3
+    else:
+        sleep_seconds = HINT_DELAY_HOURS * 3600
     log_system_event(
         f"[休眠] 进入休眠模式，{HINT_DELAY_HOURS} 小时后启动...",
         {"休眠秒数": sleep_seconds}
@@ -245,6 +254,8 @@ async def main():
     
     # ==================== 4. 初始化重试策略 ====================
     try:
+        # 重试的使用官方的 key 救急，账户快没钱了
+        config.llm_api_key = os.getenv("Tencent_DEEPSEEK_API_KEY")
         retry_strategy = RetryStrategy(config=config)
         log_system_event("[✓] 重试策略初始化完成")
     except ValueError as e:

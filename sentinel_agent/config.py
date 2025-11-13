@@ -36,7 +36,7 @@ def load_agent_config() -> AgentConfig:
     if not llm_api_key:
         raise ValueError("配置错误: 未找到LLM API Key。请设置 DEEPSEEK_API_KEY 或 OPENAI_API_KEY。")
 
-    llm_base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1") # DeepSeek默认Base URL
+    llm_base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.lkeap.cloud.tencent.com/v1") # DeepSeek默认Base URL
     llm_model_name = os.getenv("LLM_MODEL_NAME", "deepseek-v3.1-terminus") # 允许覆盖默认模型
     
     # 加载环境模式（只支持 competition）

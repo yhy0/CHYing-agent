@@ -14,12 +14,16 @@ async def fetch_new_challenges(api_client) -> List[Dict]:
         allow_resolved = os.getenv("DEBUG_ALLOW_RESOLVED", "false").lower() == "true"
 
         if allow_resolved:
-            # 在调试模式下，将题目复制3次以测试并发
+            # 在调试模式下，将所有题目的 solved 状态改为 False（unsolved）
             original_count = len(all_challenges)
+            solved_count = sum(1 for ch in all_challenges if ch.get("solved", False))
+
             unsolved_challenges = []
             for i in range(1):
                 for ch in all_challenges[:original_count]:
                     challenge_copy = ch.copy()
+                    # ⭐ 关键修改：强制将 solved 状态改为 False
+                    challenge_copy['solved'] = False
                     # # 为每个副本添加唯一的标识符，避免冲突
                     # challenge_copy['debug_copy_id'] = i
                     # # 同时修改 challenge_code 和 code，确保任务管理器认为它们是不同的题目
@@ -30,13 +34,14 @@ async def fetch_new_challenges(api_client) -> List[Dict]:
                     # if original_code and not original_code.endswith(f"_{i}"):
                     #     challenge_copy['code'] = f"{original_code}_{i}"
                     unsolved_challenges.append(challenge_copy)
-            
+
             log_system_event(
-                "[调试模式] 允许重新攻击已解决的题目，已复制为8份用于并发测试",
+                "[调试模式] 允许重新攻击已解决的题目，已将 solved 状态改为 unsolved",
                 {
-                    "total": len(unsolved_challenges),
-                    "unsolved": len(unsolved_challenges),
-                    "solved": 0
+                    "total": len(all_challenges),
+                    "original_solved": solved_count,
+                    "now_unsolved": len(unsolved_challenges),
+                    "copies": 1
                 }
             )
             return unsolved_challenges

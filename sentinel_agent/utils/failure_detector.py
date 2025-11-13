@@ -16,6 +16,15 @@ from sentinel_agent.common import log_system_event
 from sentinel_agent.utils.util import retry_llm_call
 
 
+# ==================== 配置：跳过智能检测的工具白名单 ====================
+# 这些工具有明确的成功/失败标识，不需要 LLM 语义检测
+SKIP_DETECTION_TOOLS = {
+    "submit_flag",           # 已有 flag_validator 验证，返回明确的"答案正确"/"答案错误"
+    "get_challenge_list",    # API 调用，HTTP 状态码足够判断成功/失败
+    "view_challenge_hint",   # API 调用，返回格式固定
+}
+
+
 async def detect_failure_with_llm(
     tool_output: str,
     tool_name: str = "unknown",
@@ -33,12 +42,22 @@ async def detect_failure_with_llm(
 
     Returns:
         (is_failure, reason, key_info): 是否失败、失败原因/成功总结、关键信息摘要
-        
+
     设计理念：
         - 如果成功：key_info 包含关键发现（如发现的漏洞、获取的数据等）
         - 如果失败：reason 说明失败原因，key_info 补充上下文
         - 无论成败，都保留关键信息供 Agent 决策
     """
+    # ⭐ 白名单检查：跳过不需要智能检测的工具
+    if tool_name in SKIP_DETECTION_TOOLS:
+        log_system_event(
+            f"[智能失败检测] ⏭️ 跳过工具 '{tool_name}'（白名单）",
+            {"tool": tool_name, "reason": "工具有明确的成功/失败标识"}
+        )
+        # 直接使用关键字检测作为回退
+        is_fail, reason = _fallback_keyword_detection(tool_output)
+        return is_fail, reason, ""  # 不提取关键信息
+
     if llm is None:
         raise ValueError("必须提供 LLM 实例")
 
@@ -49,7 +68,7 @@ async def detect_failure_with_llm(
 
 **输出内容**:
 ```
-{tool_output[:3000]}  
+{tool_output[:5000]}  
 ```
 
 **分析任务**:
