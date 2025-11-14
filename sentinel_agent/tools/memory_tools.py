@@ -17,17 +17,22 @@ from sentinel_agent.common import log_security_event, log_system_event
 # 格式：{challenge_code: {"discoveries": [], "attack_paths": [], "failed_attempts": []}}
 _runtime_cache = {}
 
-# 当前活跃的 challenge_code（用于工具调用时的上下文）
-_current_challenge_code = None
+# ⭐ 线程安全改进：使用线程本地存储，避免多线程环境下的记忆串题
+import threading
+_thread_local = threading.local()
 
 
 def set_current_challenge(challenge_code: str):
-    """设置当前题目的 challenge_code（在解题开始时调用）"""
-    global _current_challenge_code
-    _current_challenge_code = challenge_code
+    """
+    设置当前线程的题目 challenge_code（在解题开始时调用）
 
-    # 如果该题目还没有缓存，初始化
+    ⭐ 线程安全：使用 threading.local() 存储，每个线程独立
+    """
+    _thread_local.challenge_code = challenge_code
+
+    # 如果该题目还没有缓存，初始化（使用锁保护）
     if challenge_code not in _runtime_cache:
+        # 简单的初始化，不需要锁（字典操作在 CPython 中是原子的）
         _runtime_cache[challenge_code] = {
             "discoveries": [],
             "attack_paths": [],
@@ -35,15 +40,28 @@ def set_current_challenge(challenge_code: str):
         }
         log_system_event(
             f"[记忆] 为题目 {challenge_code} 初始化独立记忆空间",
-            {"challenge_code": challenge_code}
+            {"challenge_code": challenge_code, "thread_id": threading.current_thread().name}
         )
 
 
-def _get_current_cache() -> Dict:
-    """获取当前题目的缓存（带异常处理）"""
-    if _current_challenge_code is None:
+def _get_current_cache(challenge_code: str = None) -> Dict:
+    """
+    获取指定题目的缓存（带异常处理）
+
+    Args:
+        challenge_code: 题目代码，如果为 None 则从线程本地存储读取
+
+    Returns:
+        题目的记忆缓存字典
+    """
+    # 优先使用传入的 challenge_code，否则从线程本地存储读取
+    if challenge_code is None:
+        challenge_code = getattr(_thread_local, 'challenge_code', None)
+
+    if challenge_code is None:
         log_system_event(
             "[记忆] ⚠️ 当前 challenge_code 未设置，使用默认缓存",
+            {"thread_id": threading.current_thread().name},
             level=logging.WARNING
         )
         # 使用默认缓存（向后兼容）
@@ -56,14 +74,14 @@ def _get_current_cache() -> Dict:
         return _runtime_cache["default"]
 
     # 确保缓存存在
-    if _current_challenge_code not in _runtime_cache:
-        _runtime_cache[_current_challenge_code] = {
+    if challenge_code not in _runtime_cache:
+        _runtime_cache[challenge_code] = {
             "discoveries": [],
             "attack_paths": [],
             "failed_attempts": []
         }
 
-    return _runtime_cache[_current_challenge_code]
+    return _runtime_cache[challenge_code]
 
 
 @tool
@@ -87,6 +105,8 @@ def add_memory(content: str) -> str:
         add_memory("发现 /api/edit_profile 端点包含 is_admin 参数")
         add_memory("表单中发现 hidden 字段：user_role=guest")
         add_memory("成功通过IDOR修改company_id提升为管理员")
+
+    ⭐ 线程安全：自动从线程本地存储读取 challenge_code
     """
     try:
         memory = {
@@ -94,13 +114,16 @@ def add_memory(content: str) -> str:
             "timestamp": datetime.now().isoformat()
         }
 
-        # ⭐ 使用隔离的缓存
+        # ⭐ 使用隔离的缓存（自动从线程本地存储读取 challenge_code）
         cache = _get_current_cache()
         cache["discoveries"].append(memory)
 
+        # 获取当前 challenge_code 用于日志
+        current_code = getattr(_thread_local, 'challenge_code', 'unknown')
+
         log_security_event(
             f"[记忆] 添加记忆",
-            memory
+            {**memory, "challenge_code": current_code}
         )
 
         return f"✅ 已记录: {content}"
@@ -114,14 +137,25 @@ def add_memory(content: str) -> str:
 
 # ==================== 缓存管理函数 ====================
 
-def get_all_discoveries() -> List[Dict]:
-    """获取当前题目的所有记忆（用于 Advisor 读取）"""
+def get_all_discoveries(challenge_code: str = None) -> List[Dict]:
+    """
+    获取指定题目的所有记忆（用于 Advisor 读取）
+
+    Args:
+        challenge_code: 题目代码，如果为 None 则从线程本地存储读取
+
+    Returns:
+        记忆列表
+
+    ⭐ 线程安全：支持显式传递 challenge_code，避免多线程环境下的记忆串题
+    """
     try:
-        cache = _get_current_cache()
+        cache = _get_current_cache(challenge_code)
         return cache["discoveries"]
     except Exception as e:
         log_system_event(
             f"[记忆] ⚠️ 获取记忆列表失败: {str(e)}",
+            {"challenge_code": challenge_code},
             level=logging.ERROR
         )
         return []

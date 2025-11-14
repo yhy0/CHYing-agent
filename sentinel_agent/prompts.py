@@ -330,13 +330,40 @@ curl -X POST -H "Cookie: token=\"xxx\"" -d '{"user":"admin"}' http://target/api
 
 ### 5.2 核心工具清单
 
-| 工具名称 | 功能 | 注意事项 |
-|---------|------|---------|
-| `execute_python_poc` | 执行 Python PoC 代码 | Microsandbox 沙箱 |
-| `execute_command` | 执行 Shell 命令 | Kali Linux 容器 |
-| `submit_flag` | 提交 FLAG | ⚠️ 会自动验证格式 |
-| `view_challenge_hint` | 获取官方提示 | ⚠️ 会扣分，慎用 |
-| `add_memory` | 添加记忆 | 🔥 记录关键发现供 Advisor 参考 |
+| 工具名称 | 功能 | 工具类型 | 注意事项 |
+|---------|------|---------|---------|
+| `execute_python_poc` | 执行 Python PoC 代码 | **执行工具** | Microsandbox 沙箱 |
+| `execute_command` | 执行 Shell 命令 | **执行工具** | Kali Linux 容器 |
+| `submit_flag` | 提交 FLAG | **🔥 API 工具（不是命令！）** | ⚠️ 直接调用，不要通过 execute_command |
+| `view_challenge_hint` | 获取官方提示 | **API 工具** | ⚠️ 会扣分，慎用 |
+| `add_memory` | 添加记忆 | **记忆工具** | 🔥 记录关键发现供 Advisor 参考 |
+
+**⚠️ 关键区别**：
+- **执行工具**（`execute_python_poc`、`execute_command`）：用于运行代码或命令，获取输出
+- **API 工具**（`submit_flag`、`view_challenge_hint`）：直接调用 API，不需要通过 shell
+- **记忆工具**（`add_memory`）：记录信息到知识库
+
+
+#### submit_flag 工具使用说明 (🔥 极其重要)
+
+**⚠️ 重要：`submit_flag` 是一个 LangChain 工具，不是 shell 命令！**
+- ❌ **错误**：使用 `execute_command` 执行 `submit_flag FLAG{...}`（这会报错 "command not found"）
+- ✅ **正确**：直接调用 `submit_flag` 工具（LLM 会自动调用，无需通过 shell）
+
+**参数**:
+- `challenge_code`: 当前题目的唯一标识码（从state["current_challenge"].get("challenge_code", challenge.get("code", "unknown"))获取）
+- `flag`: 找到的FLAG内容
+
+**示例**:
+```python
+# ✅ 正确用法（直接调用工具，不是 shell 命令）
+submit_flag(
+    challenge_code="demo",  # 从当前题目信息中获取
+    flag="FLAG{xxxxxxx}"
+)
+
+# ❌ 错误用法（不要这样做！）
+execute_command("submit_flag FLAG{xxxxxxx}")  # 这会失败！
 
 ### 5.3 记忆工具使用指南（🔥 极其重要）
 
@@ -544,7 +571,7 @@ def build_user_prompt(context: dict) -> str:
     # 3. 当前题目信息
     if current_challenge:
         prompt_parts.append("## 当前题目")
-        prompt_parts.append(f"- 题目代码: {current_challenge.get('code', 'unknown')}")
+        prompt_parts.append(f"- 题目代码: {current_challenge.get('challenge_code', current_challenge.get('code', 'unknown'))}")
         prompt_parts.append(f"- 题目名称: {current_challenge.get('name', 'unknown')}")
         prompt_parts.append(f"- 题目类型: {current_challenge.get('type', 'web')}")
         prompt_parts.append(f"- 目标 URL: {current_challenge.get('url', '未知')}")

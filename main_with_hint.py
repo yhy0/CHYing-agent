@@ -394,6 +394,17 @@ async def main():
             # ⭐ 核心 2：在重试前，让 LLM 分析之前的尝试记录
             retry_count = await task_manager.get_retry_count(challenge_code)
 
+            # ⭐ 添加模型选择日志
+            main_llm, advisor_llm, strategy_name = retry_strategy.get_llm_pair(retry_count)
+            log_system_event(
+                f"[模型选择] {challenge_code} 第 {retry_count} 次尝试",
+                {
+                    "策略": strategy_name,
+                    "主攻手模型": getattr(main_llm, 'model_name', 'unknown'),
+                    "顾问模型": getattr(advisor_llm, 'model_name', 'unknown')
+                }
+            )
+
             if retry_count > 0:
                 # 获取之前的尝试历史
                 attempt_history = await task_manager.get_attempt_history(challenge_code)
@@ -478,8 +489,14 @@ async def main():
             - next_suggestions: 下一步建议
         """
         try:
-            # 获取一个 LLM 用于分析（使用 DeepSeek，因为它更擅长分析）
-            analysis_llm, _, _ = retry_strategy.get_llm_pair(0)
+            # ⭐ 修复：使用当前 retry_count 获取 LLM，参与模型切换
+            # 历史分析使用主攻手模型（与实际解题使用相同的模型）
+            analysis_llm, _, strategy_name = retry_strategy.get_llm_pair(retry_count)
+
+            log_system_event(
+                f"[历史分析] 使用 {strategy_name} 进行分析",
+                {"retry_count": retry_count, "model": getattr(analysis_llm, 'model_name', 'unknown')}
+            )
 
             # 构建分析提示词
             challenge_code = challenge.get("challenge_code", "unknown")
@@ -506,7 +523,7 @@ async def main():
 3. **vulnerabilities_found**: 发现的漏洞（例如：确认存在 LFI 漏洞）
 4. **key_findings**: 关键发现（例如：id 参数可能不是文件包含参数）
 5. **next_suggestions**: 下一步建议（例如：尝试其他参数名如 page, file, path）
-6. **discovered_endpoints**: 已发现的 API 端点和参数（例如：/edit_profile/{company_id}，参数：is_admin）
+6. **discovered_endpoints**: 已发现的 API 端点和参数
 
 **重要**：
 - 只提取**已经验证过的事实**，不要猜测

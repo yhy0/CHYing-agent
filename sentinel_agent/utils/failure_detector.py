@@ -54,7 +54,24 @@ async def detect_failure_with_llm(
             f"[智能失败检测] ⏭️ 跳过工具 '{tool_name}'（白名单）",
             {"tool": tool_name, "reason": "工具有明确的成功/失败标识"}
         )
-        # 直接使用关键字检测作为回退
+
+        # ⭐ 特殊处理：submit_flag 工具有明确的成功/失败标识，不应使用通用关键字检测
+        if tool_name == "submit_flag":
+            # 检查工具输出中的明确标识
+            if "✓ 答案正确" in tool_output or "答案正确！获得" in tool_output:
+                return False, "FLAG提交成功", "答案正确"
+            elif "✗ 答案错误" in tool_output:
+                return True, "FLAG答案错误", "答案错误，需要继续寻找正确的FLAG"
+            elif "❌ FLAG 格式错误" in tool_output:
+                return True, "FLAG格式错误", "FLAG格式不完整，需要修正"
+            elif "提交失败" in tool_output or "提交答案失败" in tool_output:
+                return True, "提交失败", "API调用失败，可能是网络问题"
+            else:
+                # 如果没有明确标识，可能是工具执行异常，使用关键字检测
+                is_fail, reason = _fallback_keyword_detection(tool_output)
+                return is_fail, reason, ""
+
+        # 其他白名单工具：直接使用关键字检测作为回退
         is_fail, reason = _fallback_keyword_detection(tool_output)
         return is_fail, reason, ""  # 不提取关键信息
 
@@ -155,7 +172,7 @@ SUCCESS
 def _fallback_keyword_detection(tool_output: str) -> Tuple[bool, str]:
     """
     回退方案：基于关键字的失败检测
-    
+
     注意：这是简化版本，不提取关键信息（仅用于 LLM 调用失败时的回退）
 
     Args:
@@ -164,6 +181,14 @@ def _fallback_keyword_detection(tool_output: str) -> Tuple[bool, str]:
     Returns:
         (is_failure, reason): 是否失败以及失败原因
     """
+    # ⭐ 特殊检测：捕获"使用 execute_command 调用 submit_flag"的错误
+    if "submit_flag: command not found" in tool_output:
+        return True, (
+            "❌ 错误：submit_flag 是 LangChain 工具，不是 shell 命令！\n"
+            "请直接调用 submit_flag 工具，不要通过 execute_command 执行。\n"
+            "正确用法：submit_flag(challenge_code='xxx', flag='FLAG{...}')"
+        )
+
     # 明显的错误关键字（优先级高）
     critical_failures = [
         ("exception", "发现异常"),

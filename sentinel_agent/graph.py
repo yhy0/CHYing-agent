@@ -96,9 +96,30 @@ async def build_multi_agent_graph(
 
         Returns:
             总结后的输出
+
+        ⭐ 优化策略：
+        - 输入 > 20000 字符：先截断到 20000，再总结
+        - 总结失败：回退到智能截断（10000 字符）
         """
         if llm is None:
             llm = main_llm
+
+        # ⭐ 新增：如果输入过长，先截断再总结（避免超过 LLM 输入限制）
+        MAX_SUMMARY_INPUT = 20000  # LLM 总结的最大输入长度
+        original_length = len(tool_output)
+
+        if original_length > MAX_SUMMARY_INPUT:
+            log_system_event(
+                f"[工具总结] ⚠️ 输入过长，先截断再总结",
+                {
+                    "original_length": original_length,
+                    "truncated_to": MAX_SUMMARY_INPUT,
+                    "tool": tool_name
+                },
+                level=logging.WARNING
+            )
+            # 使用智能截断
+            tool_output = _smart_truncate_output(tool_output, max_len=MAX_SUMMARY_INPUT)
 
         # 构建总结提示
         summary_prompt = f"{TOOL_OUTPUT_SUMMARY_PROMPT}\n\n```\n{tool_output}\n```"
@@ -107,7 +128,8 @@ async def build_multi_agent_graph(
             log_system_event(
                 f"[工具总结] 开始总结 {tool_name} 的输出",
                 {
-                    "original_length": len(tool_output),
+                    "original_length": original_length,
+                    "input_length": len(tool_output),
                     "tool": tool_name
                 }
             )
@@ -125,10 +147,9 @@ async def build_multi_agent_graph(
             log_system_event(
                 f"[工具总结] ✅ 总结完成",
                 {
-                    "original_length": len(tool_output),
+                    "original_length": original_length,
                     "summary_length": len(summary),
-                    "compression_ratio": f"{len(summary) / len(tool_output) * 100:.1f}%",
-                    "summary": summary
+                    "compression_ratio": f"{len(summary) / original_length * 100:.1f}%"
                 }
             )
 
@@ -140,19 +161,56 @@ async def build_multi_agent_graph(
                 {"error": str(e)},
                 level=logging.WARNING
             )
-            # 回退到智能截断
+            # 回退到智能截断（使用原始输出，不是已截断的版本）
             return _smart_truncate_output(tool_output, max_len=10000)
 
     async def tool_node(state: PenetrationTesterState):
         """
         自定义工具节点：执行工具后检查是否需要更新状态
-        
+
         关键功能：
         1. 执行工具调用
         2. 检查 submit_flag 结果，自动设置 flag 和 is_finished
         3. ⭐ 追踪失败次数（用于智能路由）
         4. 让并发任务在解决题目后立即退出
+        5. ⭐ 自动注入 challenge_code 到 submit_flag 调用
         """
+
+        # 服了 题做出来了，但是调用 submit_flag 参数没有传入题目名字, 上次修改
+        # ⭐ 新增：在执行工具前，检查并自动补充 submit_flag 的 challenge_code 参数
+        messages = state.get("messages", [])
+        if messages:
+            last_message = messages[-1]
+            if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+                # 遍历所有工具调用
+                for tool_call in last_message.tool_calls:
+                    if tool_call.get("name") == "submit_flag":
+                        args = tool_call.get("args", {})
+                        # 检查是否缺少 challenge_code 参数
+                        if "challenge_code" not in args or not args.get("challenge_code"):
+                            # 从 state 中获取当前题目代码
+                            current_challenge = state.get("current_challenge")
+                            if current_challenge:
+                                challenge_code = current_challenge.get("challenge_code")
+                                if not challenge_code:
+                                    challenge_code = current_challenge.get("code")
+                                # 自动注入 challenge_code
+                                tool_call["args"]["challenge_code"] = challenge_code
+
+                                log_system_event(
+                                    "[自动注入] submit_flag 缺少 challenge_code，已自动补充",
+                                    {
+                                        "challenge_code": challenge_code,
+                                        "flag": args.get("flag", "")[:50] + "..."
+                                    }
+                                )
+                            else:
+                                log_system_event(
+                                    "[自动注入] ⚠️ 无法获取 challenge_code，submit_flag 可能失败",
+                                    {"current_challenge": current_challenge},
+                                    level=logging.WARNING
+                                )
+
         # 执行基础工具调用
         result = await base_tool_node.ainvoke(state)
 
@@ -162,38 +220,54 @@ async def build_multi_agent_graph(
         # ⭐ 新增：检查工具输出长度，必要时进行总结
         # 从环境变量读取配置
         enable_summary = os.getenv("ENABLE_TOOL_SUMMARY", "true").lower() == "true"
-        summary_threshold = int(os.getenv("TOOL_SUMMARY_THRESHOLD", "10000"))
+        summary_threshold = int(os.getenv("TOOL_SUMMARY_THRESHOLD", "5000"))
+        # ⭐ 新增：超过此阈值直接截断，不再总结（避免浪费 token）
+        max_summary_length = int(os.getenv("MAX_SUMMARY_LENGTH", "10000"))
 
         if enable_summary and "messages" in result:
             for msg in result["messages"]:
                 if hasattr(msg, "content") and msg.content:
                     original_length = len(msg.content)
 
-                    # 如果输出超过阈值，进行总结
+                    # 如果输出超过阈值，进行总结或截断
                     if original_length > summary_threshold:
                         # 获取工具名称
                         tool_name = "unknown"
                         if messages and hasattr(messages[-1], "tool_calls") and messages[-1].tool_calls:
                             tool_name = messages[-1].tool_calls[0].get("name", "unknown")
 
-                        log_system_event(
-                            f"[工具输出] 检测到长输出，准备总结",
-                            {
-                                "tool": tool_name,
-                                "original_length": original_length,
-                                "threshold": summary_threshold
-                            }
-                        )
+                        # ⭐ 优化：如果输出超过 max_summary_length，直接截断，不再总结
+                        if original_length > max_summary_length:
+                            log_system_event(
+                                f"[工具输出] 输出过长，直接截断（不总结）",
+                                {
+                                    "tool": tool_name,
+                                    "original_length": original_length,
+                                    "max_summary_length": max_summary_length
+                                }
+                            )
+                            # 直接使用智能截断
+                            msg.content = _smart_truncate_output(msg.content, max_len=max_summary_length)
+                        else:
+                            # 输出在 summary_threshold 和 max_summary_length 之间，使用 LLM 总结
+                            log_system_event(
+                                f"[工具输出] 检测到长输出，准备总结",
+                                {
+                                    "tool": tool_name,
+                                    "original_length": original_length,
+                                    "threshold": summary_threshold
+                                }
+                            )
 
-                        # 调用总结函数
-                        summary = await summarize_tool_output(
-                            tool_output=msg.content,
-                            tool_name=tool_name,
-                            llm=main_llm
-                        )
+                            # 调用总结函数
+                            summary = await summarize_tool_output(
+                                tool_output=msg.content,
+                                tool_name=tool_name,
+                                llm=main_llm
+                            )
 
-                        # 替换原始输出为总结
-                        msg.content = summary
+                            # 替换原始输出为总结
+                            msg.content = summary
 
         # ⭐ 获取本次执行的工具类型（用于智能路由）
         # ⭐ 修复：messages 已在函数开头定义，无需重复获取
@@ -311,12 +385,12 @@ async def build_multi_agent_graph(
                 if hasattr(last_message, "tool_calls") and last_message.tool_calls:
                     for tool_call in last_message.tool_calls:
                         if tool_call.get("name") == current_action_type:
-                            args = tool_call.get("args", {})
-                            tool_args_summary = f"current_action_type: {current_action_type}, 信息：{key_info}"
-             
                             if current_action_type == "submit_flag":
                                 flag = args.get("flag", "")
                                 tool_args_summary = f"提交: {flag}"
+                            else:
+                                args = tool_call.get("args", {})
+                                tool_args_summary = f"current_action_type: {current_action_type}, 信息：{key_info}"
                             break
 
             # 构建操作记录
@@ -451,20 +525,35 @@ async def build_multi_agent_graph(
         try:
             from sentinel_agent.tools.memory_tools import get_all_discoveries
 
-            # 读取主攻击手记录的所有记忆
-            memories = get_all_discoveries()
+            # ⭐ 线程安全改进：显式传递 challenge_code，避免多线程环境下的记忆串题
+            current_challenge = state.get("current_challenge")
+            if current_challenge:
+                challenge_code = current_challenge.get("challenge_code", current_challenge.get("code"))
 
-            if memories:
-                memory_lines = []
-                for m in memories:
-                    content = m.get('content', '')
-                    memory_lines.append(f"- {content}")
+                # 读取主攻击手记录的所有记忆（显式传递 challenge_code）
+                memories = get_all_discoveries(challenge_code=challenge_code)
 
-                context_parts.append(f"""
+                if memories:
+                    memory_lines = []
+                    for m in memories:
+                        content = m.get('content', '')
+                        memory_lines.append(f"- {content}")
+
+                    context_parts.append(f"""
 ## 🔐 主攻击手的记忆
 
 {chr(10).join(memory_lines)}
 """)
+
+                    log_system_event(
+                        f"[Advisor] 读取到 {len(memories)} 条记忆",
+                        {"challenge_code": challenge_code, "memory_count": len(memories)}
+                    )
+            else:
+                log_system_event(
+                    "[Advisor] ⚠️ 当前没有活跃题目，跳过记忆读取",
+                    level=logging.WARNING
+                )
         except Exception as e:
             # 异常处理：即使读取失败也不影响 Advisor 运行
             log_system_event(
@@ -891,34 +980,6 @@ def _smart_truncate_output(output: str, max_len: int = 10000) -> str:
     return f"{output[:half]}\n... (中间省略 {len(output) - max_len} 字符) ...\n{output[-half:]}"
 
 
-def _format_challenges_list(challenges: list) -> str:
-    """格式化赛题列表（显示完整信息）"""
-    if not challenges:
-        return "暂无赛题"
-    
-    formatted = []
-    for i, ch in enumerate(challenges, 1):
-        # 提取关键信息
-        code = ch.get('challenge_code', ch.get('code', 'unknown'))
-        difficulty = ch.get('difficulty', 'unknown')
-        points = ch.get('points', 0)
-        hint_viewed = ch.get('hint_viewed', False)
-        solved = ch.get('solved', False)
-        target_info = ch.get('target_info', {})
-        ip = target_info.get('ip', 'unknown')
-        ports = target_info.get('port', [])
-        
-        # 格式化
-        status = "✅ 已解决" if solved else "🔓 未解决"
-        hint_mark = "💡" if hint_viewed else ""
-        
-        formatted.append(
-            f"{i}. **{code}** ({difficulty}, {points}分) - {status} {hint_mark}\n"
-            f"   目标: {ip}:{','.join(map(str, ports))}"
-        )
-    
-    return "\n".join(formatted)
-
 
 def _format_action_history(action_history: list) -> str:
     """格式化操作历史"""
@@ -986,7 +1047,7 @@ def _build_system_prompt(state: PenetrationTesterState) -> SystemMessage:
         # 计算实际尝试次数：统计有工具调用的消息数量
         messages = state.get("messages", [])
         attempts = len([m for m in messages if hasattr(m, 'tool_calls') and m.tool_calls])
-        
+
         code = challenge.get("challenge_code", challenge.get("code"))
         difficulty = challenge.get("difficulty", "unknown")
         points = challenge.get("points", 0)
@@ -1022,6 +1083,33 @@ def _build_system_prompt(state: PenetrationTesterState) -> SystemMessage:
 - **目标**：{target_url}
 - **尝试次数**：{attempts}
 - **提示状态**：{"已查看 💡（扣分）" if hint_viewed else "未查看"}{recon_hint}{hint_section}
+
+
+### 攻击策略
+1. **信息收集**：
+   - 使用 `execute_python_poc` 执行 `requests.get('{target_url}')` 查看页面
+   - 分析响应头、Cookie、隐藏字段
+   
+2. **漏洞测试**（根据类型）：
+   - **SQL注入**：测试输入参数（`' OR '1'='1`）
+   - **XSS**：测试输入输出（`<script>alert(1)</script>`）
+   - **文件包含**：测试路径参数（`../../../../etc/passwd`）
+   - **命令注入**：测试系统命令（`; ls -la`）
+   
+3. **利用工具选择**：
+   - **简单单次请求**：`execute_command` + curl（如：GET 页面源码）
+   - **需要登录/会话/多次请求**：直接使用 `execute_python_poc` + Python requests
+     ```python
+     import requests
+     session = requests.Session()
+     # 登录、保持会话、处理 Cookie...
+     ```
+   - **暴力破解/批量测试**：使用 `execute_python_poc` 编写循环逻辑
+   - **复杂攻击链**：使用 `execute_python_poc` 编写完整 PoC
+   
+4. **提取 FLAG**：
+   - FLAG 格式通常为 `flag{{...}}` 或 `FLAG{{...}}`
+   - 找到后使用 `submit_flag` 提交
 """)
         
         # ⭐ 检测失败模式并提供警告
