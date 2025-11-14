@@ -68,7 +68,7 @@ async def detect_failure_with_llm(
 
 **输出内容**:
 ```
-{tool_output[:5000]}  
+{tool_output}  
 ```
 
 **分析任务**:
@@ -171,6 +171,13 @@ def _fallback_keyword_detection(tool_output: str) -> Tuple[bool, str]:
         ("failed:", "操作失败"),
         ("command not found", "命令未找到"),
         ("bash:", "Bash脚本错误"),
+        ("timeout", "连接超时"),
+        ("timed out", "操作超时"),
+        ("connecttimeout", "连接超时"),
+        ("connectionerror", "连接错误"),
+        ("connection refused", "连接被拒绝"),
+        ("max retries exceeded", "重试次数超限"),
+        ("errno 110", "连接超时 (Errno 110)"),
     ]
 
     # 检查明显错误

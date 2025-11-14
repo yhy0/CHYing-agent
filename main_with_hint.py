@@ -19,6 +19,7 @@ import logging
 from datetime import datetime, timedelta
 from langfuse import get_client
 from langfuse.langchain import CallbackHandler
+from langchain_openai import ChatOpenAI
 
 from sentinel_agent.core.singleton import get_config_manager
 from sentinel_agent.task_manager import ChallengeTaskManager
@@ -36,7 +37,7 @@ from dotenv import load_dotenv
 
 load_dotenv()  # 确保.env文件被加载
 # ==================== 配置 ====================
-HINT_DELAY_HOURS = float(os.getenv("HINT_DELAY_HOURS", "2.0"))  # 默认 2 小时
+HINT_DELAY_HOURS = float(os.getenv("HINT_DELAY_HOURS", "1.0"))  # 默认 2 小时
 MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "8"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "4"))
 
@@ -257,7 +258,66 @@ async def main():
         # 重试的使用官方的 key 救急，账户快没钱了
         config.llm_api_key = os.getenv("Tencent_DEEPSEEK_API_KEY")
         retry_strategy = RetryStrategy(config=config)
-        log_system_event("[✓] 重试策略初始化完成")
+
+        # ⭐ 兜底策略专用：强制替换为更强的模型
+
+        # 读取新模型配置
+        main_model = os.getenv("SILICONFLOW_MODEL_1", "moonshotai/Kimi-K2-Instruct-0905")  # 主攻手
+        advisor_model = os.getenv("SILICONFLOW_MODEL_2", "Qwen/Qwen3-VL-32B-Thinking")  # 顾问
+        api_key = os.getenv("SILICONFLOW_API_KEY")
+        base_url = os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1")
+
+        if not api_key:
+            raise ValueError("SILICONFLOW_API_KEY 未设置，无法使用兜底策略模型")
+
+        log_system_event(
+            "[兜底策略] 使用专用模型配置",
+            {
+                "主攻手模型": main_model,
+                "顾问模型": advisor_model,
+                "API": base_url
+            }
+        )
+
+        # 创建主攻手 LLM（Kimi K2 Thinking - 强推理能力）
+        main_llm = ChatOpenAI(
+            model=main_model,
+            api_key=api_key,
+            base_url=base_url,
+            temperature=0.6,
+            max_tokens=8192,  # 增加 token 限制，支持更复杂的推理
+            timeout=300,
+            max_retries=10,
+            default_headers={
+                "Authorization": f"Bearer {api_key}"
+            }
+        )
+
+        # 创建顾问 LLM（GLM-4.6 - 提供建议）
+        advisor_llm = ChatOpenAI(
+            model=advisor_model,
+            api_key=api_key,
+            base_url=base_url,
+            temperature=0.6,
+            max_tokens=8192,
+            timeout=300,
+            max_retries=10,
+            default_headers={
+                "Authorization": f"Bearer {api_key}"
+            }
+        )
+
+        # ⭐ 强制替换 retry_strategy 中的 LLM
+        retry_strategy.deepseek_llm = main_llm  # 主攻手用 Kimi K2
+        retry_strategy.minimax_llm = advisor_llm  # 顾问用 GLM-4.6
+
+        log_system_event(
+            "[✓] 重试策略初始化完成（已替换为兜底专用模型）",
+            {
+                "主攻手": main_model,
+                "顾问": advisor_model
+            }
+        )
     except ValueError as e:
         log_system_event(
             f"❌ 重试策略初始化失败（配置错误）: {str(e)}",
@@ -446,6 +506,7 @@ async def main():
 3. **vulnerabilities_found**: 发现的漏洞（例如：确认存在 LFI 漏洞）
 4. **key_findings**: 关键发现（例如：id 参数可能不是文件包含参数）
 5. **next_suggestions**: 下一步建议（例如：尝试其他参数名如 page, file, path）
+6. **discovered_endpoints**: 已发现的 API 端点和参数（例如：/edit_profile/{company_id}，参数：is_admin）
 
 **重要**：
 - 只提取**已经验证过的事实**，不要猜测
@@ -514,7 +575,7 @@ async def main():
 
             # 如果所有策略都失败，返回 None（会被外层 try-except 捕获）
             if not analyzed_summary:
-                raise ValueError(f"无法从 LLM 响应中提取有效的 JSON: {response_text[:200]}")
+                raise ValueError(f"无法从 LLM 响应中提取有效的 JSON: {response_text}")
 
             log_system_event(
                 f"[历史分析] ✓ LLM 分析成功",
@@ -549,7 +610,7 @@ async def main():
         if challenge.get("hint_content"):
             log_system_event(
                 f"[调试] {challenge_code} 确认有提示",
-                {"提示": challenge["hint_content"][:50]}
+                {"提示": challenge["hint_content"]}
             )
         else:
             log_system_event(

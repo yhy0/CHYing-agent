@@ -11,13 +11,7 @@
 """
 from sentinel_agent.tools.shell import execute_command
 from sentinel_agent.tools.shell_enhanced import execute_python_poc
-from sentinel_agent.tools.memory_tools import (
-    record_vulnerability_discovery,
-    record_successful_exploit,
-    record_failed_attempt,
-    query_historical_knowledge,
-    get_memory_tools
-)
+from sentinel_agent.tools.memory_tools import get_memory_tools
 from sentinel_agent.tools.web_tools import extract_web_form_fields
 
 
@@ -25,10 +19,6 @@ from sentinel_agent.tools.web_tools import extract_web_form_fields
 __all__ = [
     "execute_command",
     "execute_python_poc",
-    "record_vulnerability_discovery",
-    "record_successful_exploit",
-    "record_failed_attempt",
-    "query_historical_knowledge",
     "get_memory_tools",
     "extract_web_form_fields",
 ]

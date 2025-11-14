@@ -104,7 +104,7 @@ class PenetrationTesterState(TypedDict):
     last_reflection: Optional[str]  # 最后一次反思
     
     # --- 执行与结果 ---
-    last_action_output: str
+    last_action_output: str  # 好像是废弃的
     flag: Optional[str]
     is_finished: bool
 

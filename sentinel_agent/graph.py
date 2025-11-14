@@ -69,22 +69,9 @@ async def build_multi_agent_graph(
     Returns:
         编译后的 LangGraph 应用
     """
-    # ==================== 1. 初始化记忆系统 ====================
-    memory_store = get_memory_store()
-    memory_tools = get_all_memory_tools()
-    
-    log_system_event(
-        "--- 初始化多 Agent 协作系统 ---", 
-        {
-            "main_llm": type(main_llm).__name__,
-            "advisor_llm": type(advisor_llm).__name__,
-            "memory_tools_count": len(memory_tools),
-        }
-    )
-    
     # ==================== 2. 获取所有工具 ====================
     pentest_tools = get_all_tools()
-    all_tools = pentest_tools + memory_tools
+    all_tools = pentest_tools
     
     # 只有主 Agent 绑定工具
     main_llm_with_tools = main_llm.bind_tools(all_tools)
@@ -154,7 +141,7 @@ async def build_multi_agent_graph(
                 level=logging.WARNING
             )
             # 回退到智能截断
-            return _smart_truncate_output(tool_output, max_len=5000)
+            return _smart_truncate_output(tool_output, max_len=10000)
 
     async def tool_node(state: PenetrationTesterState):
         """
@@ -220,6 +207,7 @@ async def build_multi_agent_graph(
         # ⭐ 分析本次执行是否失败（用于智能路由）
         is_failure = False
         failure_reason = ""
+        key_info = ""  # ⭐ 新增：保存关键信息摘要（用于 action_history）
 
         # 从环境变量读取配置
         enable_smart_detection = os.getenv("ENABLE_SMART_FAILURE_DETECTION", "true").lower() == "true"
@@ -310,10 +298,46 @@ async def build_multi_agent_graph(
         else:
             # 成功或无明显错误，重置计数
             consecutive_failures = 0
-        
+
         result["consecutive_failures"] = consecutive_failures
         result["last_action_type"] = current_action_type
-        
+
+        # ⭐ 新增：记录操作历史到 action_history（供 Advisor 参考）
+        if current_action_type:
+            # 提取工具调用的参数（用于更详细的记录）
+            tool_args_summary = ""
+            if messages:
+                last_message = messages[-1]
+                if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+                    for tool_call in last_message.tool_calls:
+                        if tool_call.get("name") == current_action_type:
+                            args = tool_call.get("args", {})
+                            tool_args_summary = f"current_action_type: {current_action_type}, 信息：{key_info}"
+             
+                            if current_action_type == "submit_flag":
+                                flag = args.get("flag", "")
+                                tool_args_summary = f"提交: {flag}"
+                            break
+
+            # 构建操作记录
+            status_emoji = "❌" if is_failure else "✅"
+            if tool_args_summary:
+                action_record = f"{status_emoji} [{current_action_type}] {tool_args_summary} → {failure_reason if is_failure else '成功'}"
+            else:
+                action_record = f"{status_emoji} [{current_action_type}] {failure_reason if is_failure else '成功'}"
+
+            # 添加到 action_history（使用 add 合并）
+            result["action_history"] = [action_record]
+
+            log_system_event(
+                f"[操作历史] 记录到 action_history",
+                {
+                    "action": current_action_type,
+                    "status": "失败" if is_failure else "成功",
+                    "record": action_record
+                }
+            )
+
         return result
     
     # ==================== 4. 定义 Advisor Agent 节点 ====================
@@ -379,25 +403,6 @@ async def build_multi_agent_graph(
                 elapsed_seconds = int(time.time() - start_time)
                 elapsed_time = f"{elapsed_seconds // 60}分{elapsed_seconds % 60}秒"
             
-            context_parts.append(f"""
-## 📊 比赛状态总览
-
-- **当前阶段**: {current_phase.upper()}
-- **当前积分**: {current_score} 分
-- **已解题数**: {solved_count}/{total_challenges} ({solved_count*100//total_challenges if total_challenges > 0 else 0}%)
-- **耗时**: {elapsed_time if elapsed_time else "未知"}
-- **已使用提示**: {state.get('hint_used_count', 0)} 次
-""")
-        
-        # 1. 赛题列表信息
-        if state.get("challenges"):
-            challenges = state["challenges"]
-            context_parts.append(f"""
-## 📋 可用赛题列表
-
-共有 {len(challenges)} 道题目：
-{_format_challenges_list(challenges)}
-""")
         
         # 2. 当前题目信息
         if state.get("current_challenge"):
@@ -441,28 +446,31 @@ async def build_multi_agent_graph(
 
 {_format_action_history(action_history)}
 """)
-        
-        # 4. 最近一次执行结果（智能摘要）
-        last_output = state.get('last_action_output', '')
-        if last_output:
-            # 智能截断：保留关键错误信息（提高到 5000 以保留更多上下文）
-            preview = _smart_truncate_output(last_output, max_len=5000)
-            context_parts.append(f"""
-## 🔍 最近一次执行结果
 
-```
-{preview}
-```
-""")
-        
-        # 5. 已发现的信息
-        vulnerabilities = state.get('potential_vulnerabilities', [])
-        if vulnerabilities:
-            context_parts.append(f"""
-## 🔐 已发现的潜在漏洞
+        # 5. 已发现的信息（从记忆工具读取）
+        try:
+            from sentinel_agent.tools.memory_tools import get_all_discoveries
 
-{chr(10).join(f"- {v}" for v in vulnerabilities)}
+            # 读取主攻击手记录的所有记忆
+            memories = get_all_discoveries()
+
+            if memories:
+                memory_lines = []
+                for m in memories:
+                    content = m.get('content', '')
+                    memory_lines.append(f"- {content}")
+
+                context_parts.append(f"""
+## 🔐 主攻击手的记忆
+
+{chr(10).join(memory_lines)}
 """)
+        except Exception as e:
+            # 异常处理：即使读取失败也不影响 Advisor 运行
+            log_system_event(
+                f"[Advisor] ⚠️ 读取记忆工具失败: {str(e)}",
+                level=logging.WARNING
+            )
         
         # 组合所有上下文
         if context_parts:
@@ -693,12 +701,6 @@ async def build_multi_agent_graph(
             )
             return "end"
         
-        # 4. 工具执行完 → 获取顾问新建议
-        # 判断依据：上一次是工具执行（通过检查 last_action_output）
-        if state.get("last_action_output"):
-            log_system_event("[Router] 工具执行完毕 → 咨询顾问")
-            return "advisor"
-        
         # 5. 有顾问建议且主 Agent 未使用 → 主 Agent 决策
         if state.get("advisor_suggestion"):
             log_system_event("[Router] 已有顾问建议 → 主 Agent 决策")
@@ -831,7 +833,7 @@ async def build_multi_agent_graph(
     )
     
     # ==================== 8. 编译图 ====================
-    app = workflow.compile(store=memory_store)
+    app = workflow.compile()
     
     log_system_event("--- 多 Agent 协作图构建完成 ---")
     return app
@@ -839,7 +841,7 @@ async def build_multi_agent_graph(
 
 # ==================== 辅助函数 ====================
 
-def _smart_truncate_output(output: str, max_len: int = 5000) -> str:
+def _smart_truncate_output(output: str, max_len: int = 10000) -> str:
     """
     智能截断输出（保留关键错误信息）
     
@@ -977,70 +979,6 @@ def _build_system_prompt(state: PenetrationTesterState) -> SystemMessage:
     
     # --- 动态添加当前任务上下文 ---
     
-    # 阶段 1: 尚未获取赛题列表
-    if not state.get("challenges"):
-        prompt_parts.append("""
-## 🎯 当前任务：获取赛题列表
-
-这是一个 CTF 比赛环境。你需要：
-1. **调用 `get_challenge_list` 工具** 获取所有可用赛题
-2. 查看赛题信息（URL、类型、难度）
-3. 准备开始攻击
-
-**注意：** 不要使用 nmap 扫描，这是 Web 应用比赛。
-""")
-        return SystemMessage(content="\n".join(prompt_parts))
-    
-    # 阶段 2: 已有赛题列表，选择赛题
-    challenges = state.get("challenges", [])
-    completed = state.get("completed_challenges", [])
-    remaining = [c for c in challenges if c.get("challenge_code", c.get("code")) not in completed]
-    
-    # 添加比赛状态总览
-    current_score = state.get("current_score", 0)
-    solved_count = state.get("solved_count", 0)
-    total_challenges = state.get("total_challenges", 0)
-    current_phase = state.get("current_phase", "unknown")
-    start_time = state.get("start_time")
-    
-    if total_challenges > 0:
-        elapsed_time = ""
-        if start_time:
-            import time
-            elapsed_seconds = int(time.time() - start_time)
-            elapsed_time = f"{elapsed_seconds // 60}分{elapsed_seconds % 60}秒"
-        
-        prompt_parts.append(f"""
-## 📊 比赛状态总览
-
-- **阶段**: {current_phase.upper()}
-- **当前积分**: {current_score} 分
-- **进度**: {solved_count}/{total_challenges} ({solved_count*100//total_challenges if total_challenges > 0 else 0}%)
-- **耗时**: {elapsed_time if elapsed_time else "未知"}
-- **剩余题目**: {len(remaining)} 道
-""")
-    
-    if remaining and not state.get("current_challenge"):
-        next_challenge = remaining[0]
-        code = next_challenge.get("challenge_code", next_challenge.get("code"))
-        difficulty = next_challenge.get("difficulty", "unknown")
-        points = next_challenge.get("points", 0)
-        target_info = next_challenge.get("target_info", {})
-        ip = target_info.get("ip", "unknown")
-        ports = target_info.get("port", [])
-        
-        prompt_parts.append(f"""
-## 📋 建议攻击下一题
-
-**题目代码**: {code}
-- **难度**: {difficulty.upper()}
-- **满分**: {points} 分
-- **目标**: {ip}:{','.join(map(str, ports))}
-
-请开始攻击此赛题。
-""")
-        return SystemMessage(content="\n".join(prompt_parts))
-    
     # 阶段 3: 正在攻击赛题
     if state.get("current_challenge"):
         challenge = state["current_challenge"]
@@ -1084,32 +1022,6 @@ def _build_system_prompt(state: PenetrationTesterState) -> SystemMessage:
 - **目标**：{target_url}
 - **尝试次数**：{attempts}
 - **提示状态**：{"已查看 💡（扣分）" if hint_viewed else "未查看"}{recon_hint}{hint_section}
-
-### 攻击策略
-1. **信息收集**：
-   - 使用 `execute_python_poc` 执行 `requests.get('{target_url}')` 查看页面
-   - 分析响应头、Cookie、隐藏字段
-   
-2. **漏洞测试**（根据类型）：
-   - **SQL注入**：测试输入参数（`' OR '1'='1`）
-   - **XSS**：测试输入输出（`<script>alert(1)</script>`）
-   - **文件包含**：测试路径参数（`../../../../etc/passwd`）
-   - **命令注入**：测试系统命令（`; ls -la`）
-   
-3. **利用工具选择**：
-   - **简单单次请求**：`execute_command` + curl（如：GET 页面源码）
-   - **需要登录/会话/多次请求**：直接使用 `execute_python_poc` + Python requests
-     ```python
-     import requests
-     session = requests.Session()
-     # 登录、保持会话、处理 Cookie...
-     ```
-   - **暴力破解/批量测试**：使用 `execute_python_poc` 编写循环逻辑
-   - **复杂攻击链**：使用 `execute_python_poc` 编写完整 PoC
-   
-4. **提取 FLAG**：
-   - FLAG 格式通常为 `flag{{...}}` 或 `FLAG{{...}}`
-   - 找到后使用 `submit_flag` 提交
 """)
         
         # ⭐ 检测失败模式并提供警告

@@ -164,7 +164,7 @@ Both use:
 | `get_challenge_list` | Fetch CTF challenges | Competition API |
 | `submit_flag` | Submit FLAG (with auto-validation) | Competition API |
 | `view_challenge_hint` | Get hints (penalty) | Competition API |
-| `record_vulnerability_discovery` | Log findings | LangMem |
+| `add_memory` | Log findings | LangMem |
 | `query_historical_knowledge` | Search memory | LangMem |
 
 **Note**: `submit_flag` includes automatic FLAG format validation to prevent incomplete submissions (e.g., missing closing `}`). See `sentinel_agent/utils/flag_validator.py` for validation logic.

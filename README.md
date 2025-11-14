@@ -125,7 +125,7 @@ CHYing-agent/
 |------|------|------|
 | `execute_command` | Shell | 在 Docker 容器中执行命令 |
 | `execute_python_poc` | Python | 在沙箱中执行 PoC 代码 |
-| `record_vulnerability_discovery` | 记忆 | 记录漏洞发现 |
+| `add_memory` | 记忆 | 记录漏洞发现 |
 | `record_successful_exploit` | 记忆 | 记录成功利用 |
 | `record_failed_attempt` | 记忆 | 记录失败尝试 |
 | `query_historical_knowledge` | 记忆 | 查询历史经验 |

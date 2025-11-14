@@ -17,16 +17,27 @@ from sentinel_agent.common import log_tool_event
 
 def _validate_code(code: str) -> tuple[bool, str]:
     """
-    验证代码有效性
-    
+    验证代码有效性（包括语法检查）
+
     Args:
         code: 待验证的 Python 代码
-        
+
     Returns:
         (是否有效, 错误消息)
     """
     if not code or not code.strip():
         return False, "错误：代码不能为空"
+
+    # 语法检查
+    try:
+        compile(code, '<string>', 'exec')
+    except SyntaxError as e:
+        return False, f"语法错误（第 {e.lineno} 行）: {e.msg}\n提示：请检查缩进是否正确（使用 4 个空格）"
+    except IndentationError as e:
+        return False, f"缩进错误（第 {e.lineno} 行）: {e.msg}\n提示：Python 代码必须使用一致的缩进（推荐 4 个空格）"
+    except Exception as e:
+        return False, f"代码验证失败: {str(e)}"
+
     return True, ""
 
 
@@ -93,10 +104,12 @@ async def execute_python_poc(code: str, timeout: int = Timeouts.COMMAND_EXECUTIO
     Returns:
         包含执行结果的字符串（stdout、stderr 和退出码）。
     """
-    # 输入验证
-    if not code or not code.strip():
-        return "错误：代码不能为空"
-    
+    # 输入验证（包括语法检查）
+    is_valid, error_msg = _validate_code(code)
+    if not is_valid:
+        log_tool_event("[Python PoC] 代码验证失败", {"error": error_msg})
+        return f"❌ {error_msg}\n\n请修复代码后重试。"
+
     log_tool_event(f"[Python PoC] 执行代码", {"code_length": len(code), "timeout": timeout})
     
     # 使用工厂函数获取 Python 执行器（Microsandbox）

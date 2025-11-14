@@ -59,6 +59,16 @@ async def solve_single_challenge(
     difficulty = challenge.get("difficulty", "unknown")
     points = challenge.get("points", 0)
 
+    # ⭐ 设置当前题目的记忆隔离
+    try:
+        from sentinel_agent.tools.memory_tools import set_current_challenge
+        set_current_challenge(challenge_code)
+    except Exception as e:
+        log_system_event(
+            f"[记忆] ⚠️ 设置题目记忆隔离失败: {str(e)}",
+            level=logging.WARNING
+        )
+
     # 获取当前任务管理器状态
     status = await task_manager.get_status()
 

@@ -20,13 +20,11 @@ class ToolNames:
     """工具名称枚举"""
     EXECUTE_COMMAND = "execute_command"
     EXECUTE_PYTHON_POC = "execute_python_poc"
-    RECORD_VULNERABILITY = "record_vulnerability_discovery"
-    RECORD_SUCCESS = "record_successful_exploit"
-    RECORD_FAILURE = "record_failed_attempt"
-    QUERY_KNOWLEDGE = "query_historical_knowledge"
+    ADD_MEMORY = "add_memory"
     GET_CHALLENGES = "get_challenge_list"
     VIEW_HINT = "view_challenge_hint"
     SUBMIT_FLAG = "submit_flag"
+    EXTRACT_WEB_FORM = "extract_web_form_fields"
 
 
 # ==================== 系统提示词模板常量 ====================

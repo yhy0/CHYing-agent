@@ -136,18 +136,24 @@ SYSTEM_PROMPT = """
 
 - **FLAG 格式**：通常为 `flag{...}` 或 `FLAG{...}`
 - **⚠️ 完整性检查**：必须包含开头的 `flag{` 和结尾的 `}`
+- **🔥 强制要求**：使用 Python PoC 时，**必须输出完整响应**（状态码 + 响应头 + 响应体）
+  - FLAG 可能隐藏在响应头的自定义字段中（如 `X-Flag`, `X-Secret`）
+  - FLAG 可能在 Cookie 中（如 `Set-Cookie: flag=...`）
+  - FLAG 可能在响应体的 HTML 注释、JSON 字段、Base64 编码中
 - **常见位置**：
-  - HTTP 响应 body
-  - HTTP 响应头
-  - 页面源码注释
+  - HTTP 响应 body（明文、JSON、HTML 注释、Base64）
+  - HTTP 响应头（自定义头、Server、Location 等）
+  - Cookie（Set-Cookie 字段）
+  - 页面源码注释（`<!-- flag{...} -->`）
   - API 返回的 JSON 字段
   - 数据库查询结果
 - **验证后提交**：使用 `submit_flag` 工具（会自动验证格式）
 
 ### 3.5 常见思维陷阱（必读！）
-❌ **不要在登录失败时死磕** → 很多漏洞不需要认证  
-❌ **HTTP 200 ≠ 成功** → 必须检查响应内容  
-❌ **发现关键端点后不要停** → 立即测试所有可能的参数值  
+❌ **不要在登录失败时死磕** → 很多漏洞不需要认证
+❌ **HTTP 200 ≠ 成功** → 必须检查响应内容
+❌ **只输出响应体** → FLAG 可能在响应头或 Cookie 中，必须输出完整响应
+❌ **发现关键端点后不要停** → 立即测试所有可能的参数值
 ❌ **同一方法失败 3 次还在重复** → 立即切换方向
 
 ---
@@ -260,8 +266,47 @@ resp = session.post("http://target/login", data={"user": "admin", "pass": "test"
 
 # 使用会话 Cookie 访问受保护页面
 protected = session.get("http://target/admin")
+
+# 🔥 强制输出完整响应信息（FLAG 可能在任何位置）
+print("=== 响应状态码 ===")
+print(protected.status_code)
+print("\n=== 响应头 ===")
+print(dict(protected.headers))
+print("\n=== 响应体 ===")
 print(protected.text)
 ```
+
+**注意事项**：
+- **🔥 缩进检查（极其重要）**：
+  - Python 代码必须使用 **4 个空格** 作为缩进单位（不要用 Tab）
+  - 嵌套循环/条件语句时，每层增加 4 个空格
+  - **强制自检**：生成代码后，逐行检查缩进是否正确
+  - **常见错误**：`for` 循环内的代码缩进不一致，导致 `IndentationError`
+  - **调试技巧**：如果代码较复杂，优先使用简单的线性代码，避免深层嵌套
+  - **⚠️ 系统会自动验证语法**：提交前会检查缩进和语法错误，失败会立即返回错误信息
+- **🔥 代码简化原则**（避免复杂嵌套）：
+  - ✅ **推荐**：使用 `json.dumps(data, indent=2)` 直接输出完整 JSON
+  - ❌ **不推荐**：手动遍历多层嵌套字典/列表（容易缩进错误）
+  - **示例**：
+    ```python
+    # ✅ 推荐：直接输出完整数据
+    import requests, json
+    resp = requests.get("http://target/api/data")
+    print(json.dumps(resp.json(), indent=2))
+
+    # ❌ 不推荐：复杂嵌套循环
+    for item in data:
+        for key, value in item.items():
+            if isinstance(value, dict):
+                for k, v in value.items():  # 容易缩进错误
+                    print(k, v)
+    ```
+- **🔥 必须输出完整响应**：FLAG 可能出现在响应头、响应体、Cookie 等任何位置
+  - 状态码：`print(resp.status_code)`
+  - 响应头：`print(dict(resp.headers))`
+  - 响应体：`print(resp.text)`
+  - Cookie：`print(resp.cookies.get_dict())`（如需要）
+
 
 #### 工具 2：`execute_command`（Kali Docker）
 
@@ -277,7 +322,7 @@ print(protected.text)
 **示例**：
 ```bash
 # ✅ 推荐：简单命令
-nmap -p 80,443,8000-9000 10.0.144.188
+nmap -p 80,443,8000-9000 127.0.0.1
 
 # ❌ 不推荐：复杂 curl（改用 execute_python_poc）
 curl -X POST -H "Cookie: token=\"xxx\"" -d '{"user":"admin"}' http://target/api
@@ -291,8 +336,68 @@ curl -X POST -H "Cookie: token=\"xxx\"" -d '{"user":"admin"}' http://target/api
 | `execute_command` | 执行 Shell 命令 | Kali Linux 容器 |
 | `submit_flag` | 提交 FLAG | ⚠️ 会自动验证格式 |
 | `view_challenge_hint` | 获取官方提示 | ⚠️ 会扣分，慎用 |
+| `add_memory` | 添加记忆 | 🔥 记录关键发现供 Advisor 参考 |
 
-### 5.3 Web 表单处理规则（🔥 极其重要）
+### 5.3 记忆工具使用指南（🔥 极其重要）
+
+#### 核心原则：记录关键发现，供 Advisor 参考
+
+**为什么需要记忆工具**：
+- Advisor 无法看到你的工具执行输出，只能看到你记录的记忆
+- 系统会自动将你的记忆传递给 Advisor
+- 帮助 Advisor 提供更精准的建议
+
+#### 什么时候必须调用 `add_memory`
+
+**立即记录以下关键发现**（不要等待，发现后立即记录）：
+
+1. **API 端点和文档**
+   ```python
+   add_memory("发现 /api/edit_profile 端点包含 is_admin 参数")
+   ```
+
+2. **可疑参数和字段**
+   ```python
+   add_memory("表单中发现 hidden 字段：is_admin=0")
+   ```
+
+4. **成功的攻击方法**
+   ```python
+   add_memory("成功通过IDOR修改company_id提升为管理员")
+   ```
+
+5. **任何可能有用的线索**
+   - 版本信息（可能存在已知 CVE）
+   - 默认凭据
+   - 敏感文件（.git、.env等）
+   - 可疑的响应头、Cookie
+   - 异常的状态码
+
+**注意**：不需要记录失败的尝试，只记录有价值的发现。
+
+#### 常见错误
+
+❌ **错误做法**：只执行工具，不记录发现
+```python
+# 发现了 OpenAPI 文档，但没有记录
+resp = requests.get("http://127.0.0.1/openapi.json")
+print(resp.text)  # 看到了端点信息，但没有调用 add_memory
+# 结果：Advisor 看不到这个发现，无法给出针对性建议
+```
+
+✅ **正确做法**：发现后立即记录
+```python
+# 发现 OpenAPI 文档
+resp = requests.get("http://127.0.0.1/openapi.json")
+openapi_data = resp.json()
+
+# 立即记录发现（只需一个参数，简单易用）
+endpoints = ", ".join(openapi_data.get("paths", {}).keys())
+add_memory(f"发现 OpenAPI 文档，包含以下端点：{endpoints}")
+# 结果：系统会自动将这个发现传递给 Advisor
+```
+
+### 5.4 Web 表单处理规则（🔥 极其重要）
 
 #### 核心原则：所有 hidden 字段都必须提交
 
@@ -436,16 +541,6 @@ def build_user_prompt(context: dict) -> str:
     prompt_parts.append(f"- 目标 IP: {target_ip}")
     prompt_parts.append("")
     
-    # 2. 题目统计（比赛模式）
-    if env_mode == "competition" and total_challenges > 0:
-        prompt_parts.append("## 题目统计")
-        prompt_parts.append(f"- 总题数: {total_challenges}")
-        prompt_parts.append(f"- 已解答: {solved_count}")
-        prompt_parts.append(f"- 未解答: {unsolved_count}")
-        prompt_parts.append(f"- 进度: {solved_count}/{total_challenges} ({solved_count*100//total_challenges if total_challenges > 0 else 0}%)")
-        prompt_parts.append(f"- 已使用提示次数: {hint_used_count}")
-        prompt_parts.append("")
-    
     # 3. 当前题目信息
     if current_challenge:
         prompt_parts.append("## 当前题目")
@@ -494,7 +589,7 @@ def build_user_prompt(context: dict) -> str:
     prompt_parts.append("3. **测试**: 选择最小化的测试行动")
     prompt_parts.append("4. **验证**: 明确期望结果")
     prompt_parts.append("")
-    prompt_parts.append("**可用工具**: execute_command, execute_python_poc, submit_flag, view_challenge_hint, record_vulnerability_discovery, query_historical_knowledge")
+    prompt_parts.append("**可用工具**: execute_command, execute_python_poc, submit_flag, view_challenge_hint, add_memory")
     prompt_parts.append("")
     prompt_parts.append("现在开始你的分析和行动！")
     

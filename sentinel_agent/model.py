@@ -8,7 +8,7 @@ from sentinel_agent.config import AgentConfig
 
 def create_model(
     config: AgentConfig,
-    temperature: float = 0.1,
+    temperature: float = 0.5,
     max_tokens: int = 12800,
     timeout: int = 600,
     max_retries: int = 20  # ⭐ 提升重试次数：2 → 10（应对并发速率限制）

@@ -85,34 +85,29 @@ def get_langmem_tools(namespace: Tuple[str, ...] = ("sentinel_agent", "memories"
 def get_all_memory_tools() -> List:
     """
     获取所有记忆相关工具的列表
-    
+
     包括：
-    - LangMem 原生工具（自动记忆管理）
-    - 自定义记忆工具（结构化记录）
+    - 自定义记忆工具（结构化记录，题目隔离）
     - 比赛 API 工具
-    
-    注意：不包括 execute_command，该工具由 get_all_tools() 提供
-    
+
+    注意：
+    - 不包括 execute_command，该工具由 get_all_tools() 提供
+    - 已移除 LangMem 原生工具（全局命名空间会导致多线程记忆混乱）
+
     Returns:
         所有工具的列表
     """
     from sentinel_agent.tools.competition_api_tools import get_competition_tools
     from sentinel_agent.tools.memory_tools import get_memory_tools
 
-    # LangMem 原生工具
-    manage_tool, search_tool = get_langmem_tools()
-    
     # 比赛 API 工具
     competition_tools = get_competition_tools()
-    
-    # 自定义记忆工具
+
+    # 自定义记忆工具（题目隔离）
     memory_tools = get_memory_tools()
 
     return [
-        # LangMem 原生工具（自动记忆管理）
-        manage_tool,
-        search_tool,
-        # 自定义记忆工具（结构化记录）
+        # 自定义记忆工具（结构化记录，题目隔离）
         *memory_tools,
         # 比赛 API 工具
         *competition_tools,
