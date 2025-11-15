@@ -27,7 +27,7 @@ from typing import Literal
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import SystemMessage, AIMessage, HumanMessage
+from langchain_core.messages import SystemMessage, AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
 from sentinel_agent.state import PenetrationTesterState
@@ -69,9 +69,24 @@ async def build_multi_agent_graph(
     Returns:
         编译后的 LangGraph 应用
     """
+    # 我的锅， 之前优化新增记忆模块时，claude 给我自己实现的，忘记 submit_flag 工具是这里管理的，我直接给删了，服了导致今天提交都有问题
+    # 还是 v3 版本生效才解出几道题，不然今天一道题不会提交
+    # ==================== 1. 初始化记忆系统 ====================
+    memory_store = get_memory_store()
+    memory_tools = get_all_memory_tools()
+    
     # ==================== 2. 获取所有工具 ====================
     pentest_tools = get_all_tools()
-    all_tools = pentest_tools
+    all_tools = pentest_tools + memory_tools
+
+    log_system_event(
+        f"--- 初始化多 Agent 协作系统 ---\n {all_tools}", 
+        {
+            "main_llm": type(main_llm).__name__,
+            "advisor_llm": type(advisor_llm).__name__,
+            "memory_tools_count": len(memory_tools),
+        }
+    )
     
     # 只有主 Agent 绑定工具
     main_llm_with_tools = main_llm.bind_tools(all_tools)
@@ -176,7 +191,7 @@ async def build_multi_agent_graph(
         5. ⭐ 自动注入 challenge_code 到 submit_flag 调用
         """
 
-        # 服了 题做出来了，但是调用 submit_flag 参数没有传入题目名字, 上次修改
+        # 是我傻逼了,错怪人家了 ~服了 题做出来了，但是调用 submit_flag 参数没有传入题目名字, 上次修改~
         # ⭐ 新增：在执行工具前，检查并自动补充 submit_flag 的 challenge_code 参数
         messages = state.get("messages", [])
         if messages:
@@ -216,6 +231,77 @@ async def build_multi_agent_graph(
 
         # ⭐ 修复：提前获取 state 中的 messages，避免变量作用域错误
         messages = state.get("messages", [])
+
+        # 是我傻逼了,错怪人家了 ~梅开二度，日了，下午的题又是这样，傻逼 Kimi ,上午是少一个参数，下午就意识不到调用 submit_flag ，一直尝试执行命令，智障~
+        # ⭐ 新增：自动 FLAG 提取和提交机制（兜底策略）
+        # 如果 LLM 找到了 FLAG 但没有正确调用 submit_flag，自动帮它提交
+        auto_submit_enabled = os.getenv("AUTO_SUBMIT_FLAG", "true").lower() == "true"
+        if auto_submit_enabled and "messages" in result:
+            from sentinel_agent.utils.flag_validator import extract_flag_from_text
+            from sentinel_agent.tools.competition_api_tools import get_api_client
+
+            # 检查工具输出中是否包含 FLAG
+            for msg in result["messages"]:
+                if hasattr(msg, "content") and msg.content:
+                    # 提取所有可能的 FLAG
+                    flags = extract_flag_from_text(msg.content)
+
+                    if flags:
+                        # 获取当前题目代码
+                        current_challenge = state.get("current_challenge")
+                        if current_challenge:
+                            challenge_code = current_challenge.get("challenge_code") or current_challenge.get("code")
+
+                            # 检查是否已经调用了 submit_flag（避免重复提交）
+                            already_submitted = False
+                            if messages:
+                                last_message = messages[-1]
+                                if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+                                    for tool_call in last_message.tool_calls:
+                                        if tool_call.get("name") == "submit_flag":
+                                            already_submitted = True
+                                            break
+
+                            if not already_submitted:
+                                try:
+                                    # LLM 没有调用 submit_flag，自动提交第一个 FLAG
+                                    flag_to_submit = flags[0]
+
+                                    log_system_event(
+                                        "[自动提交] 🤖 检测到 FLAG 但 LLM 未调用 submit_flag，自动提交",
+                                        {
+                                            "challenge_code": challenge_code,
+                                            "flag": flag_to_submit,
+                                            "total_flags_found": len(flags)
+                                        }
+                                    )
+                                    # 直接调用 API 提交
+                                    client = get_api_client()
+                                    submit_result = client.submit_answer(challenge_code, flag_to_submit)
+
+                                    if submit_result.get("correct"):
+                                        # 提交成功！
+                                        log_system_event(
+                                            "[自动提交] ✅ FLAG 提交成功！",
+                                            {
+                                                "flag": flag_to_submit,
+                                                "earned_points": submit_result.get("earned_points", 0)
+                                            }
+                                        )
+
+                                        # 更新状态：设置 flag 和 is_finished
+                                        result["flag"] = flag_to_submit
+                                        result["is_finished"] = True
+                                        # ⭐ 重置失败计数
+                                        result["consecutive_failures"] = 0
+                                        # ⭐ 立即返回，跳过后续失败检测
+                                        return result
+                                except Exception as e:
+                                    log_system_event(
+                                        "[自动提交] ⚠️ 自动提交失败",
+                                        {"error": str(e)},
+                                        level=logging.WARNING
+                                    )
 
         # ⭐ 新增：检查工具输出长度，必要时进行总结
         # 从环境变量读取配置
@@ -329,7 +415,7 @@ async def build_multi_agent_graph(
                             # 这样 Agent 可以看到结构化的关键信息，而不是完全黑盒
                             if key_info:
                                 # 在原始输出后追加分析摘要
-                                analysis_summary = f"\n\n{'='*60}\n[🤖 智能分析摘要]\n{key_info}\n{'='*60}"
+                                analysis_summary = f"\n\n{'---'}\n[🤖 智能分析摘要]\n{key_info}\n{'---'}"
                                 msg.content = msg.content + analysis_summary
                                 
                                 log_system_event(
@@ -351,16 +437,13 @@ async def build_multi_agent_graph(
                             failure_reason = "关键字匹配检测" if is_failure else ""
         
         # ⭐ 更新失败计数和操作类型（用于智能路由）
-        last_action_type = state.get("last_action_type")
         consecutive_failures = state.get("consecutive_failures", 0)
-        
+
         if is_failure:
-            # 如果与上次是同类型操作，增加失败计数
-            if current_action_type == last_action_type:
-                consecutive_failures += 1
-            else:
-                # 切换了操作类型，重置计数
-                consecutive_failures = 1
+            # ⭐ 修复：任何失败都累加，不再检查操作类型
+            # 原逻辑问题：只有同类型工具连续失败才累加，导致 Advisor 很难被触发
+            # 新逻辑：任何连续失败都累加，更容易触发 Advisor 介入
+            consecutive_failures += 1
 
             log_system_event(
                 f"[智能路由] 检测到失败，连续失败次数: {consecutive_failures}",
@@ -385,20 +468,28 @@ async def build_multi_agent_graph(
                 if hasattr(last_message, "tool_calls") and last_message.tool_calls:
                     for tool_call in last_message.tool_calls:
                         if tool_call.get("name") == current_action_type:
+                            args = tool_call.get("args", {})
+                            # ⭐ 统一格式：工具名 + 关键信息
                             if current_action_type == "submit_flag":
                                 flag = args.get("flag", "")
-                                tool_args_summary = f"提交: {flag}"
+                                tool_args_summary = f"提交 FLAG: {flag[:30]}..."
+                            elif current_action_type == "execute_command":
+                                cmd = args.get("command", "")
+                                tool_args_summary = f"执行命令: {cmd[:50]}..."
+                            elif current_action_type == "execute_python_poc":
+                                code_preview = args.get("code", "")[:50].replace("\n", " ")
+                                tool_args_summary = f"执行 Python: {code_preview}..."
                             else:
-                                args = tool_call.get("args", {})
-                                tool_args_summary = f"current_action_type: {current_action_type}, 信息：{key_info}"
+                                # 其他工具：显示关键信息
+                                tool_args_summary = f"信息: {key_info[:100]}" if key_info else ""
                             break
 
-            # 构建操作记录
+            # 构建操作记录（统一格式）
             status_emoji = "❌" if is_failure else "✅"
             if tool_args_summary:
                 action_record = f"{status_emoji} [{current_action_type}] {tool_args_summary} → {failure_reason if is_failure else '成功'}"
             else:
-                action_record = f"{status_emoji} [{current_action_type}] {failure_reason if is_failure else '成功'}"
+                action_record = f"{status_emoji} [{current_action_type}] → {failure_reason if is_failure else '成功'}"
 
             # 添加到 action_history（使用 add 合并）
             result["action_history"] = [action_record]
@@ -411,6 +502,9 @@ async def build_multi_agent_graph(
                     "record": action_record
                 }
             )
+
+        # ⭐ 消息压缩已在 state.py 的 compress_messages 函数中自动处理
+        # 无需在此手动压缩，LangGraph 会自动调用 reduce 函数
 
         return result
     
@@ -652,15 +746,20 @@ async def build_multi_agent_graph(
         system_message = _build_main_system_prompt(state, system_prompt_parts)
         
         # 获取对话历史
-        # ⭐ 建议优化: 保留最近 20 条消息 + 自动侦察结果
+        # ⭐ 优化: 更激进的消息清理策略,避免上下文超限
+        # 策略: 保留最近 10 条消息 + 自动侦察结果 (从 20 条降低到 10 条)
         messages = list(state.get("messages", []))
 
-        if len(messages) > 21:  # 20 条历史 + 1 条侦察
-            # 保留第一条(自动侦察)和最近 20 条
-            messages = [messages[0]] + messages[-20:]
+        # ⭐ 新增: 从环境变量读取配置,默认保留 10 条
+        max_history_messages = int(os.getenv("MAX_HISTORY_MESSAGES", "10"))
+        max_total_messages = max_history_messages + 1  # +1 for 侦察结果
+
+        if len(messages) > max_total_messages:
+            # 保留第一条(自动侦察)和最近 N 条
+            messages = [messages[0]] + messages[-max_history_messages:]
             log_system_event(
                 f"[上下文管理] 清理旧消息,保留 {len(messages)} 条",
-                {"dropped": len(state.get("messages", [])) - len(messages)}
+                {"dropped": len(state.get("messages", [])) - len(messages), "max_history": max_history_messages}
             )
 
         # 添加或更新系统消息
@@ -922,7 +1021,7 @@ async def build_multi_agent_graph(
     )
     
     # ==================== 8. 编译图 ====================
-    app = workflow.compile()
+    app = workflow.compile(store=memory_store)
     
     log_system_event("--- 多 Agent 协作图构建完成 ---")
     return app
@@ -987,7 +1086,7 @@ def _format_action_history(action_history: list) -> str:
         return "暂无操作历史"
     
     # 只显示最近 5 次
-    recent = action_history[-5:]
+    recent = action_history[-10:]
     formatted = []
     for i, action in enumerate(recent, 1):
         formatted.append(f"{i}. {action}")

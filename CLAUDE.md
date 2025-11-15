@@ -215,6 +215,31 @@ The router (`should_continue`) detects common failure patterns:
 - Identical repeated commands → prompts for new approach
 - Attempt limits: Configurable via `MAX_ATTEMPTS` (default: 70)
 
+### Auto FLAG Submission (Fallback Strategy)
+
+**Problem**: LLMs sometimes find the FLAG but fail to call `submit_flag` correctly. Common mistakes:
+- Using `execute_python_poc` to print FLAG instead of calling `submit_flag`
+- Writing `submit_flag` in comments but not executing it
+- Misunderstanding tool usage
+
+**Solution**: Automatic FLAG extraction and submission in `tool_node` ([graph.py:220-315](sentinel_agent/graph.py#L220-L315))
+
+**How it works**:
+1. After tool execution, scan output for FLAG patterns (`flag{...}` or `FLAG{...}`)
+2. If FLAG detected and LLM didn't call `submit_flag` → auto-submit
+3. If submission succeeds → immediately end task (set `is_finished=True`)
+4. If submission fails → notify LLM and continue
+
+**Configuration**:
+- Enable/disable: `AUTO_SUBMIT_FLAG=true` (default: `true`)
+- FLAG extraction: `sentinel_agent/utils/flag_validator.py::extract_flag_from_text()`
+- Supports case-insensitive matching and deduplication
+
+**Benefits**:
+- Prevents wasted attempts due to LLM tool-calling errors
+- Significantly improves success rate (especially with weaker models)
+- No downside: only triggers when LLM makes a mistake
+
 ## Environment Variables Reference
 
 | Variable | Required | Purpose | Default | Example |
@@ -232,6 +257,11 @@ The router (`should_continue`) detects common failure patterns:
 | **`SINGLE_TASK_TIMEOUT`** | No | **单题超时（秒）** | **900** | `900` |
 | `FETCH_INTERVAL_SECONDS` | No | 拉取题目间隔（秒） | `600` | `600` |
 | `MONITOR_INTERVAL_SECONDS` | No | 状态监控间隔（秒） | `300` | `300` |
+| **`AUTO_SUBMIT_FLAG`** | No | **自动 FLAG 提交（兜底）** | **true** | `true`/`false` |
+| `ENABLE_SMART_FAILURE_DETECTION` | No | LLM 语义失败检测 | `true` | `true`/`false` |
+| `ENABLE_TOOL_SUMMARY` | No | 工具输出总结 | `true` | `true`/`false` |
+| `TOOL_SUMMARY_THRESHOLD` | No | 总结阈值（字符） | `5000` | `5000` |
+| `MAX_SUMMARY_LENGTH` | No | 最大总结长度（字符） | `10000` | `10000` |
 
 ## Code Quality Standards
 

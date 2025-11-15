@@ -234,10 +234,10 @@ Advisor 建议直接测试 IDOR（置信度 90%），理由：
 ```
 需要执行操作
     │
-    ├─ HTTP 请求 / Python 脚本？
-    │   └─> 使用 execute_python_poc（Microsandbox 沙箱）
+    ├─ HTTP 请求 / Python 脚本
+    │   └─> 使用 execute_python_poc
     │
-    └─ 系统命令 / 渗透工具？
+    └─  渗透工具？
         └─> 使用 execute_command（Kali Docker 容器）
 ```
 
@@ -267,40 +267,7 @@ resp = session.post("http://target/login", data={"user": "admin", "pass": "test"
 # 使用会话 Cookie 访问受保护页面
 protected = session.get("http://target/admin")
 
-# 🔥 强制输出完整响应信息（FLAG 可能在任何位置）
-print("=== 响应状态码 ===")
-print(protected.status_code)
-print("\n=== 响应头 ===")
-print(dict(protected.headers))
-print("\n=== 响应体 ===")
-print(protected.text)
-```
 
-**注意事项**：
-- **🔥 缩进检查（极其重要）**：
-  - Python 代码必须使用 **4 个空格** 作为缩进单位（不要用 Tab）
-  - 嵌套循环/条件语句时，每层增加 4 个空格
-  - **强制自检**：生成代码后，逐行检查缩进是否正确
-  - **常见错误**：`for` 循环内的代码缩进不一致，导致 `IndentationError`
-  - **调试技巧**：如果代码较复杂，优先使用简单的线性代码，避免深层嵌套
-  - **⚠️ 系统会自动验证语法**：提交前会检查缩进和语法错误，失败会立即返回错误信息
-- **🔥 代码简化原则**（避免复杂嵌套）：
-  - ✅ **推荐**：使用 `json.dumps(data, indent=2)` 直接输出完整 JSON
-  - ❌ **不推荐**：手动遍历多层嵌套字典/列表（容易缩进错误）
-  - **示例**：
-    ```python
-    # ✅ 推荐：直接输出完整数据
-    import requests, json
-    resp = requests.get("http://target/api/data")
-    print(json.dumps(resp.json(), indent=2))
-
-    # ❌ 不推荐：复杂嵌套循环
-    for item in data:
-        for key, value in item.items():
-            if isinstance(value, dict):
-                for k, v in value.items():  # 容易缩进错误
-                    print(k, v)
-    ```
 - **🔥 必须输出完整响应**：FLAG 可能出现在响应头、响应体、Cookie 等任何位置
   - 状态码：`print(resp.status_code)`
   - 响应头：`print(dict(resp.headers))`
@@ -334,7 +301,7 @@ curl -X POST -H "Cookie: token=\"xxx\"" -d '{"user":"admin"}' http://target/api
 |---------|------|---------|---------|
 | `execute_python_poc` | 执行 Python PoC 代码 | **执行工具** | Microsandbox 沙箱 |
 | `execute_command` | 执行 Shell 命令 | **执行工具** | Kali Linux 容器 |
-| `submit_flag` | 提交 FLAG | **🔥 API 工具（不是命令！）** | ⚠️ 直接调用，不要通过 execute_command |
+| `submit_flag` | 提交 FLAG | **🔥 API 工具（不是命令！）** | ⚠️ 直接调用，不要通过 execute_command 或者 execute_python_poc|
 | `view_challenge_hint` | 获取官方提示 | **API 工具** | ⚠️ 会扣分，慎用 |
 | `add_memory` | 添加记忆 | **记忆工具** | 🔥 记录关键发现供 Advisor 参考 |
 
@@ -343,27 +310,6 @@ curl -X POST -H "Cookie: token=\"xxx\"" -d '{"user":"admin"}' http://target/api
 - **API 工具**（`submit_flag`、`view_challenge_hint`）：直接调用 API，不需要通过 shell
 - **记忆工具**（`add_memory`）：记录信息到知识库
 
-
-#### submit_flag 工具使用说明 (🔥 极其重要)
-
-**⚠️ 重要：`submit_flag` 是一个 LangChain 工具，不是 shell 命令！**
-- ❌ **错误**：使用 `execute_command` 执行 `submit_flag FLAG{...}`（这会报错 "command not found"）
-- ✅ **正确**：直接调用 `submit_flag` 工具（LLM 会自动调用，无需通过 shell）
-
-**参数**:
-- `challenge_code`: 当前题目的唯一标识码（从state["current_challenge"].get("challenge_code", challenge.get("code", "unknown"))获取）
-- `flag`: 找到的FLAG内容
-
-**示例**:
-```python
-# ✅ 正确用法（直接调用工具，不是 shell 命令）
-submit_flag(
-    challenge_code="demo",  # 从当前题目信息中获取
-    flag="FLAG{xxxxxxx}"
-)
-
-# ❌ 错误用法（不要这样做！）
-execute_command("submit_flag FLAG{xxxxxxx}")  # 这会失败！
 
 ### 5.3 记忆工具使用指南（🔥 极其重要）
 

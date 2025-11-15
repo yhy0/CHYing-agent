@@ -58,12 +58,22 @@ def extract_flag_from_text(text: str) -> list:
         text: 包含 FLAG 的文本
 
     Returns:
-        提取到的 FLAG 列表
+        提取到的 FLAG 列表（去重）
     """
-    # 匹配 flag{...} 格式
-    pattern = r'flag\{[^}]+\}'
-    flags = re.findall(pattern, text, re.IGNORECASE)
-    return flags
+    # 匹配 flag{...} 或 FLAG{...} 格式（忽略大小写）
+    pattern = r'[Ff][Ll][Aa][Gg]\{[^}]+\}'
+    flags = re.findall(pattern, text)
+
+    # 去重（保持原始大小写）
+    unique_flags = []
+    seen = set()
+    for flag in flags:
+        flag_lower = flag.lower()
+        if flag_lower not in seen:
+            seen.add(flag_lower)
+            unique_flags.append(flag)
+
+    return unique_flags
 
 
 def suggest_flag_fix(incomplete_flag: str) -> str:
