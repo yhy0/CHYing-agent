@@ -1,4 +1,4 @@
-"""Sentinel Agent 主程序 - 持续运行的多 Agent 并发解题模式
+"""CHYing Agent 主程序 - 持续运行的多 Agent 并发解题模式
 
 架构：
 - 持续运行，不自动退出
@@ -23,17 +23,17 @@ import logging
 from langfuse import get_client
 from langfuse.langchain import CallbackHandler
 
-from sentinel_agent.core.singleton import get_config_manager
-from sentinel_agent.task_manager import ChallengeTaskManager
-from sentinel_agent.retry_strategy import RetryStrategy
-from sentinel_agent.task_launcher import start_challenge_task
-from sentinel_agent.scheduler import (
+from chying_agent.core.singleton import get_config_manager
+from chying_agent.task_manager import ChallengeTaskManager
+from chying_agent.retry_strategy import RetryStrategy
+from chying_agent.task_launcher import start_challenge_task
+from chying_agent.scheduler import (
     check_and_start_pending_challenges,
     periodic_fetch_challenges,
     status_monitor,
     print_final_status
 )
-from sentinel_agent.common import log_system_event
+from chying_agent.common import log_system_event
 
 
 # ==================== 并发控制 ====================
@@ -74,7 +74,7 @@ async def main():
     # ==================== 1. 初始化配置 ====================
     log_system_event(
         "=" * 80 + "\n" +
-        "🚀 Sentinel Agent 持续运行模式启动（完全重构版）\n" +
+        "🚀 CHYing Agent 持续运行模式启动（完全重构版）\n" +
         "=" * 80
     )
 
@@ -103,7 +103,7 @@ async def main():
 
     # ==================== 4. 初始化 API 客户端 ====================
     try:
-        from sentinel_agent.tools.competition_api_tools import CompetitionAPIClient
+        from chying_agent.tools.competition_api_tools import CompetitionAPIClient
         api_client = CompetitionAPIClient()
         log_system_event("[✓] API 客户端初始化完成")
     except Exception as e:

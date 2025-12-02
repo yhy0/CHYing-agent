@@ -1,0 +1,11 @@
+{
+    "dockerfile_lines": [],
+    "graphs": {
+      "Multi-Agent Challenge Solver": "./chying_agent/graph.py:build_multi_agent_graph"
+    },
+    "python_version": "3.13",
+    "env": "./.env",
+    "dependencies": [
+      "."
+    ]
+}

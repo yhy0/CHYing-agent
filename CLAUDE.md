@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Sentinel Agent** is an AI-powered autonomous penetration testing agent built on LangGraph + ToolNode architecture. It's designed for CTF competitions and security research, using LLM-driven decision-making to autonomously discover and exploit vulnerabilities.
+**CHYing Agent** is an AI-powered autonomous penetration testing agent built on LangGraph + ToolNode architecture. It's designed for CTF competitions and security research, using LLM-driven decision-making to autonomously discover and exploit vulnerabilities.
 
 ## Core Architecture
 
@@ -30,12 +30,12 @@ The project supports a team-based approach:
 
 Two execution environments:
 
-1. **DockerExecutor** (`sentinel_agent/executor/docker_native.py`)
+1. **DockerExecutor** (`chying_agent/executor/docker_native.py`)
    - Runs shell commands in Kali Linux container
    - Used for: nmap, sqlmap, metasploit, curl, etc.
    - Configured via `DOCKER_CONTAINER_NAME`
 
-2. **MicrosandboxExecutor** (`sentinel_agent/executor/microsandbox.py`)
+2. **MicrosandboxExecutor** (`chying_agent/executor/microsandbox.py`)
    - Executes Python PoC code in isolated sandbox
    - Used for: HTTP requests, custom exploits, data processing
    - Configured via `SANDBOX_ENABLED`
@@ -46,34 +46,34 @@ The project has been fully refactored into a modular architecture for better mai
 
 ### Core Modules
 
-1. **`sentinel_agent/task_manager.py`** - Task lifecycle management
+1. **`chying_agent/task_manager.py`** - Task lifecycle management
    - Tracks active/completed/failed tasks
    - Manages retry counts and attempt history
    - Determines retry eligibility
 
-2. **`sentinel_agent/retry_strategy.py`** - Intelligent retry with role swapping
+2. **`chying_agent/retry_strategy.py`** - Intelligent retry with role swapping
    - Swaps DeepSeek ↔ MiniMax on retry attempts
    - Formats historical failure records
    - Extracts attempt summaries
 
-3. **`sentinel_agent/challenge_solver.py`** - Single challenge solving logic
+3. **`chying_agent/challenge_solver.py`** - Single challenge solving logic
    - Auto-reconnaissance injection
    - Historical record inheritance
    - Concurrent semaphore management
    - Complete exception isolation
 
-4. **`sentinel_agent/task_launcher.py`** - Task creation and launching
+4. **`chying_agent/task_launcher.py`** - Task creation and launching
    - Checks task status (avoid duplicates)
    - Selects LLM pairs based on retry count
    - Creates async tasks
 
-5. **`sentinel_agent/scheduler.py`** - Scheduling and monitoring
+5. **`chying_agent/scheduler.py`** - Scheduling and monitoring
    - Dynamic slot filling (⭐ key optimization)
    - Periodic challenge fetching
    - Status monitoring
    - Final status reporting
 
-6. **`sentinel_agent/utils/utils.py`** - Utility functions
+6. **`chying_agent/utils/utils.py`** - Utility functions
    - Challenge fetching
    - Solved challenge filtering
 
@@ -135,7 +135,7 @@ docker-compose logs -f
 
 ## Key Components
 
-### State Management (`sentinel_agent/state.py`)
+### State Management (`chying_agent/state.py`)
 
 - Uses `TypedDict` for type safety
 - Custom reduce functions for list merging (e.g., `merge_by_unique_key`)
@@ -147,15 +147,15 @@ docker-compose logs -f
 
 ### Graph Construction
 
-- **Single Agent**: `sentinel_agent/graph.py` - `build_graph()`
-- **Multi-Agent**: `sentinel_agent/graph.py` - `build_multi_agent_graph()`
+- **Single Agent**: `chying_agent/graph.py` - `build_graph()`
+- **Multi-Agent**: `chying_agent/graph.py` - `build_multi_agent_graph()`
 
 Both use:
 - Dynamic system prompts via `_build_system_prompt(state)`
 - Conditional routing via `should_continue(state)`
 - Memory integration via LangMem
 
-### Tools (`sentinel_agent/tools/`)
+### Tools (`chying_agent/tools/`)
 
 | Tool | Purpose | Executor |
 |------|---------|----------|
@@ -167,11 +167,11 @@ Both use:
 | `add_memory` | Log findings | LangMem |
 | `query_historical_knowledge` | Search memory | LangMem |
 
-**Note**: `submit_flag` includes automatic FLAG format validation to prevent incomplete submissions (e.g., missing closing `}`). See `sentinel_agent/utils/flag_validator.py` for validation logic.
+**Note**: `submit_flag` includes automatic FLAG format validation to prevent incomplete submissions (e.g., missing closing `}`). See `chying_agent/utils/flag_validator.py` for validation logic.
 
-### Configuration (`sentinel_agent/config.py`)
+### Configuration (`chying_agent/config.py`)
 
-- Singleton pattern via `sentinel_agent/core/singleton.py`
+- Singleton pattern via `chying_agent/core/singleton.py`
 - Environment modes: `competition` (only supported mode)
 - Validates required environment variables on startup
 
@@ -179,7 +179,7 @@ Both use:
 
 ### Adding New Tools
 
-1. Create tool in `sentinel_agent/tools/`
+1. Create tool in `chying_agent/tools/`
 2. Use `@tool` decorator with clear docstring (LLM reads this)
 3. Export in `tools/__init__.py`
 
@@ -197,8 +197,8 @@ def my_custom_tool(param: str) -> str:
 ### Modifying Agent Behavior
 
 **Do NOT create new nodes**. Instead, modify the dynamic system prompt in:
-- `sentinel_agent/graph.py` → `_build_system_prompt()`
-- `sentinel_agent/graph.py` → `ADVISOR_SYSTEM_PROMPT` or `_build_main_system_prompt()`
+- `chying_agent/graph.py` → `_build_system_prompt()`
+- `chying_agent/graph.py` → `ADVISOR_SYSTEM_PROMPT` or `_build_main_system_prompt()`
 
 The LangGraph pattern uses state-based prompts to guide behavior, not separate nodes.
 
@@ -222,7 +222,7 @@ The router (`should_continue`) detects common failure patterns:
 - Writing `submit_flag` in comments but not executing it
 - Misunderstanding tool usage
 
-**Solution**: Automatic FLAG extraction and submission in `tool_node` ([graph.py:220-315](sentinel_agent/graph.py#L220-L315))
+**Solution**: Automatic FLAG extraction and submission in `tool_node` ([graph.py:220-315](chying_agent/graph.py#L220-L315))
 
 **How it works**:
 1. After tool execution, scan output for FLAG patterns (`flag{...}` or `FLAG{...}`)
@@ -232,7 +232,7 @@ The router (`should_continue`) detects common failure patterns:
 
 **Configuration**:
 - Enable/disable: `AUTO_SUBMIT_FLAG=true` (default: `true`)
-- FLAG extraction: `sentinel_agent/utils/flag_validator.py::extract_flag_from_text()`
+- FLAG extraction: `chying_agent/utils/flag_validator.py::extract_flag_from_text()`
 - Supports case-insensitive matching and deduplication
 
 **Benefits**:

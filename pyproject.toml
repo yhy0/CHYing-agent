@@ -1,7 +1,7 @@
 [project]
 name = "chying-agent"
 version = "0.2.0"
-description = "Sentinel Agent - AI-Powered Security Research Tool (Refactored)"
+description = "CHYing Agent - 腾讯云黑客松智能挑战赛"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -11,15 +11,21 @@ dependencies = [
     "langchain-deepseek>=1.0.0",
     "langfuse>=3.8.1",
     "langgraph>=1.0.1",
-    "langgraph-checkpoint-sqlite>=3.0.0", 
+    "langgraph-checkpoint-sqlite>=3.0.0",
     "langmem",
     "python-dotenv>=1.2.1",
     "tenacity>=8.2.0",
     "pydantic>=2.0.0",
     "beautifulsoup4>=4.14.2",
     "lxml>=6.0.2",
+    "langgraph-cli[inmem]>=0.4.7",
 ]
 
 [[tool.uv.index]]
-url = "https://mirrors.cloud.tencent.com/pypi/simple/"
+url = "https://mirrors.aliyun.com/pypi/simple/"
 default = true
+
+[dependency-groups]
+dev = [
+    "langgraph-cli>=0.4.7",
+]
