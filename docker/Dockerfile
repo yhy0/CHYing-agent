@@ -1,14 +1,15 @@
 # Dockerfile for Kali Linux Security Tools Environment
 # Kali Rolling base with comprehensive pentesting tools
 
-FROM docker.1ms.run/kalilinux/kali-rolling
+FROM kalilinux/kali-rolling
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system packages, Python, and common security tools
 RUN set -eux; \
     # 国内镜像优先，然后是国外镜像
-    mirrors="mirrors.cloud.tencent.com/kali mirrors.tencent.com/kali mirrors.aliyun.com/kali ftp.acc.umu.se/mirror/kali.org/kali mirror.math.princeton.edu/pub/kali"; \
+    #mirrors="ftp.acc.umu.se/mirror/kali.org/kali mirror.math.princeton.edu/pub/kali kali.mirror.garr.it/mirrors/kali mirror.pit.teraswitch.com/kali"; \
+    mirrors="mirrors.aliyun.com/kali mirrors.cloud.tencent.com/kali mirrors.tencent.com/kali ftp.acc.umu.se/mirror/kali.org/kali mirror.math.princeton.edu/pub/kali"; \
     success=0; \
     for mirror in $mirrors; do \
         echo "deb http://$mirror kali-rolling main contrib non-free non-free-firmware" > /etc/apt/sources.list; \

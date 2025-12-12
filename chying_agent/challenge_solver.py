@@ -15,6 +15,7 @@ import asyncio
 from typing import Dict, Optional
 
 from langfuse.langchain import CallbackHandler
+from langfuse import get_client
 from langchain_core.runnables import RunnableConfig
 from langchain_core.messages import HumanMessage
 
@@ -29,12 +30,13 @@ async def solve_single_challenge(
     main_llm,
     advisor_llm,
     config,
-    langfuse_handler: CallbackHandler,
+    langfuse_handler: Optional[CallbackHandler],  # 可选
     task_manager,  # ⭐ 新增：任务管理器
     concurrent_semaphore,  # ⭐ 新增：并发信号量
     retry_strategy: Optional[RetryStrategy] = None,  # ⭐ 新增：重试策略
     attempt_history: Optional[list] = None,  # ⭐ 新增：历史尝试记录
-    strategy_description: str = "DeepSeek (主) + MiniMax (顾问)"  # ⭐ 新增：策略描述
+    strategy_description: str = "DeepSeek (主) + MiniMax (顾问)",  # ⭐ 新增：策略描述
+    langfuse_metadata: Optional[Dict] = None  # ⭐ 新增：Langfuse 元数据
 ) -> Dict:
     """
     解决单个题目（完全异常隔离，单题失败不影响其他题）
@@ -102,12 +104,6 @@ async def solve_single_challenge(
             "current_score": 0,
             "start_time": time.time(),
             "current_phase": "competition",
-            "open_ports": [],
-            "service_info": {},
-            "potential_vulnerabilities": [],
-            "tried_exploits": [],
-            "last_exploit_status": None,
-            "last_action_output": "",
             "flag": None,
             "is_finished": False,
             "action_history": [],
@@ -115,11 +111,14 @@ async def solve_single_challenge(
             "current_snapshot_id": f"challenge_{challenge_code}",
             "last_node": "advisor",
             "advisor_suggestion": None,
-            # ⭐ 智能路由控制字段
+            # 智能路由控制字段
             "consecutive_failures": 0,
             "last_action_type": None,
             "request_advisor_help": False,
-            "last_advisor_at_failures": 0,  # ⭐ 新增：避免重复触发 Advisor
+            "last_advisor_at_failures": 0,
+            # 三层架构任务分发字段（V2 架构）
+            "pending_task": None,
+            "pending_flag": None,
         }
 
         # ==================== 自动信息收集（在 Agent 启动前） ====================
@@ -130,26 +129,35 @@ async def solve_single_challenge(
         messages_to_inject = []
 
         # ⭐ 0. 自动获取提示（在所有信息收集之前）
-        try:
-            from chying_agent.tools.competition_api_tools import CompetitionAPIClient
-            hint_client = CompetitionAPIClient()
-            hint_data = hint_client.get_hint(challenge_code)
+        # ⭐ 手动模式跳过 API 调用
+        is_manual_mode = challenge.get("_manual_mode", False)
 
-            hint_content = hint_data.get("hint_content", "")
-            if hint_content:
-                messages_to_inject.append(
-                    HumanMessage(content=f"💡 **官方提示**\n\n{hint_content}")
-                )
-                challenge["hint_content"] = hint_content
-                log_system_event(
-                    f"[自动提示] ✅ 已获取提示: {challenge_code}",
-                    {"hint_preview": hint_content[:100]}
-                )
-        except Exception as hint_error:
+        if is_manual_mode:
             log_system_event(
-                f"[自动提示] ⚠️ 获取提示失败: {str(hint_error)}",
-                level=logging.WARNING
+                f"[手动模式] 跳过自动获取提示（无 API）",
+                {"challenge_code": challenge_code}
             )
+        else:
+            try:
+                from chying_agent.tools.competition_api_tools import CompetitionAPIClient
+                hint_client = CompetitionAPIClient()
+                hint_data = hint_client.get_hint(challenge_code)
+
+                hint_content = hint_data.get("hint_content", "")
+                if hint_content:
+                    messages_to_inject.append(
+                        HumanMessage(content=f"💡 **官方提示**\n\n{hint_content}")
+                    )
+                    challenge["hint_content"] = hint_content
+                    log_system_event(
+                        f"[自动提示] ✅ 已获取提示: {challenge_code}",
+                        {"hint_preview": hint_content[:100]}
+                    )
+            except Exception as hint_error:
+                log_system_event(
+                    f"[自动提示] ⚠️ 获取提示失败: {str(hint_error)}",
+                    level=logging.WARNING
+                )
 
         # ⭐ 消息注入顺序设计说明：
         #
@@ -289,9 +297,12 @@ async def solve_single_challenge(
         # 但我们需要传入自定义的 LLM,所以需要创建一个包装函数
         from chying_agent.graph import build_multi_agent_graph_with_llms
 
+        # 使用 challenge_code 作为图名称（用于 Langfuse trace name）
         app = await build_multi_agent_graph_with_llms(
             main_llm=main_llm,
-            advisor_llm=advisor_llm
+            advisor_llm=advisor_llm,
+            manual_mode=is_manual_mode,
+            graph_name=challenge_code
         )
 
         # 配置运行参数
@@ -299,13 +310,19 @@ async def solve_single_challenge(
 
         thread_id = str(uuid.uuid4())
         recursion_limit = AgentConfig.get_recursion_limit()
+
+        # 构建 RunnableConfig，包含 Langfuse 元数据
         runnable_config: RunnableConfig = {
             "configurable": {
                 "thread_id": thread_id,
                 "configuration": config.__dict__,
             },
-            "callbacks": [langfuse_handler],
-            "recursion_limit": recursion_limit  # 从环境变量读取
+            "callbacks": [langfuse_handler] if langfuse_handler else [],
+            "recursion_limit": recursion_limit,
+            # Langfuse: 通过 run_name 设置 trace name
+            "run_name": challenge_code,
+            # Langfuse 3.x: 通过 metadata 传递 session_id/tags
+            "metadata": langfuse_metadata or {}
         }
 
         # 最外层异常保护：确保此函数永远不会抛出异常
@@ -324,7 +341,8 @@ async def solve_single_challenge(
                     )
 
                     async with asyncio.timeout(task_timeout):
-                        final_state = await app.ainvoke(initial_state, runnable_config)
+                        # ⭐ 使用 with_config 设置 run_name（Langfuse trace name）
+                        final_state = await app.with_config({"run_name": challenge_code}).ainvoke(initial_state, runnable_config)
             except asyncio.TimeoutError:
                 log_system_event(
                     f"[解题] ⏱️ 超时: {challenge_code}（{task_timeout}秒）",
@@ -355,10 +373,32 @@ async def solve_single_challenge(
                 raise  # KeyboardInterrupt 应该向上传播
             except Exception as agent_error:
                 # Agent 执行异常（网络、API、LLM 错误等）
+                import traceback
+                error_traceback = traceback.format_exc()
                 log_system_event(
-                    f"[解题] ⚠️ Agent 执行异常: {challenge_code} - {str(agent_error)}",
+                    f"[解题] ⚠️ Agent 执行异常: {challenge_code}",
+                    {
+                        "error_type": type(agent_error).__name__,
+                        "error_message": str(agent_error),
+                        "error_args": getattr(agent_error, 'args', None),
+                        "initial_state_keys": list(initial_state.keys()) if initial_state else None,
+                        "has_messages": "messages" in initial_state if initial_state else None,
+                        "traceback": error_traceback
+                    },
                     level=logging.ERROR
                 )
+                # 同时打印完整堆栈到控制台
+                print(f"\n{'='*60}")
+                print(f"[DEBUG] Agent 执行异常详情:")
+                print(f"{'='*60}")
+                print(f"错误类型: {type(agent_error).__name__}")
+                print(f"错误信息: {str(agent_error)}")
+                print(f"错误参数: {getattr(agent_error, 'args', None)}")
+                print(f"initial_state 字段: {list(initial_state.keys()) if initial_state else 'None'}")
+                print(f"是否包含 messages: {'messages' in initial_state if initial_state else 'N/A'}")
+                print(f"\n完整堆栈追踪:")
+                print(error_traceback)
+                print(f"{'='*60}\n")
                 await task_manager.remove_task(challenge_code, success=False)
                 return {
                     "code": challenge_code,

@@ -1,3 +1,19 @@
+"""
+Prompt 管理模块
+==============
+
+集中管理所有 Agent 的提示词模板和动态上下文构建函数。
+
+设计理念：
+- 静态模板：定义在常量中
+- 动态构建：通过函数生成上下文相关的提示词
+- 分离关注点：graph.py 只负责调用，不负责构建
+"""
+
+from typing import Optional, Dict, List, Any, Sequence
+from langchain_core.messages import BaseMessage
+
+
 # ==================== 工具输出总结提示词 ====================
 TOOL_OUTPUT_SUMMARY_PROMPT = """
 # 工具输出总结专家
@@ -171,3 +187,213 @@ ADVISOR_SYSTEM_PROMPT = """
 
 现在开始你的分析！
 """
+
+
+# ==================== Main Agent 规划模式提示词 ====================
+MAIN_AGENT_PLANNER_PROMPT = """
+# CTF 攻击规划者
+
+你是一个 CTF 攻击规划者，负责分析目标、制定策略、分发任务给执行层 Agent。
+
+## 你的角色
+
+- **身份**：规划层 Agent（不直接执行攻击）
+- **任务**：分析信息，制定攻击计划，分发任务
+- **下属**：PoC Agent（Python 脚本）、Docker Agent（Kali 工具）
+
+## 工作流程
+
+1. **分析阶段**：理解目标、分析顾问建议、评估当前进度
+2. **规划阶段**：制定攻击策略、选择执行 Agent
+3. **分发阶段**：生成任务描述，交给执行层
+
+## 任务分发格式
+
+当你决定执行攻击时，必须使用以下格式输出任务：
+
+```
+[DISPATCH_TASK]
+agent: poc  # 或 docker
+task: |
+  具体的任务描述...
+  目标 URL: http://example.com
+  攻击方法: SQL注入/XSS/命令注入等
+  期望结果: 获取FLAG或敏感信息
+[/DISPATCH_TASK]
+```
+
+### Agent 选择指南
+
+| 任务类型 | 选择 Agent | 理由 |
+|---------|-----------|------|
+| HTTP 请求、API 测试 | `poc` | Python requests 更灵活 |
+| 会话管理、Cookie 操作 | `poc` | 需要 Session 对象 |
+| SQL 注入、XSS 测试 | `poc` | 需要循环测试多个 payload |
+| 暴力破解、枚举 | `poc` | 需要循环和条件判断 |
+| 端口扫描 | `docker` | nmap 更专业 |
+| 目录枚举 | `docker` | dirb/gobuster 更高效 |
+| 系统命令 | `docker` | 需要 Kali 环境 |
+
+## 决策原则
+
+1. **证据驱动**：每个决策基于实际工具输出
+2. **快速迭代**：失败 3 次立即切换方向
+3. **避免重复**：不要重复已失败的方法
+4. **目标导向**：每步都要接近 FLAG
+
+## 特殊指令
+
+- `[REQUEST_ADVISOR_HELP]`：请求顾问帮助
+- `[SUBMIT_FLAG:flag{{...}}]`：提交 FLAG（注意：花括号内填写实际FLAG内容）
+
+## 当前状态
+
+{current_context}
+
+---
+
+请分析当前状态，制定攻击计划，并分发任务给执行层。
+"""
+
+
+# ==================== 动态上下文构建函数 ====================
+
+def build_advisor_context(state: Dict[str, Any]) -> List[str]:
+    """
+    构建 Advisor 的上下文
+
+    Args:
+        state: PenetrationTesterState 状态字典
+
+    Returns:
+        上下文字符串列表
+    """
+    context_parts = []
+
+    # 自动侦察结果
+    messages = state.get("messages", [])
+    if messages:
+        first_msg = messages[0]
+        if hasattr(first_msg, 'content') and "🔍 系统自动侦察结果" in first_msg.content:
+            context_parts.append(f"## 🔍 自动侦察结果\n\n{first_msg.content}")
+
+    # 当前题目信息
+    if state.get("current_challenge"):
+        challenge = state["current_challenge"]
+        attempts = len([m for m in messages if hasattr(m, 'tool_calls') and m.tool_calls])
+
+        code = challenge.get("challenge_code", challenge.get("code", "unknown"))
+        hint_viewed = challenge.get("hint_viewed", False)
+        hint_content = challenge.get("hint_content", "")
+        target_info = challenge.get("target_info", {})
+        ip = target_info.get("ip", "unknown")
+        ports = target_info.get("port", [])
+
+        hint_section = ""
+        if hint_content:
+            hint_section = f"\n- **💡 官方提示（重要！）**: {hint_content}"
+
+        context_parts.append(f"""
+## 🎯 当前攻击目标
+
+- **题目代码**: {code}
+- **目标**: {ip}:{','.join(map(str, ports))}
+- **已尝试次数**: {attempts}
+- **提示状态**: {"已查看" if hint_viewed else "未查看"}{hint_section}
+""")
+
+    # 历史操作
+    action_history = state.get('action_history', [])
+    if action_history:
+        formatted = "\n".join([f"{i}. {action}" for i, action in enumerate(action_history[-10:], 1)])
+        context_parts.append(f"## 📜 历史操作\n\n{formatted}")
+
+    return context_parts
+
+
+def build_main_context(state: Dict[str, Any]) -> str:
+    """
+    构建 Main Agent 的上下文
+
+    Args:
+        state: PenetrationTesterState 状态字典
+
+    Returns:
+        上下文字符串
+    """
+    parts = []
+
+    # 当前题目
+    if state.get("current_challenge"):
+        challenge = state["current_challenge"]
+        target_info = challenge.get("target_info", {})
+        ip = target_info.get("ip", "unknown")
+        ports = target_info.get("port", [])
+        port_str = str(ports[0]) if ports else "80"
+
+        parts.append(f"""
+## 当前目标
+
+- **题目**: {challenge.get("challenge_code", challenge.get("code", "unknown"))}
+- **URL**: http://{ip}:{port_str}
+- **提示**: {challenge.get("hint_content", "无")}
+""")
+
+    # 进度
+    messages = state.get("messages", [])
+    attempts = len([m for m in messages if hasattr(m, 'tool_calls') and m.tool_calls])
+    failures = state.get("consecutive_failures", 0)
+
+    parts.append(f"""
+## 进度
+
+- **尝试次数**: {attempts}
+- **连续失败**: {failures}
+""")
+
+    # 历史操作
+    action_history = state.get('action_history', [])
+    if action_history:
+        recent = action_history[-5:]
+        parts.append(f"## 最近操作\n\n" + "\n".join(recent))
+
+    return "\n".join(parts)
+
+
+def get_target_url(state: Dict[str, Any]) -> str:
+    """
+    获取目标 URL
+
+    Args:
+        state: PenetrationTesterState 状态字典
+
+    Returns:
+        目标 URL 字符串
+    """
+    if state.get("current_challenge"):
+        challenge = state["current_challenge"]
+        target_info = challenge.get("target_info", {})
+        ip = target_info.get("ip", "unknown")
+        ports = target_info.get("port", [])
+        port_str = str(ports[0]) if ports else "80"
+        return f"http://{ip}:{port_str}"
+    return "http://unknown"
+
+
+def get_target_info(state: Dict[str, Any]) -> str:
+    """
+    获取目标信息
+
+    Args:
+        state: PenetrationTesterState 状态字典
+
+    Returns:
+        目标信息字符串
+    """
+    if state.get("current_challenge"):
+        challenge = state["current_challenge"]
+        target_info = challenge.get("target_info", {})
+        ip = target_info.get("ip", "unknown")
+        ports = target_info.get("port", [])
+        return f"- **IP**: {ip}\n- **Ports**: {', '.join(map(str, ports)) if ports else 'unknown'}"
+    return "- **IP**: unknown\n- **Ports**: unknown"

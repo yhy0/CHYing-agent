@@ -1,4 +1,15 @@
-# 7天，Top 9：我如何让 Claude 手搓一个全自动 CTF 选手
+> 腾讯云黑客松比赛专用版本 在 https://github.com/yhy0/CHYing-agent/tree/tx-tch 分支
+
+## 快速开始
+
+详见 [QUICKSTART.md](QUICKSTART.md)
+
+---
+
+[![tcp](./images/tch.png)](https://zc.tencent.com/competition/competitionHackathon?code=cha004)
+
+
+# 7天Top 9：我如何让 Claude 手搓一个全自动 CTF 选手
 
 > **"7天时间，我没有写一行核心代码，而是让 Claude 帮我造了一个会打 CTF 的 AI。"**
 >
@@ -158,7 +169,7 @@ ChYing Agent 是一个「AI 辅助 AI」的产物。作为选手，我负责提�
 
 当前设计存在一个问题：主 Agent 的 Prompt 里混杂了太多东西——解题策略、Python 规范、Docker 用法、漏洞知识。这加重了它的认知负担，比赛中通过日志来看，出现了很多次 Python 代码格式错误、工具误用等问题。
 
-接下来我计划重构为分层架构：
+接下来我计划重构为分层架构（已实现）：
 
 1. **主 Agent 只负责规划**：执行交给 PoC Agent、Docker Agent 等子 Agent
 2. **子 Agent 专注执行**：在 prompt 中根据功能不同进行详细约束，只返回结果给主 Agent，保证主 Agent 上下文的干净
@@ -180,8 +191,5 @@ ChYing Agent 是一个「AI 辅助 AI」的产物。作为选手，我负责提�
 - [Cyber-AutoAgent](https://github.com/westonbrown/Cyber-AutoAgent) 
 - [AI for Coding：从 Vibe Coding 到规范驱动开发](https://mp.weixin.qq.com/s/HaazAEMGqH1GBTmn9qI73g)
 
-
-## 快速开始
-
-详见 [QUICKSTART.md](QUICKSTART.md)
+- [腾讯云黑客松智能挑战赛](https://zc.tencent.com/competition/competitionHackathon?code=cha004)
 

@@ -8,7 +8,7 @@
 - 历史记录传递
 """
 import asyncio
-from typing import Dict
+from typing import Dict, Optional
 
 from chying_agent.challenge_solver import solve_single_challenge
 from chying_agent.common import log_system_event
@@ -20,7 +20,8 @@ async def start_challenge_task(
     config,
     langfuse_handler,
     task_manager,
-    concurrent_semaphore
+    concurrent_semaphore,
+    langfuse_metadata: Optional[Dict] = None  # ⭐ 新增：Langfuse 元数据
 ) -> bool:
     """
     启动一个挑战任务
@@ -32,6 +33,7 @@ async def start_challenge_task(
         langfuse_handler: Langfuse 回调
         task_manager: 任务管理器
         concurrent_semaphore: 并发信号量
+        langfuse_metadata: Langfuse 元数据（session_id, tags 等）
 
     Returns:
         True: 成功启动任务
@@ -54,6 +56,13 @@ async def start_challenge_task(
     # ⭐ 根据重试次数选择 LLM 对（角色互换）
     main_llm, advisor_llm, strategy_desc = retry_strategy.get_llm_pair(retry_count)
 
+    # ⭐ 为每个题目构建 Langfuse 元数据
+    challenge_langfuse_metadata = langfuse_metadata.copy() if langfuse_metadata else {}
+    if not challenge_langfuse_metadata.get("langfuse_session_id"):
+        challenge_langfuse_metadata["langfuse_session_id"] = challenge_code
+    if "langfuse_tags" not in challenge_langfuse_metadata:
+        challenge_langfuse_metadata["langfuse_tags"] = ["ctf", "competition"]
+
     # 创建异步任务
     task = asyncio.create_task(
         solve_single_challenge(
@@ -66,7 +75,8 @@ async def start_challenge_task(
             concurrent_semaphore=concurrent_semaphore,
             retry_strategy=retry_strategy,
             attempt_history=attempt_history,
-            strategy_description=strategy_desc
+            strategy_description=strategy_desc,
+            langfuse_metadata=challenge_langfuse_metadata
         )
     )
 
