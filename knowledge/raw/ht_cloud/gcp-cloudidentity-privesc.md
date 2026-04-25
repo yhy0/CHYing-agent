@@ -1,0 +1,34 @@
+# GCP - Cloudidentity Privesc
+
+## Cloudidentity
+
+For more information about the cloudidentity service, check this page:
+
+### Add yourself to a group
+
+If your user has enough permissions or the group is misconfigured, he might be able to make himself a member of a new group:
+
+<details><summary>Add yourself to a Cloud Identity group</summary>
+
+```bash
+gcloud identity groups memberships add --group-email <email> --member-email <email> [--roles OWNER]
+# If --roles isn't specified you will get MEMBER
+```
+
+</details>
+
+### Modify group membership
+
+If your user has enough permissions or the group is misconfigured, he might be able to make himself OWNER of a group he is a member of:
+
+<details><summary>Modify group membership to become OWNER</summary>
+
+```bash
+# Check the current membership level
+gcloud identity groups memberships describe --member-email <email> --group-email <email>
+
+# If not OWNER try
+gcloud identity groups memberships modify-membership-roles --group-email <email> --member-email <email> --add-roles=OWNER
+```
+
+</details>

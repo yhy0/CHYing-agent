@@ -1,0 +1,546 @@
+# Az - Azure Network
+
+## Basic Information
+
+Azure provides **virtual networks (VNet)** that allows users to create **isolated** **networks** within the Azure cloud. Within these VNets, resources such as virtual machines, applications, databases... can be securely hosted and managed. The networking in Azure supports both the communication within the cloud (between Azure services) and the connection to external networks and the internet.\
+Moreover, it's possible to **connect** VNets with other VNets and with on-premise networks.
+
+## Virtual Network (VNET) & Subnets
+
+An Azure Virtual Network (VNet) is a representation of your own network in the cloud, providing **logical isolation** within the Azure environment dedicated to your subscription. VNets allow you to provision and manage virtual private networks (VPNs) in Azure, hosting resources like Virtual Machines (VMs), databases, and application services. They offer **full control over network settings**, including IP address ranges, subnet creation, route tables, and network gateways.
+
+**Subnets** are subdivisions within a VNet, defined by specific **IP address ranges**. By segmenting a VNet into multiple subnets, you can organize and secure resources according to your network architecture.\
+By default all subnets within the same Azure Virtual Network (VNet) **can communicate with each other** without any restrictions.
+
+**Example:**
+
+- `MyVNet` with an IP address range of 10.0.0.0/16.
+  - **Subnet-1:** 10.0.0.0/24 for web servers.
+  - **Subnet-2:** 10.0.1.0/24 for database servers.
+
+### Enumeration
+
+To list all the VNets and subnets in an Azure account, you can use the Azure Command-Line Interface (CLI). Here are the steps:
+
+{{#tabs }}
+{{#tab name="az cli" }}
+
+```bash
+# List VNets
+az network vnet list --query "[].{name:name, location:location, addressSpace:addressSpace}"
+
+# List subnets of a VNet
+az network vnet subnet list --resource-group <ResourceGroupName> --vnet-name <VNetName> --query "[].{name:name, addressPrefix:addressPrefix}" -o table
+```
+
+{{#endtab }}
+{{#tab name="PowerShell" }}
+
+```bash
+# List VNets
+Get-AzVirtualNetwork | Select-Object Name, Location, @{Name="AddressSpace"; Expression={$_.AddressSpace.AddressPrefixes}}
+
+# List subnets of a VNet
+Get-AzVirtualNetwork -ResourceGroupName <ResourceGroupName> -Name <VNetName> |
+Select-Object -ExpandProperty Subnets |
+Select-Object Name, AddressPrefix
+```
+
+{{#endtab }}
+{{#endtabs }}
+
+## Network Security Groups (NSG)
+
+A **Network Security Group (NSG)** filters network traffic both to and from Azure resources within an Azure Virtual Network (VNet). It houses a set of **security rules** that can indicate **which ports to open for inbound and outbound traffic** by source port, source IP, port destination and it's possible to assign a priority (the lower the priority number, the higher the priority).
+
+NSGs can be associated to **subnets and NICs.**
+
+**Rules example:**
+
+- An inbound rule allowing HTTP traffic (port 80) from any source to your web servers.
+- An outbound rule allowing only SQL traffic (port 1433) to a specific destination IP address range.
+
+### Enumeration
+
+{{#tabs }}
+{{#tab name="az cli" }}
+
+```bash
+# List NSGs
+az network nsg list --query "[].{name:name, location:location}" -o table
+az network nsg show --name <nsg-name>
+
+# Get NSG rules
+az network nsg rule list --nsg-name <NSGName> --resource-group <ResourceGroupName> --query "[].{name:name, priority:priority, direction:direction, access:access, protocol:protocol, sourceAddressPrefix:sourceAddressPrefix, destinationAddressPrefix:destinationAddressPrefix, sourcePortRange:sourcePortRange, destinationPortRange:destinationPortRange}" -o table
+
+# Get NICs and subnets using this NSG
+az network nsg show --name <NSGName> --resource-group <ResourceGroupName> --query "{subnets: subnets, networkInterfaces: networkInterfaces}"
+```
+
+{{#endtab }}
+{{#tab name="PowerShell" }}
+
+```bash
+# List NSGs
+Get-AzNetworkSecurityGroup | Select-Object Name, Location
+Get-AzNetworkSecurityGroup -Name <NSGName> -ResourceGroupName <ResourceGroupName>
+
+# Get NSG rules
+Get-AzNetworkSecurityGroup -Name <NSGName> -ResourceGroupName <ResourceGroupName> |
+Select-Object -ExpandProperty SecurityRules |
+Select-Object Name, Priority, Direction, Access, Protocol, SourceAddressPrefix, DestinationAddressPrefix, SourcePortRange, DestinationPortRange
+
+# Get NICs and subnets using this NSG
+(Get-AzNetworkSecurityGroup -Name <NSGName> -ResourceGroupName <ResourceGroupName>).Subnets
+(Get-AzNetworkSecurityGroup -Name <NSGName> -ResourceGroupName <ResourceGroupName>).NetworkInterfaces
+```
+
+{{#endtab }}
+{{#endtabs }}
+
+## Azure Firewall
+
+Azure Firewall is a **managed, stateful firewall** that filters traffic (L3–L7) for east-west and north-south flows. Deployed at the **VNet level**, it centralizes inspection for all subnets and auto-scales for availability.
+
+Available SKUs: **Basic**, **Standard**, and **Premium**:
+
+| Criteria/Feature	             | Option 1	                                         | Option 2                                    | Option 3                                                  |
+| ------------------------------ | ------------------------------------------------- | ------------------------------------------- | --------------------------------------------------------- |
+| **Recommended Use Case**       | Small/Medium Businesses (SMBs) with limited needs | General enterprise use, Layer 3–7 filtering | Highly sensitive environments (e.g., payment processing)  |
+| **Performance**                | Up to 250 Mbps throughput                         | Up to 30 Gbps throughput                    | Up to 100 Gbps throughput                                 |
+| **Threat Intelligence**        | Alerts only                                       | Alerts and blocking (malicious IPs/domains) | Alerts and blocking (advanced threat intelligence)        |
+| **L3–L7 Filtering**            | Basic filtering                                   | Stateful filtering across protocols         | Stateful filtering with advanced inspection               |
+| **Advanced Threat Protection** | Not available                                     | Threat intelligence-based filtering         | Includes Intrusion Detection and Prevention System (IDPS) |
+| **TLS Inspection**             | Not available                                     | Not available                               | Supports inbound/outbound TLS termination                 |
+| **Availability**               | Fixed backend (2 VMs)                             | Autoscaling                                 | Autoscaling                                               |
+| **Ease of Management**         | Basic controls                                    | Managed via Firewall Manager                | Managed via Firewall Manager                              |
+
+### Enumeration
+
+{{#tabs }}
+{{#tab name="az cli" }}
+
+```bash
+# List Azure Firewalls
+az network firewall list --query "[].{name:name, location:location, subnet:subnet, publicIp:publicIp}" -o table
+
+# Get network rules of a firewall
+az network firewall network-rule collection list --firewall-name <FirewallName> --resource-group <ResourceGroupName> --query "[].{name:name, rules:rules}" -o table
+
+# Get application rules of a firewall
+az network firewall application-rule collection list --firewall-name <FirewallName> --resource-group <ResourceGroupName> --query "[].{name:name, rules:rules}" -o table
+
+# Get nat rules of a firewall
+az network firewall nat-rule collection list --firewall-name <FirewallName> --resource-group <ResourceGroupName> --query "[].{name:name, rules:rules}" -o table
+```
+
+{{#endtab }}
+{{#tab name="PowerShell" }}
+
+```bash
+# List Azure Firewalls
+Get-AzFirewall
+
+# Get network rules of a firewall
+(Get-AzFirewall -Name <FirewallName> -ResourceGroupName <ResourceGroupName>).NetworkRuleCollections
+
+# Get application rules of a firewall
+(Get-AzFirewall -Name <FirewallName> -ResourceGroupName <ResourceGroupName>).ApplicationRuleCollections
+
+# Get nat rules of a firewall
+(Get-AzFirewall -Name <FirewallName> -ResourceGroupName <ResourceGroupName>).NatRuleCollections
+```
+
+{{#endtab }}
+{{#endtabs }}
+
+## Azure Route Tables
+
+Azure **Route Tables (UDR)** let you override default routing by defining destination prefixes (e.g., `10.0.0.0/16` or `0.0.0.0/0`) and a next hop (Virtual Network, Internet, Virtual Network Gateway, or Virtual Appliance).
+
+> Routes apply at the subnet level; all VMs in that subnet follow the table.
+
+**Example:**
+
+- For internet-bound traffic, use the default `0.0.0.0/0` with **Internet** as next hop.
+- To inspect outbound traffic, route `0.0.0.0/0` to a Network Virtual Appliance (NVA) IP.
+
+### **Enumeration**
+
+{{#tabs }}
+{{#tab name="az cli" }}
+
+```bash
+# List Route Tables
+az network route-table list --query "[].{name:name, resourceGroup:resourceGroup, location:location}" -o table
+
+# List routes for a table (summary)
+az network route-table route list --resource-group <ResourceGroupName> --route-table-name <RouteTableName> --query "[].{name:name, addressPrefix:addressPrefix, nextHopType:nextHopType, nextHopIpAddress:nextHopIpAddress}" -o table
+
+# List routes for a table (full)
+az network route-table route list --resource-group <ResourceGroupName> --route-table-name <RouteTableName>
+```
+
+{{#endtab }}
+{{#tab name="PowerShell" }}
+
+```bash
+# List Route Tables
+Get-AzRouteTable
+
+# List routes for a table
+(Get-AzRouteTable -Name <RouteTableName> -ResourceGroupName <ResourceGroupName>).Routes
+```
+
+{{#endtab }}
+{{#endtabs }}
+
+## Azure Private Link
+
+Azure Private Link is a service in Azure that **enables private access to Azure services** by ensuring that **traffic between your Azure virtual network (VNet) and the service travels entirely within Microsoft's Azure backbone network**. It effectively brings the service into your VNet. This setup enhances security by not exposing the data to the public internet.
+
+Private Link can be used with various Azure services, like Azure Storage, Azure SQL Database, and custom services shared via Private Link. It provides a secure way to consume services from within your own VNet or even from different Azure subscriptions.
+
+> [!CAUTION]
+> NSGs do not apply to private endpoints, which clearly means that associating an NSG with a subnet that contains the Private Link will have no effect.
+
+**Example:**
+
+Consider a scenario where you have an **Azure SQL Database that you want to access securely from your VNet**. Normally, this might involve traversing the public internet. With Private Link, you can create a **private endpoint in your VNet** that connects directly to the Azure SQL Database service. This endpoint makes the database appear as though it's part of your own VNet, accessible via a private IP address, thus ensuring secure and private access.
+
+### **Enumeration**
+
+{{#tabs }}
+{{#tab name="az cli" }}
+
+```bash
+# List Private Link Services
+az network private-link-service list --query "[].{name:name, location:location, resourceGroup:resourceGroup}" -o table
+
+# List Private Endpoints
+az network private-endpoint list --query "[].{name:name, location:location, resourceGroup:resourceGroup, privateLinkServiceConnections:privateLinkServiceConnections}" -o table
+```
+
+{{#endtab }}
+{{#tab name="PowerShell" }}
+
+```bash
+# List Private Link Services
+Get-AzPrivateLinkService | Select-Object Name, Location, ResourceGroupName
+
+# List Private Endpoints
+Get-AzPrivateEndpoint | Select-Object Name, Location, ResourceGroupName, PrivateEndpointConnections
+```
+
+{{#endtab }}
+{{#endtabs }}
+
+### DNS OverDoS via service Private DNS zone links
+
+When a VNet has a **Virtual Network Link** to a **service Private DNS zone** (e.g., `privatelink.blob.core.windows.net`), Azure **forces hostname resolution** for Private Link registered resources of that service type through the zone. If the zone **lacks the required `A` record** for a resource that workloads still access via its public endpoint, DNS resolution returns **NXDOMAIN** and clients never reach the public IP, causing an **availability DoS** without touching the resource itself.
+
+**Abuse flow (control-plane DoS):**
+
+1. Gain RBAC that allows creating **Private Endpoints** or modifying **Private DNS zone links**.
+2. Create a Private Endpoint for the same service type in another VNet (Azure auto-creates the service Private DNS zone and links it to that VNet).
+3. Link that **service Private DNS zone** to the victim VNet.
+4. Because the victim VNet now **forces resolution via the Private DNS zone** and no `A` record exists for the target resource in that zone, name resolution fails and the workload cannot reach the (still-public) endpoint. This applies to any Private Link–supported service (storage, Key Vault, ACR, Cosmos DB, Function Apps, OpenAI, etc.).
+
+**Discovery at scale (Azure Resource Graph):**
+
+- VNETs linked to the blob Private DNS zone (forced resolution for PL-registered blob endpoints):
+
+```kusto
+resources
+| where type == "microsoft.network/privatednszones/virtualnetworklinks"
+| extend 
+    zone = tostring(split(id, "/virtualNetworkLinks")[0]),
+    vnetId = tostring(properties.virtualNetwork.id)
+| join kind=inner (
+    resources
+    | where type == "microsoft.network/privatednszones"
+    | where name == "privatelink.blob.core.windows.net"
+    | project zoneId = id
+) on $left.zone == $right.zoneId
+| project vnetId
+```
+
+- Storage accounts reachable over public endpoint but **without** Private Endpoint connections (likely to break if above link is added):
+
+```kusto
+Resources
+| where type == "microsoft.storage/storageaccounts"
+| extend publicNetworkAccess = properties.publicNetworkAccess
+| extend defaultAction = properties.networkAcls.defaultAction
+| extend vnetRules = properties.networkAcls.virtualNetworkRules
+| extend ipRules = properties.networkAcls.ipRules
+| extend privateEndpoints = properties.privateEndpointConnections
+| where publicNetworkAccess == "Enabled"
+| where defaultAction == "Deny"
+| where (isnull(privateEndpoints) or array_length(privateEndpoints) == 0)
+| extend allowedVnets = iif(isnull(vnetRules), 0, array_length(vnetRules))
+| extend allowedIps = iif(isnull(ipRules), 0, array_length(ipRules))
+| where allowedVnets > 0 or allowedIps > 0
+| project id, name, vnetRules, ipRules
+```
+
+## Azure Service Endpoints
+
+Azure Service Endpoints extend your virtual network private address space and the identity of your VNet to Azure services over a direct connection. By enabling service endpoints, **resources in your VNet can securely connect to Azure services**, like Azure Storage and Azure SQL Database, over the Azure backbone network. This is particularly useful when combined with Network Security Groups (NSGs) for granular traffic control.
+
+**Example:**
+
+- With **Storage** Account and Service Endpoint **enabled** in a VNET, it's possible to allow inbound traffic **only from a VNET in the storage account firewall**, forcing a **secure connection** without needing public IP access for the storage service.
+
+Service Endpoints **do not require private IP addresses** for the services and instead rely on the Azure backbone for secure connectivity. They're **easier to set up** compared to Private Links but **do not provide the same level of isolation and granularity** as Private Links.
+
+### **Enumeration**
+
+{{#tabs }}
+{{#tab name="az cli" }}
+
+```bash
+# List Virtual Networks with Service Endpoints
+az network vnet list --query "[].{name:name, location:location, serviceEndpoints:serviceEndpoints}" -o table
+
+# List Subnets with Service Endpoints
+az network vnet subnet list --resource-group <ResourceGroupName> --vnet-name <VNetName> --query "[].{name:name, serviceEndpoints:serviceEndpoints}"
+
+# List Service Endpoints for a Subnet
+az network vnet subnet show --resource-group <ResourceGroupName> --vnet-name <VNetName> --name <SubnetName> --query "serviceEndpoints"
+```
+
+{{#endtab }}
+{{#tab name="PowerShell" }}
+
+```bash
+# List Virtual Networks with Service Endpoints
+Get-AzVirtualNetwork
+
+# List Subnets with Service Endpoints
+(Get-AzVirtualNetwork -ResourceGroupName <ResourceGroupName> -Name <VNetName>).Subnets
+```
+
+{{#endtab }}
+{{#endtabs }}
+
+### Differences Between Service Endpoints and Private Links
+
+Microsoft recommends using Private Links in the [**docs**](https://learn.microsoft.com/en-us/azure/virtual-network/vnet-integration-for-azure-services#compare-private-endpoints-and-service-endpoints):
+
+<img src="../../../../images/image (25).png" alt=""><figcaption></figcaption>
+
+**Service Endpoints:**
+
+- Traffic from your VNet to the Azure service travels over the Microsoft Azure backbone network, bypassing the public internet.
+- The endpoint is a direct connection to the Azure service and does not provide a private IP for the service within the VNet.
+- The service itself is still accessible via its public endpoint from outside your VNet unless you configure the service firewall to block such traffic.
+- It's a one-to-one relationship between the subnet and the Azure service.
+- Less expensive than Private Links.
+
+**Private Links:**
+
+- Private Link maps Azure services into your VNet via a private endpoint, which is a network interface with a private IP address within your VNet.
+- The Azure service is accessed using this private IP address, making it appear as if it's part of your network.
+- Services connected via Private Link can be accessed only from your VNet or connected networks; there's no public internet access to the service.
+- It enables a secure connection to Azure services or your own services hosted in Azure, as well as a connection to services shared by others.
+- It provides more granular access control via a private endpoint in your VNet, as opposed to broader access control at the subnet level with service endpoints.
+
+In summary, while both Service Endpoints and Private Links provide secure connectivity to Azure services, **Private Links offer a higher level of isolation and security by ensuring that services are accessed privately without exposing them to the public internet**. Service Endpoints, on the other hand, are easier to set up for general cases where simple, secure access to Azure services is required without the need for a private IP in the VNet.
+
+## Azure Front Door (AFD) & AFD WAF
+
+**Azure Front Door** is a scalable and secure entry point for **fast delivery** of your global web applications. It **combines** various services like **application acceleration, SSL offloading, and application layer security** (through Web Application Firewall - WAF). It's built on the concept of edge POP (Point of Presence) locations around the world to bring your applications closer to your users.
+
+> Azure Front Door provides a globally distributed network of edge locations to **route and accelerate** incoming traffic to your web applications (in Azure or elsewhere), improve performance, and enhance security.
+
+**Example:**
+
+- For a global e-commerce platform with users worldwide, **Azure Front Door can cache static content at edge locations** and offer **SSL offloading**, reducing latency and providing a more responsive user experience. Additionally, it provides **WAF** to protect your applications from common web vulnerabilities (like SQL injection or XSS).
+
+Azure Front Door also offers **smart load balancing** by routing traffic to the nearest available backend based on health probes and latency, ensuring consistent performance and availability. By integrating **WAF**, it helps protect against common web threats.
+
+### **Enumeration**
+
+{{#tabs }}
+{{#tab name="az cli" }}
+
+```bash
+# List Azure Front Door profiles
+az afd profile list --query "[].{name:name, location:location, resourceGroup:resourceGroup}" -o table
+
+# List AFD endpoints
+az afd endpoint list --profile-name <ProfileName> --resource-group <ResourceGroupName> --query "[].{name:name, hostName:hostName, state:resourceState}" -o table
+
+# Classic Azure Front Door (v1) profiles
+az network front-door list --query "[].{name:name, resourceGroup:resourceGroup, location:location}" -o table
+
+# Classic Azure Front Door WAF policies
+az network front-door waf-policy list --query "[].{name:name, resourceGroup:resourceGroup, location:location}" -o table
+```
+
+{{#endtab }}
+{{#tab name="PowerShell" }}
+
+```bash
+# List Azure Front Door profiles
+Get-AzFrontDoorCdnProfile | Select-Object Name, Location, ResourceGroupName
+
+# List AFD endpoints
+Get-AzFrontDoorCdnEndpoint -ProfileName <ProfileName> -ResourceGroupName <ResourceGroupName> | Select-Object Name, HostName, ResourceState
+
+# Classic Azure Front Door (v1) profiles
+Get-AzFrontDoor
+
+# Classic Azure Front Door WAF policies
+Get-AzFrontDoorWafPolicy -Name <policyName> -ResourceGroupName <resourceGroupName>
+```
+
+{{#endtab }}
+{{#endtabs }}
+
+## Azure Application Gateway and Azure Application Gateway WAF
+
+Azure Application Gateway is a **web traffic load balancer** that enables you to manage traffic to your **web** applications. It offers **Layer 7 load balancing, SSL termination, and web application firewall (WAF) capabilities** in the Application Delivery Controller (ADC) as a service. Key features include URL-based routing, cookie-based session affinity, and secure sockets layer (SSL) offloading, which are crucial for applications that require complex load-balancing capabilities like global routing and path-based routing.
+
+**Example:**
+
+Consider a scenario where you have an e-commerce website that includes multiple subdomains for different functions, such as user accounts and payment processing. Azure Application Gateway can **route traffic to the appropriate web servers based on the URL path**. For example, traffic to `example.com/accounts` could be directed to the user accounts service, and traffic to `example.com/pay` could be directed to the payment processing service.\
+And **protect your website from attacks using the WAF capabilities.**
+
+### **Enumeration**
+
+{{#tabs }}
+{{#tab name="az cli" }}
+
+```bash
+# List the Web Application Firewall configurations for your Application Gateways
+az network application-gateway waf-config list --gateway-name <AppGatewayName> --resource-group <ResourceGroupName> --query "[].{name:name, firewallMode:firewallMode, ruleSetType:ruleSetType, ruleSetVersion:ruleSetVersion}" -o table
+```
+
+{{#endtab }}
+{{#tab name="PowerShell" }}
+
+```bash
+# List the Web Application Firewall configurations for your Application Gateways
+(Get-AzApplicationGateway -Name <AppGatewayName> -ResourceGroupName <ResourceGroupName>).WebApplicationFirewallConfiguration
+```
+
+{{#endtab }}
+{{#endtabs }}
+
+## VNet Peering & HUB and Spoke topologies
+
+### VNet Peering
+
+**VNet Peering** is a feature in Azure that **allows different Virtual Networks (VNets) to be connected directly and seamlessly**. Through VNet peering, resources in one VNet can communicate with resources in another VNet using private IP addresses, **as if they were in the same network**.\
+**VNet Peering can also used with a on-prem networks** by setting up a site-to-site VPN or Azure ExpressRoute.
+
+**Azure Hub and Spoke** is a network architecture that leverages VNet peering to create a central **Hub VNet** which connects to multiple **Spoke VNets**. The hub typically contains shared services (such as firewalls, DNS, or Active Directory) while spokes host application workloads. This design simplifies management, enhances security through centralized controls, and reduces redundancy.
+
+**Example:**
+
+A large enterprise with multiple departments (Finance, HR, IT) can create a **Hub VNet with shared services** like firewalls and DNS servers. Each department can have its own Spoke VNet that connects to the Hub via peering. This allows departments to securely communicate and use shared services without exposing their resources to the public internet.
+
+### **Enumeration**
+
+{{#tabs }}
+{{#tab name="az cli" }}
+
+```bash
+# List all VNets in your subscription
+az network vnet list --query "[].{name:name, location:location, addressSpace:addressSpace}" -o table
+
+# List VNet Peerings
+az network vnet peering list --resource-group <ResourceGroupName> --vnet-name <VNetName> --query "[].{name:name, remoteVnetId:remoteVirtualNetwork.id, allowForwardedTraffic:allowForwardedTraffic, allowGatewayTransit:allowGatewayTransit}"
+
+# List Shared Resources (e.g., Azure Firewall) in the Hub
+az network firewall list --query "[].{name:name, location:location, resourceGroup:resourceGroup}" -o table
+```
+
+{{#endtab }}
+{{#tab name="PowerShell" }}
+
+```bash
+# List all VNets in your subscription
+Get-AzVirtualNetwork
+
+# List VNet Peerings
+Get-AzVirtualNetworkPeering -ResourceGroupName <ResourceGroupName> -VirtualNetworkName <VNetName>
+
+# List Shared Resources (e.g., Azure Firewall) in the Hub
+Get-AzFirewall
+```
+
+{{#endtab }}
+{{#endtabs }}
+
+## Site-to-Site VPN
+
+A **Site-to-Site VPN** in Azure establishes a secure and **persistent connection from your on-premises network to your Azure Virtual Network (VNet)**, enabling resources such as VMs within Azure to appear as if they are on your local network. This connection is established through a **VPN gateway that encrypts traffic** between the two networks.
+
+**Example:**
+
+A business with its main office located in New York has an on-premises data center that needs to connect securely to its VNet in Azure, which hosts its virtualized workloads. By setting up a **Site-to-Site VPN, the company can ensure encrypted connectivity between the on-premises servers and the Azure VMs**, allowing for resources to be accessed securely across both environments as if they were in the same local network.
+
+### **Enumeration**
+
+{{#tabs }}
+{{#tab name="az cli" }}
+
+```bash
+# List VPN Gateways
+az network vnet-gateway list --query "[].{name:name, location:location, resourceGroup:resourceGroup}" -o table
+
+# List VPN Connections
+az network vpn-connection list --gateway-name <VpnGatewayName> --resource-group <ResourceGroupName> --query "[].{name:name, connectionType:connectionType, connectionStatus:connectionStatus}" -o table
+```
+
+{{#endtab }}
+{{#tab name="PowerShell" }}
+
+```bash
+# List VPN Gateways
+Get-AzVirtualNetworkGateway -ResourceGroupName <ResourceGroupName>
+
+# List VPN Connections
+Get-AzVirtualNetworkGatewayConnection -ResourceGroupName <ResourceGroupName>
+```
+
+{{#endtab }}
+{{#endtabs }}
+
+## Azure ExpressRoute
+
+Azure ExpressRoute is a service that provides a **private, dedicated, high-speed connection between your on-premises infrastructure and Azure data centers**. This connection is made through a connectivity provider, bypassing the public internet and offering more reliability, faster speeds, lower latencies, and higher security than typical internet connections.
+
+**Example:**
+
+A multinational corporation requires a **consistent and reliable connection to its Azure services due to the high volume of data** and the need for high throughput. The company opts for Azure ExpressRoute to directly connect its on-premises data center to Azure, facilitating large-scale data transfers, such as daily backups and real-time data analytics, with enhanced privacy and speed.
+
+### **Enumeration**
+
+{{#tabs }}
+{{#tab name="az cli" }}
+
+```bash
+# List ExpressRoute Circuits
+az network express-route list --query "[].{name:name, location:location, resourceGroup:resourceGroup, serviceProviderName:serviceProviderName, peeringLocation:peeringLocation}" -o table
+```
+
+{{#endtab }}
+{{#tab name="PowerShell" }}
+
+```bash
+# List ExpressRoute Circuits
+Get-AzExpressRouteCircuit
+```
+
+{{#endtab }}
+{{#endtabs }}
+
+## References
+
+- [DNS OverDoS: Are Private Endpoints Too Private?](https://unit42.paloaltonetworks.com/dos-attacks-and-azure-private-endpoint/)
+- [Azure Private Endpoint DNS configuration](https://learn.microsoft.com/en-us/azure/private-link/private-endpoint-dns)
+- [Private DNS fallback to internet](https://learn.microsoft.com/en-us/azure/dns/private-dns-fallback)

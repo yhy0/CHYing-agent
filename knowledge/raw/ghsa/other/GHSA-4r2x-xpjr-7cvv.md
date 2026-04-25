@@ -1,0 +1,225 @@
+# vLLM has RCE In Video Processing
+
+**GHSA**: GHSA-4r2x-xpjr-7cvv | **CVE**: CVE-2026-22778 | **Severity**: critical (CVSS 9.8)
+
+**CWE**: CWE-122, CWE-532
+
+**Affected Packages**:
+- **vllm** (pip): >= 0.8.3, < 0.14.1
+
+## Description
+
+## Summary
+
+**A chain of vulnerabilities in vLLM allow Remote Code Execution (RCE):**
+
+1. **Info Leak** - PIL error messages expose memory addresses, bypassing ASLR
+2. **Heap Overflow** - JPEG2000 decoder in OpenCV/FFmpeg has a heap overflow that lets us hijack code execution
+
+**Result:** Send a malicious video URL to vLLM Completions or Invocations **for a video model** -> Execute arbitrary commands on the server
+
+Completely default vLLM instance directly from pip, or docker, does not have authentication so "None" privileges are required, but even with non-default api-key enabled configuration this exploit is feasible through invocations route that allows payload to execute pre-auth. 
+
+Example heap target is provided, other heap targets can be exploited as well to achieve rce. Leak allows for simple ASLR bypass. Leak + heap overflow achieves RCE on versions prior to 0.14.1. 
+
+Deployments not serving a video model are not affected.
+
+---
+
+
+## 1. Vulnerability Overview
+
+### 1.1 The Bug: JPEG2000 cdef Box Heap Overflow
+The JPEG2000 decoder used by OpenCV (cv2) honors a `cdef` box that can remap color channels. When Y (luma) is mapped into the U (chroma) plane buffer, the decoder writes a large Y plane into the smaller U buffer, causing a heap overflow.
+
+**Root Cause**
+- `cdef` allows channel remapping (e.g., Y→U, U→Y).
+- Y plane size: `W×H`; U plane size: `(W/2)×(H/2)`.
+- Overflow size = `W×H - (W/2×H/2)` = `0.75 × W × H` bytes.
+
+**Example (150×64)**
+- Y plane: 150×64 = 9,600 bytes  
+- U plane: 75×32 = 2,400 bytes  
+- Overflow: 7,200 bytes past the U buffer
+
+### 1.2 Malicious cdef Box
+```
+Offset  Size  Field           Value
+0       4     Box Length      0x00000016 (22 bytes)
+4       4     Box Type        'cdef'
+8       2     N (channels)    0x0003
+10      2     Channel 0 Cn    0x0000 (Y channel)
+12      2     Channel 0 Typ   0x0000 (color)
+14      2     Channel 0 Asoc  0x0002 (→ maps Y into U plane)
+16      2     Channel 1 Cn    0x0001 (U channel)
+18      2     Channel 1 Typ   0x0000 (color)
+20      2     Channel 1 Asoc  0x0001 (→ maps U into Y plane)
+22      2     Channel 2 Cn    0x0002 (V channel)
+24      2     Channel 2 Typ   0x0000 (color)
+26      2     Channel 2 Asoc  0x0003 (→ maps V plane)
+```
+Key control: `Asoc=2` for channel 0 forces Y data into the U buffer, triggering the overflow.
+
+---
+
+## Vulnerable Code Chain
+
+### 1) Entry: vLLM accepts a remote `video_url` and downloads raw bytes
+
+vLLM’s OpenAI-compatible API supports a `video_url` content part:
+
+```python
+class VideoURL(TypedDict, total=False):
+    url: Required[str]
+
+class ChatCompletionContentPartVideoParam(TypedDict, total=False):
+    video_url: Required[VideoURL]
+    type: Required[Literal["video_url"]]
+```
+
+Source: `src/vllm/entrypoints/chat_utils.py`.
+
+When the URL is HTTP(S), vLLM downloads it as **raw bytes** and passes the bytes into the modality loader:
+
+```python
+if url_spec.scheme.startswith("http"):
+    data = connection.get_bytes(url, timeout=fetch_timeout, allow_redirects=...)
+    return media_io.load_bytes(data)
+```
+
+Source: `src/vllm/multimodal/utils.py` (`MediaConnector.load_from_url`).
+
+---
+
+### 2) Decode: vLLM uses OpenCV (cv2) VideoCapture on an in-memory byte stream
+
+The default video backend is OpenCV, and it constructs `cv2.VideoCapture` over a `BytesIO` buffer containing the downloaded bytes:
+
+```python
+backend = cls().get_cv2_video_api()
+cap = cv2.VideoCapture(BytesIO(data), backend, [])
+if not cap.isOpened():
+    raise ValueError("Could not open video stream")
+```
+
+Source: `src/vllm/multimodal/video.py` (`OpenCVVideoBackend.load_bytes`).
+
+The backend is selected from OpenCV’s stream-buffered backends registry:
+
+```python
+import cv2.videoio_registry as vr
+for backend in vr.getStreamBufferedBackends():
+    if vr.hasBackend(backend) and ...:
+        api_pref = backend
+        break
+return api_pref
+```
+
+Source: `src/vllm/multimodal/video.py` (`OpenCVVideoBackend.get_cv2_video_api`).
+
+**Implication**: vLLM is delegating container parsing + codec decode to OpenCV’s Video I/O stack (which, in typical builds, is backed by FFmpeg for MOV/MP4 and codecs like JPEG2000).
+
+---
+
+### 3) The actual overflow: Y (full-res) written into U (quarter-res)
+
+When the decoder honors the remap and writes Y into the U-plane buffer, it writes **too many bytes**:
+
+- Y plane bytes: \(W \times H\)
+- U plane bytes: \((W/2) \times (H/2)\)
+- Overflow bytes: \(W \times H - (W/2 \times H/2) = 0.75 \times W \times H\)
+
+Concrete example tried (150×64):
+
+- **Y**: \(150 \times 64 = 9600\) bytes  
+- **U**: \(75 \times 32 = 2400\) bytes  
+- **Overflow**: \(9600 - 2400 = 7200\) bytes past the end of the U allocation
+
+This is a **heap buffer overflow** into whatever allocations follow the U-plane buffer in the decoder’s heap layout (structures, metadata, other buffers, etc.). The exact victims depend on build + runtime allocator layout.
+
+---
+
+## The Exploit Chain 
+
+### Vuln 1: PIL BytesIO Address Leak (ASLR Bypass)
+
+When you send an **invalid image** to vLLM's multimodal endpoint, PIL throws an error like:
+
+```
+cannot identify image file <_io.BytesIO object at 0x7a95e299e750>
+                                                   ^^^^^^^^^^^^^^^^
+                                                   LEAKED ADDRESS!
+```
+
+vLLM returns this error to the client, **leaking a heap address**. This address is ~10.33 GB before `libc` in memory. With this leak, we reduce ASLR from **4 billion guesses to ~8 guesses**.
+
+### Vuln 2: JPEG2000 cdef Heap Overflow (RCE)
+
+vLLM uses **OpenCV (cv2)** to decode videos. OpenCV bundles **FFmpeg 5.1.x** which has a heap overflow in the JPEG2000 decoder. The OpenCV is used for video decoding so if we build a video from JPEG2000 frames it will reach the vuln:
+
+```
+vLLM API Request to Completions/Invocation
+     ↓
+OpenCV cv2.VideoCapture()
+     ↓
+FFmpeg 5.1 (bundled in OpenCV)
+     ↓
+JPEG2000 decoder (libopenjp2)
+     ↓
+HEAP OVERFLOW via malicious "cdef" box
+     ↓
+Overwrite function pointer → RCE!
+```
+
+**How the overflow works:**
+- JPEG2000 has a `cdef` box that remaps color channels
+- We remap Y (luma) into the U (chroma) buffer
+- Y plane = 9,600 bytes, U plane = 2,400 bytes
+- On small geometry like 150x64 pixel image we get **7,200 bytes overflow** past the U buffer. We can grow that exponentially by making bigger images. 
+- This overwrites an `AVBuffer` structure containing a `free()` function pointer. This could be any function pointer or other targets. 
+- We set `free = system()` and `opaque = "command string"`
+- When the buffer is freed → `system("our command")` executes
+
+---
+
+## vLLM Attack Surface
+
+### Affected Endpoints
+
+Both multimodal endpoints are vulnerable:
+
+```
+POST /v1/chat/completions     (with video_url in content)
+POST /v1/invocations          (with video_url in content)
+```
+
+### Request Flow
+
+```
+1. Attacker sends request with video_url pointing to malicious .mov file
+2. vLLM fetches the video from the URL
+3. vLLM passes video bytes to cv2.VideoCapture()
+4. OpenCV's bundled FFmpeg decodes JPEG2000 frames
+5. Malicious cdef box triggers heap overflow
+6. AVBuffer.free pointer overwritten with system()
+7. When buffer is released → system("attacker command") executes
+```
+
+---
+
+## Versions Affected
+
+| Component | Version | Notes |
+|-----------|---------|-------|
+| vLLM | >= 0.8.3, < 0.14.1 | Default config vulnerable when serving a video model |
+| OpenCV (cv2) | 4.x with FFmpeg bundle | Bundled FFmpeg is vulnerable |
+| FFmpeg | 5.1.x (bundled) | JPEG2000 cdef overflow |
+| libopenjp2 | 2.x | Honors malicious cdef box |
+
+---
+
+## Fixes
+
+* https://github.com/vllm-project/vllm/pull/31987
+* https://github.com/vllm-project/vllm/pull/32319
+* https://github.com/vllm-project/vllm/pull/32668

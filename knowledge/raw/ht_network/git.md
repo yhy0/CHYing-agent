@@ -1,0 +1,60 @@
+# Git
+
+**To dump a .git folder from a URL use** [**https://github.com/arthaud/git-dumper**](https://github.com/arthaud/git-dumper)
+
+**Use** [**https://www.gitkraken.com/**](https://www.gitkraken.com/) **to inspect the content**
+
+If a _.git_ directory is found in a web application you can download all the content using _wget -r http://web.com/.git._ Then, you can see the changes made by using _git diff_.
+
+The tools: [Git-Money](https://github.com/dnoiz1/git-money), [DVCS-Pillage](https://github.com/evilpacket/DVCS-Pillage) and [GitTools](https://github.com/internetwache/GitTools) can be used to retrieve the content of a git directory.
+
+The tool [https://github.com/cve-search/git-vuln-finder](https://github.com/cve-search/git-vuln-finder) can be used to search for CVEs and security vulnerability messages inside commits messages.
+
+The tool [https://github.com/michenriksen/gitrob](https://github.com/michenriksen/gitrob) search for sensitive data in the repositories of an organisations and its employees.
+
+[Repo security scanner](https://github.com/UKHomeOffice/repo-security-scanner) is a command line-based tool that was written with a single goal: to help you discover GitHub secrets that developers accidentally made by pushing sensitive data. And like the others, it will help you find passwords, private keys, usernames, tokens and more.
+
+Here you can find an study about github dorks: [https://securitytrails.com/blog/github-dorks](https://securitytrails.com/blog/github-dorks)
+
+### Faster /.git dumping & dirlisting bypass (2024–2026)
+
+* [holly-hacker/git-dumper](https://github.com/holly-hacker/git-dumper) is a 2024 rewrite of the classic GitTools dumper with parallel fetching (>10x speedup). Example: `python3 git-dumper.py https://victim/.git/ out && cd out && git checkout -- .`
+* [Ebryx/GitDump](https://github.com/Ebryx/GitDump) brute-forces object names from `.git/index`, `packed-refs`, etc. to recover repos even when directory traversal is disabled: `python3 git-dump.py https://victim/.git/ dump && cd dump && git checkout -- .`
+
+### Quick post-dump triage
+
+```bash
+cd dumpdir
+# reconstruct working tree
+git checkout -- .
+# show branch/commit map
+git log --graph --oneline --decorate --all
+# list suspicious config/remotes/hooks
+git config -l
+ls .git/hooks
+```
+
+### Secret/credential hunting (current tooling)
+
+* **TruffleHog v3+**: entropy+regex with automatic Git history traversal. `trufflehog git file://$PWD --only-verified --json > secrets.json`
+* **Gitleaks** (v8+): fast regex ruleset, can scan unpacked tree or full history. `gitleaks detect -v --source . --report-format json --report-path gitleaks.json`
+
+### Server-side Git integration RCE via `hooksPath` override
+
+Modern web apps that integrate Git repos sometimes **rewrite `.git/config` using user-controlled identifiers**. If those identifiers are concatenated into `hooksPath`, you can redirect Git hooks to an attacker-controlled directory and execute arbitrary code when the server runs native Git (e.g., `git commit`). Key steps:
+
+* **Path traversal in `hooksPath`**: if a repo name/dependency name is copied into `hooksPath`, inject `../../..` to escape the intended hooks directory and point to a writable location. This is effectively a [path traversal](../../pentesting-web/file-inclusion/README.md) in Git config.
+* **Force the target directory to exist**: when the application performs server-side clones, abuse clone destination controls (e.g., a `ref`/branch/path parameter) to make it clone into `../../git_hooks` or a similar traversal path so intermediate folders are created for you.
+* **Ship executable hooks**: set the executable bit inside Git metadata so every clone writes the hook with mode `100755`:
+  ```bash
+  git update-index --chmod=+x pre-commit
+  ```
+  Add your payload (reverse shell, file dropper, etc.) to `pre-commit`/`post-commit` in that repo.
+* **Find a native Git code path**: libraries like **JGit** ignore hooks. Hunt for deployment flows/flags that fall back to system Git (e.g., forcing deploy-with-attached-repo parameters) so hooks will actually run.
+* **Race the config rewrite**: if the app sanitizes `.git/config` right before running Git, spam the endpoint that writes your malicious `hooksPath` while triggering the Git action to win a [race condition](../../pentesting-web/race-condition.md) and get your hook executed.
+
+## References
+
+- [holly-hacker/git-dumper – parallel fast /.git dumper](https://github.com/holly-hacker/git-dumper)
+- [Ebryx/GitDump](https://github.com/Ebryx/GitDump)
+- [LookOut: RCE and internal access on Looker (Tenable)](https://www.tenable.com/blog/google-looker-vulnerabilities-rce-internal-access-lookout)

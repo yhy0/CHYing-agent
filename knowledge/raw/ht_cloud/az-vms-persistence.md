@@ -1,0 +1,17 @@
+# Az - VMs Persistence
+
+## VMs persistence
+
+For more information about VMs check:
+
+### Backdoor VM applications, VM Extensions & Images <a href="#backdoor-instances" id="backdoor-instances"></a>
+
+An attacker identifies applications, extensions or images being frequently used in the Azure account, he could insert his code in VM applications and extensions so every time they get installed the backdoor is executed.
+
+### Backdoor Instances <a href="#backdoor-instances" id="backdoor-instances"></a>
+
+An attacker could get access to the instances and backdoor them:
+
+- Using a traditional **rootkit** for example
+- Adding a new **public SSH key** (check [EC2 privesc options](https://cloud.hacktricks.wiki/en/pentesting-cloud/aws-security/aws-privilege-escalation/aws-ec2-privesc.html))
+- Backdooring the **User Data**

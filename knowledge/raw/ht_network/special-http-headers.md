@@ -1,0 +1,280 @@
+# Special HTTP headers
+
+## Wordlists & Tools
+
+- [https://github.com/danielmiessler/SecLists/tree/master/Miscellaneous/Web/http-request-headers](https://github.com/danielmiessler/SecLists/tree/master/Miscellaneous/Web/http-request-headers)
+- [https://github.com/rfc-st/humble](https://github.com/rfc-st/humble)
+
+## Headers to Change Location
+
+Rewrite **IP source**:
+
+- `X-Originating-IP: 127.0.0.1`
+- `X-Forwarded-For: 127.0.0.1`
+- `X-Forwarded: 127.0.0.1`
+- `Forwarded-For: 127.0.0.1`
+- `X-Forwarded-Host: 127.0.0.1`
+- `X-Remote-IP: 127.0.0.1`
+- `X-Remote-Addr: 127.0.0.1`
+- `X-ProxyUser-Ip: 127.0.0.1`
+- `X-Original-URL: 127.0.0.1`
+- `Client-IP: 127.0.0.1`
+- `X-Client-IP: 127.0.0.1`
+- `X-Host: 127.0.0.1`
+- `True-Client-IP: 127.0.0.1`
+- `Cluster-Client-IP: 127.0.0.1`
+- `Via: 1.0 fred, 1.1 127.0.0.1`
+- `Connection: close, X-Forwarded-For` (Check hop-by-hop headers)
+
+Rewrite **location**:
+
+- `X-Original-URL: /admin/console`
+- `X-Rewrite-URL: /admin/console`
+
+## Hop-by-Hop headers
+
+A hop-by-hop header is a header which is designed to be processed and consumed by the proxy currently handling the request, as opposed to an end-to-end header.
+
+- `Connection: close, X-Forwarded-For`
+
+## HTTP Request Smuggling
+
+- `Content-Length: 30`
+- `Transfer-Encoding: chunked`
+
+## The Expect header
+
+It's posible for the client to send the header `Expect: 100-continue` and then the server could respond with `HTTP/1.1 100 Continue` to allow the client to continue sending the body of the request. However, some proxies don't really llike this header.
+
+Interesting results of `Expect: 100-continue`:
+- Sending a HEAD request with a body the server didn't took into account that HEAD requests don't have body and keep the connection open until it timed out.
+- Another servers sent extrange data: Random data read from the socket in the response, secret keys or even it allowed to prevent the front-end from removing header values.
+- It also caused a `0.CL` desync cause the backend responded with a 400 response isntead of a 100 response, but the proxy front-end was prepared to send the body of the initial request, so it sends it and the backend takes it as new request.
+- Sending an `Expect: y 100-continue` variation also caused the `0.CL` desync.
+- A similar error where the backend responded with a 404 generated a `CL.0` desync because the malicious request indicates a `Content-Length` so the backend sends the malicious request + the `Content-Length` bytes of the next request (of a victim), this desyncs the queue cause the backend sends the 404 request for the malicious request + the repsonse of the victim requests, but the front end thought that only 1 request was sent, so the second response is sent to a seond victim request and the the reponse of taht one is sent to the next one...
+
+For more info about HTTP Request Smuggling check:
+
+## Cache Headers
+
+**Server Cache Headers**:
+
+- **`X-Cache`** in the response may have the value **`miss`** when the request wasn't cached and the value **`hit`** when it is cached
+  - Similar behaviour in the header **`Cf-Cache-Status`**
+- **`Cache-Control`** indicates if a resource is being cached and when will be the next time the resource will be cached again: `Cache-Control: public, max-age=1800`
+- **`Vary`** is often used in the response to **indicate additional headers** that are treated as **part of the cache key** even if they are normally unkeyed.
+- **`Age`** defines the times in seconds the object has been in the proxy cache.
+- **`Server-Timing: cdn-cache; desc=HIT`** also indicates that a resource was cached
+
+**Local Cache headers**:
+
+- `Clear-Site-Data`: Header to indicate the cache that should be removed: `Clear-Site-Data: "cache", "cookies"`
+- `Expires`: Contains date/time when the response should expire: `Expires: Wed, 21 Oct 2015 07:28:00 GMT`
+- `Pragma: no-cache` same as `Cache-Control: no-cache`
+- `Warning`: The **`Warning`** general HTTP header contains information about possible problems with the status of the message. More than one `Warning` header may appear in a response. `Warning: 110 anderson/1.3.37 "Response is stale"`
+
+## Conditionals
+
+- Requests using these headers: **`If-Modified-Since`** and **`If-Unmodified-Since`** will be responded with data only if the response header**`Last-Modified`** contains a different time.
+- Conditional requests using **`If-Match`** and **`If-None-Match`** use an Etag value so the web server will send the content of the response if the data (Etag) has changed. The `Etag` is taken from the HTTP response.
+  - The **Etag** value is usually **calculated based** on the **content** of the response. For example, `ETag: W/"37-eL2g8DEyqntYlaLp5XLInBWsjWI"` indicates that the `Etag` is the **Sha1** of **37 bytes**.
+
+## Range requests
+
+- **`Accept-Ranges`**: Indicates if the server supports range requests, and if so in which unit the range can be expressed. `Accept-Ranges: <range-unit>`
+- **`Range`**: Indicates the part of a document that the server should return. For emxaple, `Range:80-100` will return the bytes 80 to 100 of the original response with a status code of 206 Partial Content. Also remember to remove the `Accept-Encoding` header from the request.
+  - This could be useful to get a repsonse with arbitrary reflected javascript code that otherwise could be escaped. But to abuse this you would need to inject this headers in the request.
+- **`If-Range`**: Creates a conditional range request that is only fulfilled if the given etag or date matches the remote resource. Used to prevent downloading two ranges from incompatible version of the resource.
+- **`Content-Range`**: Indicates where in a full body message a partial message belongs.
+
+## Message body information
+
+- **`Content-Length`:** The size of the resource, in decimal number of bytes.
+- **`Content-Type`**: Indicates the media type of the resource
+- **`Content-Encoding`**: Used to specify the compression algorithm.
+- **`Content-Language`**: Describes the human language(s) intended for the audience, so that it allows a user to differentiate according to the users' own preferred language.
+- **`Content-Location`**: Indicates an alternate location for the returned data.
+
+From a pentest point of view this information is usually "useless", but if the resource is **protected** by a 401 or 403 and you can find some **way** to **get** this **info**, this could be **interesting.**\
+For example a combination of **`Range`** and **`Etag`** in a HEAD request can leak the content of the page via HEAD requests:
+
+- A request with the header `Range: bytes=20-20` and with a response containing `ETag: W/"1-eoGvPlkaxxP4HqHv6T3PNhV9g3Y"` is leaking that the SHA1 of the byte 20 is `ETag: eoGvPlkaxxP4HqHv6T3PNhV9g3Y`
+
+## Server Info
+
+- `Server: Apache/2.4.1 (Unix)`
+- `X-Powered-By: PHP/5.3.3`
+
+## Controls
+
+- **`Allow`**: This header is used to communicate the HTTP methods a resource can handle. For example, it might be specified as `Allow: GET, POST, HEAD`, indicating that the resource supports these methods.
+- **`Expect`**: Utilized by the client to convey expectations that the server needs to meet for the request to be processed successfully. A common use case involves the `Expect: 100-continue` header, which signals that the client intends to send a large data payload. The client looks for a `100 (Continue)` response before proceeding with the transmission. This mechanism helps in optimizing network usage by awaiting server confirmation.
+
+## Downloads
+
+- The **`Content-Disposition`** header in HTTP responses directs whether a file should be displayed **inline** (within the webpage) or treated as an **attachment** (downloaded). For instance:
+
+```
+Content-Disposition: attachment; filename="filename.jpg"
+```
+
+This means the file named "filename.jpg" is intended to be downloaded and saved.
+
+## Security Headers
+
+### Content Security Policy (CSP) <a href="#csp" id="csp"></a>
+
+### **Trusted Types**
+
+By enforcing Trusted Types through CSP, applications can be protected against DOM XSS attacks. Trusted Types ensure that only specifically crafted objects, compliant with established security policies, can be used in dangerous web API calls, thereby securing JavaScript code by default.
+
+```javascript
+// Feature detection
+if (window.trustedTypes && trustedTypes.createPolicy) {
+  // Name and create a policy
+  const policy = trustedTypes.createPolicy('escapePolicy', {
+    createHTML: str => str.replace(/\</g, '&lt;').replace(/>/g, '&gt;');
+  });
+}
+```
+
+```javascript
+// Assignment of raw strings is blocked, ensuring safety.
+el.innerHTML = "some string" // Throws an exception.
+const escaped = policy.createHTML("<img src=x onerror=alert(1)>")
+el.innerHTML = escaped // Results in safe assignment.
+```
+
+### **X-Content-Type-Options**
+
+This header prevents MIME type sniffing, a practice that could lead to XSS vulnerabilities. It ensures that browsers respect the MIME types specified by the server.
+
+```
+X-Content-Type-Options: nosniff
+```
+
+### **X-Frame-Options**
+
+To combat clickjacking, this header restricts how documents can be embedded in `<frame>`, `<iframe>`, `<embed>`, or `<object>` tags, recommending all documents to specify their embedding permissions explicitly.
+
+```
+X-Frame-Options: DENY
+```
+
+### **Cross-Origin Resource Policy (CORP) and Cross-Origin Resource Sharing (CORS)**
+
+CORP is crucial for specifying which resources can be loaded by websites, mitigating cross-site leaks. CORS, on the other hand, allows for a more flexible cross-origin resource sharing mechanism, relaxing the same-origin policy under certain conditions.
+
+```
+Cross-Origin-Resource-Policy: same-origin
+Access-Control-Allow-Origin: https://example.com
+Access-Control-Allow-Credentials: true
+```
+
+### **Cross-Origin Embedder Policy (COEP) and Cross-Origin Opener Policy (COOP)**
+
+COEP and COOP are essential for enabling cross-origin isolation, significantly reducing the risk of Spectre-like attacks. They control the loading of cross-origin resources and the interaction with cross-origin windows, respectively.
+
+```
+Cross-Origin-Embedder-Policy: require-corp
+Cross-Origin-Opener-Policy: same-origin-allow-popups
+```
+
+### **HTTP Strict Transport Security (HSTS)**
+
+Lastly, HSTS is a security feature that forces browsers to communicate with servers only over secure HTTPS connections, thereby enhancing privacy and security.
+
+```
+Strict-Transport-Security: max-age=3153600
+```
+
+### **Permissions-Policy (formerly Feature-Policy)**
+
+Permissions-Policy allows web developers to selectively enable, disable, or modify the behaviour of certain browser features and APIs within a document. It is the successor to the now-deprecated `Feature-Policy` header. This header helps reduce the attack surface by restricting access to powerful features that could be abused.
+
+```
+Permissions-Policy: geolocation=(), camera=(), microphone=()
+```
+
+**Common directives:**
+
+| Directive | Description |
+| --- | --- |
+| `accelerometer` | Controls access to the Accelerometer sensor |
+| `camera` | Controls access to video input devices (webcam) |
+| `geolocation` | Controls access to the Geolocation API |
+| `gyroscope` | Controls access to the Gyroscope sensor |
+| `magnetometer` | Controls access to the Magnetometer sensor |
+| `microphone` | Controls access to audio input devices |
+| `payment` | Controls access to the Payment Request API |
+| `usb` | Controls access to the WebUSB API |
+| `fullscreen` | Controls access to the Fullscreen API |
+| `autoplay` | Controls whether media can autoplay |
+| `clipboard-read` | Controls access to read clipboard content |
+| `clipboard-write` | Controls access to write to the clipboard |
+
+**Syntax values:**
+
+- `()` - Disables the feature entirely
+- `(self)` - Allows the feature only for the same origin
+- `*` - Allows the feature for all origins
+- `(self "https://example.com")` - Allows for same origin and specified domain
+
+**Example configurations:**
+
+```
+# Restrictive policy - disable most features
+Permissions-Policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
+
+# Allow camera only from same origin
+Permissions-Policy: camera=(self)
+
+# Allow geolocation for same origin and a trusted partner
+Permissions-Policy: geolocation=(self "https://maps.example.com")
+```
+
+From a security perspective, missing or overly permissive `Permissions-Policy` headers may allow attackers (e.g., through XSS or embedded iframes) to abuse powerful browser features. Always restrict features to the minimum necessary for your application.
+
+## Header Name Casing Bypass
+
+HTTP/1.1 defines header field‐names as **case-insensitive** (RFC 9110 §5.1). Nevertheless, it is very common to find custom middleware, security filters, or business logic that compare the *literal* header name received without normalising the casing first (e.g. `header.equals("CamelExecCommandExecutable")`).  If those checks are performed **case-sensitively**, an attacker may bypass them simply by sending the same header with a different capitalisation.
+
+Typical situations where this mistake appears:
+
+* Custom allow/deny lists that try to block “dangerous” internal headers before the request reaches a sensitive component.
+* In-house implementations of reverse-proxy pseudo-headers (e.g. `X-Forwarded-For` sanitisation).
+* Frameworks that expose management / debug endpoints and rely on header names for authentication or command selection.
+
+### Abusing the bypass
+
+1. Identify a header that is filtered or validated server-side (for example, by reading source code, documentation, or error messages).
+2. Send the **same header with a different casing** (mixed-case or upper-case).  Because HTTP stacks usually canonicalise headers only *after* user code has run, the vulnerable check can be skipped.
+3. If the downstream component treats headers in a case-insensitive way (most do), it will accept the attacker-controlled value.
+
+### Example: Apache Camel `exec` RCE (CVE-2025-27636)
+
+In vulnerable versions of Apache Camel the *Command Center* routes try to block untrusted requests by stripping the headers `CamelExecCommandExecutable` and `CamelExecCommandArgs`.  The comparison was done with `equals()` so only the exact lowercase names were removed.
+
+```bash
+# Bypass the filter by using mixed-case header names and execute `ls /` on the host
+curl "http://<IP>/command-center" \
+  -H "CAmelExecCommandExecutable: ls" \
+  -H "CAmelExecCommandArgs: /"
+```
+
+The headers reach the `exec` component unfiltered, resulting in remote command execution with the privileges of the Camel process.
+
+### Detection & Mitigation
+
+* Normalise all header names to a single case (usually lowercase) **before** performing allow/deny comparisons.
+* Reject suspicious duplicates: if both `Header:` and `HeAdEr:` are present, treat it as an anomaly.
+* Use a positive allow-list enforced **after** canonicalisation.
+* Protect management endpoints with authentication and network segmentation.
+
+## References
+
+- [CVE-2025-27636 – RCE in Apache Camel via header casing bypass (OffSec blog)](https://www.offsec.com/blog/cve-2025-27636/)
+- [https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Disposition](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Disposition)
+- [https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers)
+- [https://web.dev/security-headers/](https://web.dev/security-headers/)
+- [https://web.dev/articles/security-headers](https://web.dev/articles/security-headers)

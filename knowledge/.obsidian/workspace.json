@@ -1,0 +1,216 @@
+{
+  "main": {
+    "id": "319be689523af703",
+    "type": "split",
+    "children": [
+      {
+        "id": "1a0918e096490e19",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "4c52ac53cd0eebf9",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "raw/framework/Apache Commons Configuration 远程命令执行漏洞 CVE-2022-33980.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Apache Commons Configuration 远程命令执行漏洞 CVE-2022-33980"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "2b2766a659a735e7",
+    "type": "split",
+    "children": [
+      {
+        "id": "319b30960769df79",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "052d3aeda5e67e57",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "文件列表"
+            }
+          },
+          {
+            "id": "12ed76770591ac1f",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "搜索"
+            }
+          },
+          {
+            "id": "898b3a97cda764d7",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "书签"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "e95f98e23c02c0e7",
+    "type": "split",
+    "children": [
+      {
+        "id": "8b084897a8984a5b",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "3c527651b887e57c",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "log.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "log 的反向链接列表"
+            }
+          },
+          {
+            "id": "a72fbc58477a89fc",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "log.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "log 的出链列表"
+            }
+          },
+          {
+            "id": "34eb95e15febb056",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "标签"
+            }
+          },
+          {
+            "id": "b838b6a0e4c86a95",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "添加笔记属性"
+            }
+          },
+          {
+            "id": "d6ebabfe9db132e4",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "log.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "log 的大纲"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:打开快速切换": false,
+      "graph:查看关系图谱": false,
+      "canvas:新建白板": false,
+      "daily-notes:打开/创建今天的日记": false,
+      "templates:插入模板": false,
+      "command-palette:打开命令面板": false,
+      "bases:新建数据库": false
+    }
+  },
+  "active": "052d3aeda5e67e57",
+  "lastOpenFiles": [
+    "wiki/techniques/web/llm_agent_orchestration_attacks.md",
+    "wiki/techniques/web/ops_observability_console_attacks.md",
+    "wiki/techniques/web/arbitrary_file_read.md",
+    "wiki/techniques/web/document_report_export.md",
+    "wiki/techniques/web/java_deserialization.md",
+    "wiki/techniques/web/auth_bypass.md",
+    "wiki/techniques/web/idor.md",
+    "wiki/techniques/pentest/database_attacks.md",
+    "wiki/techniques/cloud/cicd_attacks.md",
+    "wiki/techniques/web/prototype_pollution.md",
+    "wiki/techniques/web/race_condition.md",
+    "wiki/techniques/web/websocket.md",
+    "wiki/techniques/web/nosql_injection.md",
+    "wiki/techniques/web/oauth.md",
+    "wiki/techniques/pentest/linux_privesc.md",
+    "wiki/techniques/pentest/windows_privesc.md",
+    "wiki/techniques/pentest/ad_certificate_abuse.md",
+    "wiki/techniques/pentest/ad_credential_theft.md",
+    "wiki/techniques/pentest/ad_persistence.md",
+    "wiki/techniques/pentest/ad_enum.md",
+    "wiki/techniques/pentest/ad_delegation_abuse.md",
+    "wiki/techniques/pentest/ad_kerberos_attacks.md",
+    "wiki/techniques/pentest",
+    "wiki/techniques/cloud/container_escape.md",
+    "wiki/techniques/cloud/kubernetes_privesc.md",
+    "wiki/techniques/cloud/gcp_basics.md",
+    "wiki/techniques/cloud/azure_basics.md"
+  ]
+}

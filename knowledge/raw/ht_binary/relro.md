@@ -1,0 +1,105 @@
+# Relro
+
+## Relro
+
+**RELRO** stands for **Relocation Read-Only** and it is a mitigation implemented by the linker (`ld`) that turns a subset of the ELF’s data segments **read-only after all relocations have been applied**.  The goal is to stop an attacker from overwriting entries in the **GOT (Global Offset Table)** or other relocation-related tables that are dereferenced during program execution (e.g. `__fini_array`).
+
+Modern linkers implement RELRO by **re–ordering** the **GOT** (and a few other sections) so they live **before** the **.bss** and – most importantly – by creating a dedicated `PT_GNU_RELRO` segment that is remapped `R–X` right after the dynamic loader finishes applying relocations.  Consequently, typical buffer overflows in the **.bss** can no longer reach the GOT and arbitrary‐write primitives cannot be used to overwrite function pointers that sit inside a RELRO-protected page.
+
+There are **two levels** of protection that the linker can emit:
+
+### Partial RELRO
+
+* Produced with the flag `-Wl,-z,relro` (or just `-z relro` when invoking `ld` directly).
+* Only the **non-PLT** part of the **GOT** (the part used for data relocations) is put into the read-only segment.  Sections that need to be modified at run-time – most importantly **.got.plt** which supports **lazy binding** – remain writable.
+* Because of that, an **arbitrary write** primitive can still redirect execution flow by overwriting a PLT entry (or by performing **ret2dlresolve**).
+* The performance impact is negligible and therefore **almost every distribution has been shipping packages with at least Partial RELRO for years (it is the GCC/Binutils default as of 2016)**.
+
+### Full RELRO
+
+* Produced with **both** flags `-Wl,-z,relro,-z,now` (a.k.a. `-z relro -z now`).  `-z now` forces the dynamic loader to resolve **all** symbols up-front (eager binding) so that **.got.plt** never needs to be written again and can safely be mapped read-only.
+* The entire **GOT**, **.got.plt**, **.fini_array**, **.init_array**, **.preinit_array** and a few additional internal glibc tables end up inside a read-only `PT_GNU_RELRO` segment.
+* Adds measurable start-up overhead (all dynamic relocations are processed at launch) but **no run-time overhead**.
+
+Since 2023 several mainstream distributions have switched to compiling the **system tool-chain** (and most packages) with **Full RELRO by default** – e.g. **Debian 12 “bookworm” (dpkg-buildflags 13.0.0)** and **Fedora 35+**.  As a pentester you should therefore expect to encounter binaries where **every GOT entry is read-only**.
+
+---
+
+## How to Check the RELRO status of a binary
+
+```bash
+$ checksec --file ./vuln
+[*] '/tmp/vuln'
+    Arch:     amd64-64-little
+    RELRO:    Full
+    Stack:    Canary found
+    NX:       NX enabled
+    PIE:      No PIE (0x400000)
+```
+
+`checksec` (part of [pwntools](https://github.com/pwncollege/pwntools) and many distributions) parses `ELF` headers and prints the protection level.  If you cannot use `checksec`, rely on `readelf`:
+
+```bash
+# Partial RELRO → PT_GNU_RELRO is present but BIND_NOW is *absent*
+$ readelf -l ./vuln | grep -E "GNU_RELRO|BIND_NOW"
+    GNU_RELRO      0x0000000000600e20 0x0000000000600e20
+```
+
+```bash
+# Full RELRO → PT_GNU_RELRO *and* the DF_BIND_NOW flag
+$ readelf -d ./vuln | grep BIND_NOW
+ 0x0000000000000010 (FLAGS)              FLAGS: BIND_NOW
+```
+
+If the binary is running (e.g. a set-uid root helper), you can still inspect the executable **via `/proc/$PID/exe`**:
+
+```bash
+readelf -l /proc/$(pgrep helper)/exe | grep GNU_RELRO
+```
+
+---
+
+## Enabling RELRO when compiling your own code
+
+```bash
+# GCC example – create a PIE with Full RELRO and other common hardenings
+$ gcc -fPIE -pie -z relro -z now -Wl,--as-needed -D_FORTIFY_SOURCE=2 main.c -o secure
+```
+
+`-z relro -z now` works for both **GCC/clang** (passed after `-Wl,`) and **ld** directly.  When using **CMake 3.18+** you can request Full RELRO with the built-in preset:
+
+```cmake
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON) # LTO
+set(CMAKE_ENABLE_EXPORTS OFF)
+set(CMAKE_BUILD_RPATH_USE_ORIGIN ON)
+set(CMAKE_EXE_LINKER_FLAGS "-Wl,-z,relro,-z,now")
+```
+
+---
+
+## Bypass Techniques
+
+| RELRO level | Typical primitive | Possible exploitation techniques |
+|-------------|-------------------|----------------------------------|
+| None / Partial | Arbitrary write | 1. Overwrite **.got.plt** entry and pivot execution.<br>2. **ret2dlresolve** – craft fake `Elf64_Rela` & `Elf64_Sym` in a writable segment and call `_dl_runtime_resolve`.<br>3. Overwrite function pointers in **.fini_array** / **atexit()** list. |
+| Full | GOT is read-only | 1. Look for **other writable code pointers** (C++ vtables, `__malloc_hook` < glibc 2.34, `__free_hook`, callbacks in custom `.data` sections, JIT pages).<br>2. Abuse *relative read* primitives to leak libc and perform **SROP/ROP into libc**.<br>3. Inject a rogue shared object via **DT_RPATH**/`LD_PRELOAD` (if environment is attacker-controlled) or **`ld_audit`**.<br>4. Exploit **format-string** or partial pointer overwrite to divert control-flow without touching the GOT. |
+
+> 💡 Even with Full RELRO the **GOT of loaded shared libraries (e.g. libc itself)** is **only Partial RELRO** because those objects are already mapped when the loader applies relocations.  If you gain an **arbitrary write** primitive that can target another shared object’s pages you can still pivot execution by overwriting libc’s GOT entries or the `__rtld_global` stack, a technique regularly exploited in modern CTF challenges.
+
+### Real-world bypass example (2024 CTF – *pwn.college “enlightened”*)
+
+The challenge shipped with Full RELRO.  The exploit used an **off-by-one** to corrupt the size of a heap chunk, leaked libc with `tcache poisoning`, and finally overwrote `__free_hook` (outside of the RELRO segment) with a one-gadget to get code execution.  No GOT write was required.
+
+---
+
+## Recent research & vulnerabilities (2022-2025)
+
+* **glibc hook removal (2.34 → present)** – malloc/free hooks were extracted from the main libc into the optional `libc_malloc_debug.so`, eliminating a common Full‑RELRO bypass primitive; modern exploits must target other writable pointers.
+* **GNU ld RELRO page‑alignment fix (binutils 2.39+/2.41)** – linker bug 30612 caused the last bytes of `PT_GNU_RELRO` to share a writable page on 64 KiB page systems; current binutils aligns RELRO to `max-page-size`, closing that “RELRO gap”.
+
+---
+
+## References
+
+* [Why malloc hooks were removed from glibc](https://developers.redhat.com/articles/2021/08/25/securing-malloc-glibc-why-malloc-hooks-had-go)
+* [Binutils bug 30612 – RELRO end alignment](https://lists.gnu.org/archive/html/bug-binutils/2023-08/msg00305.html)

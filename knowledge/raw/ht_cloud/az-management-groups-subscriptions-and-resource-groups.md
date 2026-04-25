@@ -1,0 +1,40 @@
+# Az - Management Groups, Subscriptions & Resource Groups
+
+## Management Groups
+
+You can find more info about Management Groups in:
+
+### Enumeration
+
+```bash
+# List
+az account management-group list
+# Get details and management groups and subscriptions that are children
+az account management-group show --name <name> --expand --recurse
+```
+
+## Subscriptions
+
+You can find more info about Subscriptions in:
+
+### Enumeration
+
+```bash
+# List all subscriptions
+az account list --output table
+# Get details
+az account management-group subscription show --name <management group> --subscription <subscription>
+```
+
+## Resource Groups
+
+You can find more info about Resource Groups in:
+
+### Enumeration
+
+```bash
+# List all resource groups
+az group list
+# Get resource groups of specific subscription
+az group list --subscription "<subscription>" --output table
+```

@@ -4,13 +4,36 @@ FLAG 格式验证工具
 
 用于验证 FLAG 格式是否正确，防止提交不完整的 FLAG。
 
-标准 FLAG 格式：
-- 必须以 'flag{' 开头
-- 必须以 '}' 结尾
-- 中间包含有效内容
+支持的 FLAG 格式前缀（不区分大小写）：
+- flag{...} / FLAG{...}
+- ctf{...} / CTF{...}
+- aliyunctf{...}
+- alictf{...}
 """
 import re
-from typing import Tuple
+from typing import Tuple, List, Optional
+
+# ==================== 支持的 FLAG 格式前缀 ====================
+# 不区分大小写
+SUPPORTED_FLAG_PREFIXES = [
+    "flag",
+    "ctf",
+    "aliyunctf",
+    "alictf",
+]
+
+
+def get_flag_pattern() -> str:
+    """
+    生成匹配所有支持格式的正则表达式
+
+    Returns:
+        正则表达式字符串
+    """
+    # 构建 (flag|ctf|aliyunctf|...) 的模式
+    prefixes_pattern = "|".join(SUPPORTED_FLAG_PREFIXES)
+    # 不区分大小写匹配：prefix{内容}
+    return rf'(?i)({prefixes_pattern})\{{[^}}]+\}}'
 
 
 def validate_flag_format(flag: str) -> Tuple[bool, str]:
@@ -28,18 +51,28 @@ def validate_flag_format(flag: str) -> Tuple[bool, str]:
     if not flag:
         return False, "FLAG 不能为空"
 
-    # ⭐ 检查是否以 'flag{' 开头（忽略大小写）
-    if not flag.lower().startswith("flag{"):
-        return False, f"FLAG 必须以 'flag{{' 或 'FLAG{{' 开头（忽略大小写），当前: {flag}..."
+    flag_lower = flag.lower()
+
+    # 检查是否以支持的前缀开头
+    matched_prefix = None
+    for prefix in SUPPORTED_FLAG_PREFIXES:
+        if flag_lower.startswith(f"{prefix}{{"):
+            matched_prefix = prefix
+            break
+
+    if not matched_prefix:
+        supported_examples = ", ".join(f"{p}{{...}}" for p in SUPPORTED_FLAG_PREFIXES)
+        return False, f"FLAG 格式不正确，支持的格式如：{supported_examples} 等"
 
     # 检查是否以 '}' 结尾
     if not flag.endswith("}"):
         return False, f"FLAG 必须以 '}}' 结尾，当前: ...{flag[-10:]}"
 
     # 检查是否包含有效内容
-    content = flag[5:-1]  # 去掉 'flag{' 和 '}'
+    prefix_len = len(matched_prefix) + 1  # prefix + '{'
+    content = flag[prefix_len:-1]  # 去掉前缀和 '}'
     if not content:
-        return False, "FLAG 内容不能为空（flag{} 无效）"
+        return False, f"FLAG 内容不能为空（{matched_prefix}{{}} 无效）"
 
     # 检查是否包含非法字符（可选，根据比赛规则调整）
     # 一般 FLAG 内容只包含字母、数字、下划线、连字符
@@ -50,7 +83,7 @@ def validate_flag_format(flag: str) -> Tuple[bool, str]:
     return True, ""
 
 
-def extract_flag_from_text(text: str) -> list:
+def extract_flag_from_text(text: str) -> List[str]:
     """
     从文本中提取所有可能的 FLAG
 
@@ -60,20 +93,38 @@ def extract_flag_from_text(text: str) -> list:
     Returns:
         提取到的 FLAG 列表（去重）
     """
-    # 匹配 flag{...} 或 FLAG{...} 格式（忽略大小写）
-    pattern = r'[Ff][Ll][Aa][Gg]\{[^}]+\}'
-    flags = re.findall(pattern, text)
+    # 使用完整匹配提取所有 FLAG
+    full_flags = []
+    for match in re.finditer(get_flag_pattern(), text):
+        full_flags.append(match.group(0))
 
     # 去重（保持原始大小写）
     unique_flags = []
     seen = set()
-    for flag in flags:
+    for flag in full_flags:
         flag_lower = flag.lower()
         if flag_lower not in seen:
             seen.add(flag_lower)
             unique_flags.append(flag)
 
     return unique_flags
+
+
+def get_flag_prefix(flag: str) -> Optional[str]:
+    """
+    获取 FLAG 的前缀类型
+
+    Args:
+        flag: FLAG 字符串
+
+    Returns:
+        前缀类型（如 "flag", "aliyunctf"），未匹配返回 None
+    """
+    flag_lower = flag.lower()
+    for prefix in SUPPORTED_FLAG_PREFIXES:
+        if flag_lower.startswith(f"{prefix}{{"):
+            return prefix
+    return None
 
 
 def suggest_flag_fix(incomplete_flag: str) -> str:
@@ -88,9 +139,14 @@ def suggest_flag_fix(incomplete_flag: str) -> str:
     """
     suggestions = []
 
-    # ⭐ 忽略大小写检查前缀
-    if not incomplete_flag.lower().startswith("flag{"):
-        suggestions.append("添加 'flag{' 前缀")
+    # 检查是否有任何支持的前缀
+    has_prefix = any(
+        incomplete_flag.lower().startswith(f"{p}{{")
+        for p in SUPPORTED_FLAG_PREFIXES
+    )
+
+    if not has_prefix:
+        suggestions.append("添加正确的前缀（如 flag{, ctf{, aliyunctf{ 等）")
 
     if not incomplete_flag.endswith("}"):
         suggestions.append("添加 '}' 后缀")
@@ -101,29 +157,12 @@ def suggest_flag_fix(incomplete_flag: str) -> str:
     return "FLAG 格式看起来正确"
 
 
-# 示例用法
-if __name__ == "__main__":
-    test_cases = [
-        "flag{hahahahaha_this_is_demo_test_flag}",  # ✓ 正确
-        "FLAG{hahahahaha_this_is_demo_test_flag}",  # ✓ 正确（大写）
-        "Flag{test_mixed_case}",                     # ✓ 正确（混合大小写）
-        "FlaG{another_test}",                        # ✓ 正确（混合大小写）
-        "flag{hahahahaha_this_is_demo_test_flag",   # ✗ 缺少 }
-        "hahahahaha_this_is_demo_test_flag}",       # ✗ 缺少 flag{
-        "flag{}",                                    # ✗ 内容为空
-        "flag{test-123_ABC}",                        # ✓ 正确
-        "flag{test@#$}",                             # ⚠️ 特殊字符
-    ]
+def get_supported_formats_hint() -> str:
+    """
+    获取支持的 FLAG 格式提示（用于系统提示词）
 
-    print("=" * 60)
-    print("FLAG 格式验证测试")
-    print("=" * 60)
-    for flag in test_cases:
-        is_valid, msg = validate_flag_format(flag)
-        status = "✓" if is_valid else "✗"
-        print(f"{status} {flag}")
-        if msg:
-            print(f"  → {msg}")
-        if not is_valid:
-            print(f"  → {suggest_flag_fix(flag)}")
-        print()
+    Returns:
+        格式化的提示字符串
+    """
+    examples = [f"{p}{{...}}" for p in SUPPORTED_FLAG_PREFIXES]
+    return f"支持的 FLAG 格式：{', '.join(examples)} 等"

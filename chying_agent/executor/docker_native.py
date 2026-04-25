@@ -17,7 +17,6 @@ from chying_agent.executor.base import BaseExecutor, ExecutionResult
 from chying_agent.common import log_system_event
 import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
-from functools import partial
 
 
 class DockerExecutor(BaseExecutor):
@@ -44,18 +43,14 @@ class DockerExecutor(BaseExecutor):
             )
         
         self.container_name = container_name
+        self._executor_pool = ThreadPoolExecutor(max_workers=4)
         try:
             self.client = docker.from_env()
             self.container = self.client.containers.get(self.container_name)
-            # 这个日志不记录了，避免日志过多，只记录失败的
-            # log_system_event(
-            #     f"[Executor] 成功连接到 Docker 容器 '{self.container_name}'", 
-            #     {"container_id": self.container.short_id}
-            # )
         except Exception as e:
             log_system_event(
-                f"[Executor] 无法连接到 Docker 容器 '{self.container_name}'", 
-                {"error": str(e)}, 
+                f"Executor.连接失败",
+                {"container": self.container_name, "error": str(e)},
                 level=logging.ERROR
             )
             raise ConnectionError(
@@ -63,14 +58,40 @@ class DockerExecutor(BaseExecutor):
                 f"请确保容器正在运行。提示：docker ps"
             ) from e
 
-    def execute(self, command: str, timeout: int = 120, is_python: bool = False) -> ExecutionResult:
+    def _kill_exec_process(self, exec_id_holder: list[str]) -> None:
+        """超时后杀死容器内的 exec 进程，防止僵尸进程累积。"""
+        if not exec_id_holder:
+            return
+        try:
+            inspect_result = self.container.client.api.exec_inspect(exec_id_holder[0])
+            pid = inspect_result.get("Pid", 0)
+            if pid and pid > 0:
+                self.container.exec_run(f"kill -9 {pid}", detach=True)
+                log_system_event(
+                    "Executor.超时进程已杀死",
+                    {"pid": pid, "exec_id": exec_id_holder[0]},
+                )
+        except Exception as e:
+            log_system_event(
+                "Executor.超时进程清理失败",
+                {"error": str(e)},
+                level=logging.DEBUG,
+            )
+
+    def execute(
+        self, command: str, timeout: int = 120, is_python: bool = False,
+        workdir: str | None = None, caller: str = "",
+        environment: dict[str, str] | None = None,
+    ) -> ExecutionResult:
         """
-        在 Docker 容器内执行命令（同步接口，支持超时控制）。
-        
+        在 Docker 容器内执行命令（同步接口，支持超时控制，超时后保留部分输出）。
+
         Args:
             command: 要执行的命令字符串（Shell 命令或 Python 代码）。
             timeout: 命令执行的超时时间（秒）。
             is_python: 是否作为 Python 代码执行。
+            workdir: 命令执行的工作目录（容器内路径），如 /root/agent-work/ctf/Web/xxx
+            caller: 调用方标识（如 "exec[shell]"、"exec[python]"），用于超时日志。
 
         Returns:
             一个 ExecutionResult 实例。
@@ -87,53 +108,87 @@ class DockerExecutor(BaseExecutor):
                 # 替换单引号为 '\''（正确的 bash 转义方式）
                 escaped_command = command.replace("'", "'\\''")
                 exec_cmd = f"/bin/bash -c '{escaped_command}'"
-            
-            # 使用线程池执行阻塞的 Docker API 调用，支持超时
-            executor_pool = ThreadPoolExecutor(max_workers=1)
-            exec_func = partial(
-                self.container.exec_run,
-                cmd=exec_cmd,
-                demux=True
-            )
-            
-            # 使用 Future 实现超时
-            future = executor_pool.submit(exec_func)
+
+            # 流式读取：在外层定义收集列表，线程写入的部分输出在超时后可直接读取
+            stdout_parts: list[str] = []
+            stderr_parts: list[str] = []
+            # 用于获取 exit_code 的 exec instance ID
+            exec_id_holder: list[str] = []
+
+            def _run_streaming():
+                """在线程中流式执行并收集输出（低级 API：exec_create + exec_start）"""
+                api = self.container.client.api
+                exec_instance = api.exec_create(
+                    self.container.id, cmd=exec_cmd, workdir=workdir,
+                    stdout=True, stderr=True,
+                    environment=environment,
+                )
+                eid = exec_instance["Id"]
+                exec_id_holder.append(eid)
+
+                output_gen = api.exec_start(eid, stream=True, demux=True)
+                for stdout_chunk, stderr_chunk in output_gen:
+                    if stdout_chunk:
+                        stdout_parts.append(stdout_chunk.decode('utf-8', errors='ignore'))
+                    if stderr_chunk:
+                        stderr_parts.append(stderr_chunk.decode('utf-8', errors='ignore'))
+
+            future = self._executor_pool.submit(_run_streaming)
             try:
-                exec_result = future.result(timeout=timeout)
+                future.result(timeout=timeout)
             except TimeoutError:
+                self._kill_exec_process(exec_id_holder)
+
+                partial_stdout = "".join(stdout_parts)
+                partial_stderr = "".join(stderr_parts)
+                timeout_note = f"命令执行超时（{timeout}秒）。"
+                if partial_stdout or partial_stderr:
+                    timeout_note += "\n以下是超时前捕获的部分输出。"
                 log_system_event(
-                    f"[Executor] 命令执行超时（{timeout}秒）",
-                    {"command": command},
-                    level=logging.WARNING
+                    "Executor.命令超时",
+                    {
+                        "timeout": timeout,
+                        "caller": caller or "unknown",
+                        "command": command,
+                        "partial_stdout_len": len(partial_stdout),
+                        "partial_stderr_len": len(partial_stderr),
+                    },
+                    level=logging.WARNING,
                 )
                 return ExecutionResult(
                     exit_code=-1,
-                    stdout="",
-                    stderr=f"命令执行超时（{timeout}秒）。建议使用更快的扫描参数或增加超时时间。",
+                    stdout=partial_stdout,
+                    stderr=partial_stderr + ("\n" if partial_stderr else "") + timeout_note,
                     command=command,
                 )
-            
-            exit_code = exec_result.exit_code
-            stdout, stderr = exec_result.output
-            
-            # 解码输出
-            stdout_str = stdout.decode('utf-8', errors='ignore').strip() if stdout else ""
-            stderr_str = stderr.decode('utf-8', errors='ignore').strip() if stderr else ""
-            
+
+            # 正常完成：从收集的 parts 组装输出
+            stdout_str = "".join(stdout_parts).strip()
+            stderr_str = "".join(stderr_parts).strip()
+
+            # 通过低级 API exec_inspect 获取真实 exit_code
+            exit_code = -1
+            if exec_id_holder:
+                try:
+                    inspect_result = self.container.client.api.exec_inspect(exec_id_holder[0])
+                    exit_code = inspect_result.get("ExitCode", -1)
+                    if exit_code is None:
+                        exit_code = -1
+                except Exception:
+                    pass
+
             # 记录执行结果
             log_system_event(
-                "[Executor] Docker 命令执行结果",
+                "Executor.执行完成",
                 {
                     "exit_code": exit_code,
-                    "stdout_preview": stdout_str if stdout_str else "(空)",
-                    "stderr_preview": stderr_str if stderr_str else "(空)",
-                    "stdout_length": len(stdout_str),
-                    "stderr_length": len(stderr_str)
+                    "stdout_len": len(stdout_str),
+                    "stderr_len": len(stderr_str),
                 }
             )
 
             return ExecutionResult(
-                exit_code=exit_code if exit_code is not None else -1,
+                exit_code=exit_code,
                 stdout=stdout_str,
                 stderr=stderr_str,
                 command=command,

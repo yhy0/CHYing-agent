@@ -1,0 +1,78 @@
+# DHCPv6
+
+### DHCPv6 vs. DHCPv4 Message Types Comparison
+
+A comparative view of DHCPv6 and DHCPv4 message types is presented in the table below:
+
+| DHCPv6 Message Type                | DHCPv4 Message Type |
+| :--------------------------------- | :------------------ |
+| Solicit (1)                        | DHCPDISCOVER        |
+| Advertise (2)                      | DHCPOFFER           |
+| Request (3), Renew (5), Rebind (6) | DHCPREQUEST         |
+| Reply (7)                          | DHCPACK / DHCPNAK   |
+| Release (8)                        | DHCPRELEASE         |
+| Information-Request (11)           | DHCPINFORM          |
+| Decline (9)                        | DHCPDECLINE         |
+| Confirm (4)                        | none                |
+| Reconfigure (10)                   | DHCPFORCERENEW      |
+| Relay-Forw (12), Relay-Reply (13)  | none                |
+
+**Detailed Explanation of DHCPv6 Message Types:**
+
+1. **Solicit (1)**: Initiated by a DHCPv6 client to find available servers.
+2. **Advertise (2)**: Sent by servers in response to a Solicit, indicating availability for DHCP service.
+3. **Request (3)**: Clients use this to request IP addresses or prefixes from a specific server.
+4. **Confirm (4)**: Used by a client to verify if the assigned addresses are still valid on the network, typically after a network change.
+5. **Renew (5)**: Clients send this to the original server to extend address lifetimes or update configurations.
+6. **Rebind (6)**: Sent to any server to extend address lifetimes or update configurations, especially when no response is received to a Renew.
+7. **Reply (7)**: Servers use this to provide addresses, configuration parameters, or to acknowledge messages like Release or Decline.
+8. **Release (8)**: Clients inform the server to stop using one or more assigned addresses.
+9. **Decline (9)**: Sent by clients to report that assigned addresses are in conflict on the network.
+10. **Reconfigure (10)**: Servers prompt clients to initiate transactions for new or updated configurations.
+11. **Information-Request (11)**: Clients request configuration parameters without IP address assignment.
+12. **Relay-Forw (12)**: Relay agents forward messages to servers.
+13. **Relay-Repl (13)**: Servers reply to relay agents, who then deliver the message to the client.
+
+## Quick Protocol Notes (Offensive)
+
+- DHCPv6 clients use UDP port `546` and servers/relays use UDP port `547`.
+- Clients send Solicit to **All_DHCP_Relay_Agents_and_Servers** (`ff02::1:2`); servers/relays listen there. **All_DHCP_Servers** is `ff05::1:3`.
+- Client and server identities are carried in `OPTION_CLIENTID` and `OPTION_SERVERID` using **DUIDs**. This is handy for fingerprinting the same host across address changes.
+- Address assignment is requested with `IA_NA` (non-temporary address) and prefix delegation with `IA_PD` (downstream router prefix).
+
+### Quick Recon
+
+```bash
+# Basic DHCPv6 traffic capture
+sudo tcpdump -vvv -i <IFACE> 'udp port 546 or udp port 547'
+
+# THC-IPv6: discover DHCPv6 servers and their options
+sudo atk6-dump_dhcp6 <IFACE>
+```
+
+### Rogue DHCPv6 Server (Address/DNS Hijack)
+
+```bash
+# THC-IPv6: rogue DHCPv6 server advertising address + DNS
+sudo atk6-fake_dhcps6 <IFACE> <PREFIX>/<LEN> <DNSv6>
+```
+
+This is a generic on-link rogue DHCPv6 server. On Windows/AD networks, pair this with higher-level relays (see the IPv6 page) if you want NTLM relay primitives.
+
+### Pool Exhaustion / DHCPv6 Starvation
+
+```bash
+# THC-IPv6: exhaust the server's address pool
+sudo atk6-flood_dhcpc6 <IFACE>
+```
+
+### Reconfigure Message Caveat
+
+DHCPv6 **Reconfigure** is not blindly accepted: clients only accept it if they explicitly sent `OPTION_RECONF_ACCEPT`. By default, a client is **unwilling** to accept Reconfigure messages, so unsolid Reconfigure attacks often fail unless you observe/induce that option.
+
+## References
+
+- [https://support.huawei.com/enterprise/en/doc/EDOC1100306163/d427e938/introduction-to-dhcpv6-messages](https://support.huawei.com/enterprise/en/doc/EDOC1100306163/d427e938/introduction-to-dhcpv6-messages)
+
+- [https://www.rfc-editor.org/rfc/rfc8415](https://www.rfc-editor.org/rfc/rfc8415)
+- [https://www.kali.org/tools/thc-ipv6/](https://www.kali.org/tools/thc-ipv6/)

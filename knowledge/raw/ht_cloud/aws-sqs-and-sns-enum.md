@@ -1,0 +1,33 @@
+# AWS - SQS Enum
+
+## SQS
+
+Amazon Simple Queue Service (SQS) is presented as a **fully managed message queuing service**. Its main function is to assist in the scaling and decoupling of microservices, distributed systems, and serverless applications. The service is designed to remove the need for managing and operating message-oriented middleware, which can often be complex and resource-intensive. This elimination of complexity allows developers to direct their efforts towards more innovative and differentiating aspects of their work.
+
+### Enumeration
+
+```bash
+# Get queues info
+aws sqs list-queues
+aws sqs get-queue-attributes --queue-url <url> --attribute-names All
+
+# More about this in privesc & post-exploitation
+aws sqs receive-message --queue-url <value>
+
+aws sqs send-message --queue-url <value> --message-body <value>
+```
+
+> [!CAUTION]
+> Also, even if the `--queue-url` contains the region make sure you specify the correct region in **`--region`** or you will get an error that looks like indicate that you don't have access but the problem is the region.
+
+#### Unauthenticated Access
+
+#### Privilege Escalation
+
+#### Post Exploitation
+
+#### Persistence
+
+## References
+
+- [https://docs.aws.amazon.com/cdk/api/v2/python/aws\_cdk.aws\_sqs/README.html](https://docs.aws.amazon.com/cdk/api/v2/python/aws\_cdk.aws\_sqs/README.html)

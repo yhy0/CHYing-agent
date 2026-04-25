@@ -1,0 +1,140 @@
+# GCP - AppEngine Privesc
+
+## App Engine
+
+For more information about App Engine check:
+
+### `appengine.applications.get`, `appengine.instances.get`, `appengine.instances.list`, `appengine.operations.get`, `appengine.operations.list`, `appengine.services.get`, `appengine.services.list`, `appengine.versions.create`, `appengine.versions.get`, `appengine.versions.list`, `cloudbuild.builds.get`,`iam.serviceAccounts.actAs`, `resourcemanager.projects.get`, `storage.objects.create`, `storage.objects.list`
+
+Those are the needed permissions to **deploy an App using `gcloud` cli**. Maybe the **`get`** and **`list`** ones could be **avoided**.
+
+You can find python code examples in [https://github.com/GoogleCloudPlatform/python-docs-samples/tree/main/appengine](https://github.com/GoogleCloudPlatform/python-docs-samples/tree/main/appengine)
+
+By default, the name of the App service is going to be **`default`**, and there can be only 1 instance with the same name.\
+To change it and create a second App, in **`app.yaml`**, change the value of the root key to something like **`service: my-second-app`**
+
+```bash
+cd python-docs-samples/appengine/flexible/hello_world
+gcloud app deploy #Upload and start application inside the folder
+```
+
+Give it at least 10-15min, if it doesn't work call **deploy another of times** and wait some minutes.
+
+> [!NOTE]
+> It's **possible to indicate the Service Account to use** but by default, the App Engine default SA is used.
+
+The URL of the application is something like `https://<proj-name>.oa.r.appspot.com/` or `https://<service_name>-dot-<proj-name>.oa.r.appspot.com`
+
+### Update equivalent permissions
+
+You might have enough permissions to update an AppEngine but not to create a new one. In that case this is how you could update the current App Engine:
+
+```bash
+# Find the code of the App Engine in the buckets
+gsutil ls
+
+# Download code
+mkdir /tmp/appengine2
+cd /tmp/appengine2
+## In this case it was found in this custom bucket but you could also use the
+## buckets generated when the App Engine is created
+gsutil cp gs://appengine-lab-1-gcp-labs-4t04m0i6-3a97003354979ef6/labs_appengine_1_premissions_privesc.zip .
+unzip labs_appengine_1_premissions_privesc.zip
+
+## Now modify the code..
+
+## If you don't have an app.yaml, create one like:
+cat >> app.yaml <<EOF
+runtime: python312
+
+entrypoint: gunicorn -b :\$PORT main:app
+
+env_variables:
+  A_VARIABLE: "value"
+EOF
+
+# Deploy the changes
+gcloud app deploy
+
+# Update the SA if you need it (and if you have actas permissions)
+gcloud app update --service-account=<sa>@$PROJECT_ID.iam.gserviceaccount.com
+```
+
+If you have **already compromised a AppEngine** and you have the permission **`appengine.applications.update`** and **actAs** over the service account to use you could modify the service account used by AppEngine with:
+
+```bash
+gcloud app update --service-account=<sa>@$PROJECT_ID.iam.gserviceaccount.com
+```
+
+### `appengine.instances.enableDebug`, `appengine.instances.get`, `appengine.instances.list`, `appengine.operations.get`, `appengine.services.get`, `appengine.services.list`, `appengine.versions.get`, `appengine.versions.list`, `compute.projects.get`
+
+With these permissions, it's possible to **login via ssh in App Engine instances** of type **flexible** (not standard). Some of the **`list`** and **`get`** permissions **could not be really needed**.
+
+```bash
+gcloud app instances ssh --service <app-name> --version <version-id> <ID>
+```
+
+### `appengine.applications.update`, `appengine.operations.get`
+
+I think this just change the background SA google will use to setup the applications, so I don't think you can abuse this to steal the service account.
+
+```bash
+gcloud app update --service-account=<sa_email>
+```
+
+### `appengine.versions.getFileContents`, `appengine.versions.update`
+
+Not sure how to use these permissions or if they are useful (note that when you change the code a new version is created so I don't know if you can just update the code or the IAM role of one, but I guess you should be able to, maybe changing the code inside the bucket??).
+
+### `bigquery.tables.delete`, `bigquery.datasets.delete` & `bigquery.models.delete` (`bigquery.models.getMetadata`)
+
+To remove tables, dataset or models:
+```bash
+# Table removal
+bq rm -f -t <PROJECT_ID>.<DATASET>.<TABLE_NAME>
+
+# Dataset removal
+bq rm -r -f <PROJECT_ID>:<DATASET>
+
+# Model removal
+bq rm -m <PROJECT_ID>:<DATASET_NAME>.<MODEL_NAME>
+```
+
+### Abuse of Scheduled Queries
+
+With the `bigquery.datasets.get`, `bigquery.jobs.create`, and `iam.serviceAccounts.actAs` permissions, an identity can query dataset metadata, launch BigQuery jobs, and execute them using a Service Account with higher privileges.
+
+This attack enables malicious use of Scheduled Queries to automate queries (running under the chosen Service Account), which can, for example, lead to sensitive data being read and written into another table or dataset that the attacker does have access to—facilitating indirect and continuous exfiltration without needing to extract the data externally.
+
+Once the attacker knows which Service Account has the necessary permissions to execute the desired query, they can create a Scheduled Query configuration that runs using that Service Account and periodically writes the results into a dataset of their choosing.
+
+```bash
+bq mk \
+  --transfer_config \
+  --project_id=<PROJECT_ID> \
+  --location=US \
+  --data_source=scheduled_query \
+  --target_dataset=<DEST_DATASET> \
+  --display_name="Generic Scheduled Query" \
+--service_account_name="<SERVICE_ACCOUNT>@<PROJECT_ID>.iam.gserviceaccount.com" \
+  --schedule="every 10 minutes" \
+  --params='{
+    "query": "SELECT * FROM `<PROJECT_ID>.<SOURCE_DATASET>.<source_table>`;",
+    "destination_table_name_template": "<destination_table>",
+    "write_disposition": "WRITE_TRUNCATE"
+  }'
+
+```
+
+### Write Access over the buckets
+
+As mentioned the appengine versions generate some data inside a bucket with the format name: `staging.<project-id>.appspot.com`. Note that it's not possible to pre-takeover this bucket because GCP users aren't authorized to generate buckets using the domain name `appspot.com`.
+
+However, with read & write access over this bucket, it's possible to escalate privileges to the SA attached to the AppEngine version by monitoring the bucket and any time a change is performed, modify as fast as possible the code. This way, the container that gets created from this code will **execute the backdoored code**.
+
+For more information and a **PoC check the relevant information from this page**:
+
+### Write Access over the Artifact Registry
+
+Even though App Engine creates docker images inside Artifact Registry. It was tested that **even if you modify the image inside this service** and removes the App Engine instance (so a new one is deployed) the **code executed doesn't change**.\
+It might be possible that performing a **Race Condition attack like with the buckets it might be possible to overwrite the executed code**, but this wasn't tested.

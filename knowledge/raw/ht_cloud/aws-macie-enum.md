@@ -1,0 +1,134 @@
+# Amazon Macie
+
+## Macie
+
+Amazon Macie stands out as a service designed to **automatically detect, classify, and identify data** within an AWS account. It leverages **machine learning** to continuously monitor and analyze data, primarily focusing on detecting and alerting against unusual or suspicious activities by examining **cloud trail event** data and user behavior patterns.
+
+Key Features of Amazon Macie:
+
+1. **Active Data Review**: Employs machine learning to review data actively as various actions occur within the AWS account.
+2. **Anomaly Detection**: Identifies irregular activities or access patterns, generating alerts to mitigate potential data exposure risks.
+3. **Continuous Monitoring**: Automatically monitors and detects new data in Amazon S3, employing machine learning and artificial intelligence to adapt to data access patterns over time.
+4. **Data Classification with NLP**: Utilizes natural language processing (NLP) to classify and interpret different data types, assigning risk scores to prioritize findings.
+5. **Security Monitoring**: Identifies security-sensitive data, including API keys, secret keys, and personal information, helping to prevent data leaks.
+
+Amazon Macie is a **regional service** and requires the 'AWSMacieServiceCustomerSetupRole' IAM Role and an enabled AWS CloudTrail for functionality.
+
+### Alert System
+
+Macie categorizes alerts into predefined categories like:
+
+- Anonymized access
+- Data compliance
+- Credential Loss
+- Privilege escalation
+- Ransomware
+- Suspicious access, etc.
+
+These alerts provide detailed descriptions and result breakdowns for effective response and resolution.
+
+### Dashboard Features
+
+The dashboard categorizes data into various sections, including:
+
+- S3 Objects (by time range, ACL, PII)
+- High-risk CloudTrail events/users
+- Activity Locations
+- CloudTrail user identity types, and more.
+
+### User Categorization
+
+Users are classified into tiers based on the risk level of their API calls:
+
+- **Platinum**: High-risk API calls, often with admin privileges.
+- **Gold**: Infrastructure-related API calls.
+- **Silver**: Medium-risk API calls.
+- **Bronze**: Low-risk API calls.
+
+### Identity Types
+
+Identity types include Root, IAM user, Assumed Role, Federated User, AWS Account, and AWS Service, indicating the source of requests.
+
+### Data Classification
+
+Data classification encompasses:
+
+- Content-Type: Based on detected content type.
+- File Extension: Based on file extension.
+- Theme: Categorized by keywords within files.
+- Regex: Categorized based on specific regex patterns.
+
+The highest risk among these categories determines the file's final risk level.
+
+### Research and Analysis
+
+Amazon Macie's research function allows for custom queries across all Macie data for in-depth analysis. Filters include CloudTrail Data, S3 Bucket properties, and S3 Objects. Moreover, it supports inviting other accounts to share Amazon Macie, facilitating collaborative data management and security monitoring.
+
+## Listing Findings with AWS Console
+
+After scanning a specific S3 bucket for secrets and sensitive data, findings will be generated and displayed in the console. Authorized users with sufficient permissions can view and list these findings for each job.
+
+<img width="1438" alt="Screenshot 2025-02-10 at 19 08 08" src="https://github.com/user-attachments/assets/4420f13e-c071-4ae4-946b-6fe67449a9f6" />
+
+## Revealing Secret
+
+Amazon Macie provides a feature that displays detected secrets in clear-text format. This functionality aids in the identification of the compromised data. However, displaying secrets in clear-text is generally not considered best practice due to security concerns, as it could potentially expose sensitive information.
+
+<img width="596" alt="Screenshot 2025-02-10 at 19 13 53" src="https://github.com/user-attachments/assets/31c40c29-0bba-429b-8b86-4e214d1aef66" />
+
+<img width="1154" alt="Screenshot 2025-02-10 at 19 15 11" src="https://github.com/user-attachments/assets/df616e56-a11a-41da-ac69-0bea37d143a5" />
+
+### Enumeration
+
+```bash
+# Get buckets
+aws macie2 describe-buckets
+
+# Org config
+aws macie2 describe-organization-configuration
+
+# Get admin account (if any)
+aws macie2 get-administrator-account
+aws macie2 list-organization-admin-accounts # Run from the management account of the org
+
+# Get macie account members (run this from the admin account)
+aws macie2 list-members
+
+# Check if automated sensitive data discovey is enabled
+aws macie2 get-automated-discovery-configuration
+
+# Get findings
+aws macie2 list-findings
+aws macie2 get-findings --finding-ids <ids>
+aws macie2 list-findings-filters
+aws macie2 get -findings-filters --id <id>
+
+# Get allow lists
+aws macie2 list-allow-lists
+aws macie2 get-allow-list --id <id>
+
+# Get different info
+aws macie2 list-classification-jobs
+aws macie2 describe-classification-job --job-id <Job_ID>
+aws macie2 list-classification-scopes
+aws macie2 list-custom-data-identifiers
+aws macie2 get-custom-data-identifier --id <Identifier_ID>
+
+# Retrieve account details and statistics
+aws macie2 get-macie-session
+aws macie2 get-usage-statistic
+```
+
+### Privesc
+
+### Post Exploitation
+
+> [!TIP]
+> From an attackers perspective, this service isn't made to detect the attacker, but to detect sensitive information in the stored files. Therefore, this service might **help an attacker to find sensitive info** inside the buckets.\
+> However, maybe an attacker could also be interested in disrupting it in order to prevent the victim from getting alerts and steal that info easier.
+
+TODO: PRs are welcome!
+
+## References
+
+- [https://cloudacademy.com/blog/introducing-aws-security-hub/](https://cloudacademy.com/blog/introducing-aws-security-hub/)

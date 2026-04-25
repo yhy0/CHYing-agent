@@ -1,0 +1,926 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>零界 · Skills 工作流</title>
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0a0a1a;--purple:#aa44ff;--blue:#1a1a4a;--gold:#ffaa00;
+}
+html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:#e0e0f0;
+  font-family:'PingFang SC','Microsoft YaHei','Noto Sans SC',system-ui,sans-serif}
+
+/* ── BG layers ── */
+#bg-canvas{position:fixed;inset:0;z-index:0;pointer-events:none}
+body::before{
+  content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(ellipse 120% 80% at 20% 10%, rgba(170,68,255,.06) 0%, transparent 60%),
+    radial-gradient(ellipse 100% 60% at 80% 90%, rgba(0,100,255,.04) 0%, transparent 60%),
+    repeating-linear-gradient(0deg,transparent,transparent 59px,rgba(170,68,255,.018) 59px,rgba(170,68,255,.018) 60px),
+    repeating-linear-gradient(90deg,transparent,transparent 59px,rgba(170,68,255,.018) 59px,rgba(170,68,255,.018) 60px);
+}
+/* scanline overlay */
+body::after{
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;
+  background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.035) 2px,rgba(0,0,0,.035) 4px);
+  mix-blend-mode:multiply;
+}
+
+/* ── LAYOUT ── */
+#app{position:relative;z-index:1;display:flex;flex-direction:column;width:100%;height:100%;padding:10px 20px 10px}
+
+/* HEADER */
+#header{display:flex;align-items:center;justify-content:space-between;height:60px;padding:0 6px;flex-shrink:0}
+#header-left h1{
+  font-size:24px;font-weight:800;letter-spacing:3px;
+  background:linear-gradient(90deg,#bb66ff 0%,#6699ff 40%,var(--gold) 100%);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+  filter:drop-shadow(0 0 12px rgba(170,68,255,.3));
+}
+#header-left .subtitle{font-size:12px;color:#6668;margin-top:2px;letter-spacing:1.5px}
+#clock{
+  font-size:44px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:5px;
+  color:var(--gold);
+  text-shadow:0 0 12px rgba(255,170,0,.7),0 0 30px rgba(255,170,0,.35),0 0 60px rgba(255,170,0,.15);
+  filter:drop-shadow(0 2px 8px rgba(255,170,0,.2));
+}
+
+/* TIMELINE */
+#timeline{flex-shrink:0;height:56px;display:flex;align-items:center;gap:14px;padding:2px 6px 0}
+#timeline-track{
+  flex:1;position:relative;height:26px;
+  background:rgba(255,255,255,.03);border-radius:13px;
+  border:1px solid rgba(170,68,255,.12);
+  overflow:visible
+}
+#timeline-inner{position:relative;width:100%;height:100%;overflow:hidden;border-radius:13px}
+/* progress fill behind playhead */
+#timeline-fill{position:absolute;top:0;left:0;height:100%;border-radius:13px;
+  background:linear-gradient(90deg,rgba(170,68,255,.12),rgba(255,170,0,.08));
+  transition:width .15s linear;pointer-events:none}
+#playhead{
+  position:absolute;top:-3px;width:3px;height:32px;
+  background:var(--gold);border-radius:2px;
+  box-shadow:0 0 10px rgba(255,170,0,.9),0 0 25px rgba(255,170,0,.5),0 0 50px rgba(255,170,0,.2);
+  transition:left .15s linear;z-index:2
+}
+.tick{position:absolute;top:0;width:2px;height:100%;border-radius:1px;opacity:.45}
+#time-labels{
+  position:absolute;bottom:-16px;left:0;right:0;
+  display:flex;justify-content:space-between;
+  font-size:10px;color:#555;padding:0 2px;font-variant-numeric:tabular-nums
+}
+#controls{display:flex;gap:5px;flex-shrink:0}
+#controls button{
+  background:rgba(170,68,255,.08);border:1px solid rgba(170,68,255,.2);color:#999;
+  padding:5px 14px;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit;
+  transition:all .2s;backdrop-filter:blur(4px)
+}
+#controls button:hover{background:rgba(170,68,255,.2);color:#ddd;border-color:rgba(170,68,255,.4)}
+#controls button.active{
+  background:rgba(255,170,0,.12);color:var(--gold);
+  border-color:rgba(255,170,0,.5);
+  box-shadow:0 0 12px rgba(255,170,0,.2)
+}
+
+/* MAIN AREA */
+#main{flex:1;display:flex;gap:14px;min-height:0;padding:8px 0}
+
+/* LEFT: node network */
+#left-panel{
+  position:relative;flex:0 0 65%;overflow:hidden;border-radius:16px;
+  background:rgba(8,8,26,.7);
+  border:1px solid rgba(170,68,255,.06);
+  box-shadow:inset 0 0 60px rgba(0,0,0,.4)
+}
+#netCanvas{position:absolute;inset:0;width:100%;height:100%}
+
+/* skill nodes */
+.skill-node{
+  position:absolute;width:148px;padding:10px 8px 8px;text-align:center;
+  background:rgba(12,12,36,.88);
+  border:1.5px solid rgba(255,255,255,.08);border-radius:14px;
+  transform:translate(-50%,-50%);z-index:2;cursor:default;
+  transition:transform .35s cubic-bezier(.34,1.56,.64,1),box-shadow .35s ease,border-color .35s ease;
+  backdrop-filter:blur(8px)
+}
+.skill-node .icon{font-size:24px;line-height:1;filter:drop-shadow(0 0 4px rgba(255,255,255,.2))}
+.skill-node .name{font-size:14px;font-weight:700;margin:5px 0 2px}
+.skill-node .en{font-size:10px;color:#777;margin-bottom:3px}
+.skill-node .cron-text{font-size:9px;color:#555;font-family:'SF Mono',Consolas,monospace}
+.skill-node.active{transform:translate(-50%,-50%) scale(1.10);z-index:3}
+
+#core-node{
+  position:absolute;transform:translate(-50%,-50%);z-index:2;
+  width:116px;height:116px;border-radius:50%;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:radial-gradient(circle,rgba(170,68,255,.15) 0%,rgba(10,10,40,.95) 70%);
+  border:2px solid rgba(170,68,255,.35);
+  font-size:14px;font-weight:700;color:#ccc;
+  box-shadow:0 0 40px rgba(170,68,255,.12),0 0 80px rgba(170,68,255,.05),inset 0 0 20px rgba(170,68,255,.06);
+  animation:corePulse 4s ease-in-out infinite
+}
+#core-node .core-icon{font-size:28px;margin-bottom:4px;filter:drop-shadow(0 0 8px rgba(170,68,255,.4))}
+#core-node .core-sub{font-size:9px;color:#888;margin-top:2px}
+@keyframes corePulse{
+  0%,100%{box-shadow:0 0 40px rgba(170,68,255,.12),0 0 80px rgba(170,68,255,.05),inset 0 0 20px rgba(170,68,255,.06);border-color:rgba(170,68,255,.35)}
+  50%{box-shadow:0 0 60px rgba(170,68,255,.22),0 0 100px rgba(170,68,255,.08),inset 0 0 30px rgba(170,68,255,.1);border-color:rgba(170,68,255,.55)}
+}
+
+/* pulse ring */
+.pulse-ring{
+  position:absolute;inset:-12px;border-radius:18px;border:2px solid;
+  opacity:0;transform:scale(1);pointer-events:none;
+  animation:ringPulse 1s ease-out forwards
+}
+@keyframes ringPulse{
+  0%{opacity:.7;transform:scale(1)}
+  100%{opacity:0;transform:scale(1.6)}
+}
+
+/* activity count badge */
+.skill-node .fire-count{
+  position:absolute;top:-6px;right:-6px;
+  min-width:20px;height:20px;padding:0 5px;border-radius:10px;
+  background:rgba(255,170,0,.9);color:#000;font-size:10px;font-weight:800;
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 0 8px rgba(255,170,0,.5);
+  opacity:0;transform:scale(0);transition:all .3s cubic-bezier(.34,1.56,.64,1)
+}
+.skill-node .fire-count.show{opacity:1;transform:scale(1)}
+
+/* RIGHT: detail panel */
+#right-panel{
+  flex:1;display:flex;flex-direction:column;gap:10px;
+  padding:16px 18px;border-radius:16px;
+  background:rgba(10,10,32,.75);
+  border:1px solid rgba(170,68,255,.08);
+  overflow-y:auto;backdrop-filter:blur(4px)
+}
+#right-panel h2{font-size:12px;color:#555;text-transform:uppercase;letter-spacing:3px;margin-bottom:2px}
+#detail-header{display:flex;align-items:center;gap:12px;padding:4px 0}
+#detail-icon{font-size:38px;filter:drop-shadow(0 0 8px rgba(255,255,255,.2));display:flex;align-items:center}
+#detail-icon svg{width:38px;height:38px}
+#detail-names .d-name{font-size:22px;font-weight:800}
+#detail-names .d-en{font-size:11px;color:#777;margin-top:1px}
+#detail-cron{font-size:12px;color:#888;font-family:'SF Mono',Consolas,monospace;margin-top:-2px}
+#detail-cron em{color:var(--gold);font-style:normal}
+.detail-section{margin-top:4px}
+.detail-section h3{font-size:10px;color:#555;text-transform:uppercase;letter-spacing:2px;margin-bottom:5px}
+#detail-action{
+  font-size:14px;line-height:1.9;color:#bbb;min-height:60px;white-space:pre-wrap;
+  padding:8px 10px;border-radius:8px;
+  background:rgba(0,0,0,.2);border:1px solid rgba(170,68,255,.05)
+}
+#detail-action .cursor{
+  display:inline-block;width:2px;height:15px;
+  background:var(--gold);animation:blink .55s step-end infinite;
+  vertical-align:middle;margin-left:1px;
+  box-shadow:0 0 6px rgba(255,170,0,.5)
+}
+@keyframes blink{50%{opacity:0}}
+#detail-files{font-size:11px;color:#666;line-height:1.9;font-family:'SF Mono',Consolas,monospace}
+#detail-files .file{color:#999;padding:1px 6px;border-radius:3px;background:rgba(255,255,255,.03);margin-bottom:2px;display:inline-block}
+#detail-files .file::before{content:'📄 ';font-size:10px}
+#detail-theory{
+  font-size:14px;color:var(--gold);font-weight:600;
+  text-shadow:0 0 8px rgba(255,170,0,.3);
+  padding:6px 0
+}
+.detail-idle{color:#444;font-style:italic;font-size:13px;text-align:center;padding:50px 0}
+
+/* log stream */
+#log-stream{
+  margin-top:auto;border-top:1px solid rgba(170,68,255,.06);padding-top:8px
+}
+#log-stream h3{font-size:10px;color:#555;text-transform:uppercase;letter-spacing:2px;margin-bottom:6px}
+#log-list{max-height:120px;overflow-y:auto;font-size:11px;color:#666;line-height:1.7;font-family:'SF Mono',Consolas,monospace}
+#log-list .log-entry{padding:1px 0;border-bottom:1px solid rgba(255,255,255,.02)}
+#log-list .log-time{color:#555}
+#log-list .log-skill{font-weight:700}
+
+/* BOTTOM: challenge progress */
+#bottom-panel{flex-shrink:0;display:flex;gap:10px;height:140px;padding:6px 0 0}
+.challenge-card{
+  flex:1;padding:12px 14px;border-radius:14px;
+  background:rgba(10,10,32,.7);
+  border:1px solid rgba(255,255,255,.04);
+  display:flex;flex-direction:column;justify-content:space-between;
+  transition:border-color .4s,box-shadow .4s;
+  backdrop-filter:blur(4px)
+}
+.challenge-card.highlight{border-color:rgba(68,255,136,.3);box-shadow:0 0 20px rgba(68,255,136,.08)}
+#card-c1{border-left:2px solid rgba(255,68,102,.3)}
+#card-c2{border-left:2px solid rgba(255,170,0,.3)}
+#card-c3{border-left:2px solid rgba(68,255,136,.3)}
+#card-c4{border-left:2px solid rgba(0,221,255,.3)}
+.challenge-card .c-header{display:flex;align-items:center;justify-content:space-between}
+.challenge-card .c-id{font-size:10px;color:#555;font-weight:800;letter-spacing:1.5px}
+.challenge-card .c-name{font-size:14px;font-weight:700;margin:3px 0}
+.challenge-card .c-detail{font-size:12px;color:#888;line-height:1.7}
+.challenge-card .c-detail .done{color:#44ff88;text-shadow:0 0 6px rgba(68,255,136,.4)}
+.challenge-card .c-detail .pending{color:#ff8844}
+.challenge-card .c-detail .val{font-variant-numeric:tabular-nums;font-weight:700;color:#ddd}
+.challenge-card .c-progress{height:3px;border-radius:2px;background:rgba(255,255,255,.04);margin-top:6px;overflow:hidden}
+.challenge-card .c-bar{height:100%;border-radius:2px;transition:width .5s ease;background:linear-gradient(90deg,var(--purple),var(--gold))}
+#card-c1 .c-bar{background:linear-gradient(90deg,#ff4466,#ff6688)}
+#card-c2 .c-bar{background:linear-gradient(90deg,#ffaa00,#ffcc44)}
+#card-c3 .c-bar{background:linear-gradient(90deg,#44ff88,#66ffaa)}
+#card-c4 .c-bar{background:linear-gradient(90deg,#00ddff,#44eeff)}
+
+#score-card{
+  flex:0 0 170px;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  border-radius:14px;
+  background:linear-gradient(135deg,rgba(170,68,255,.08),rgba(255,170,0,.06));
+  border:1px solid rgba(255,170,0,.15);
+  position:relative;overflow:hidden
+}
+#score-card::before{
+  content:'';position:absolute;inset:0;
+  background:radial-gradient(circle at 50% 30%,rgba(255,170,0,.06),transparent 70%);
+  animation:scoreGlow 3s ease-in-out infinite
+}
+@keyframes scoreGlow{0%,100%{opacity:.5}50%{opacity:1}}
+#score-card .s-label{font-size:10px;color:#777;letter-spacing:2.5px;margin-bottom:2px;position:relative}
+#score-card .s-value{
+  font-size:40px;font-weight:900;color:var(--gold);font-variant-numeric:tabular-nums;
+  text-shadow:0 0 15px rgba(255,170,0,.6),0 0 40px rgba(255,170,0,.25);
+  position:relative;line-height:1
+}
+#score-card .s-unit{font-size:11px;color:#777;margin-top:4px;position:relative}
+</style>
+</head>
+<body>
+<canvas id="bg-canvas"></canvas>
+<div id="app">
+  <div id="header">
+    <div id="header-left">
+      <h1>零界 · Skills 工作流</h1>
+      <div class="subtitle">Zero Zone AI Competition · Automated Agent Framework</div>
+    </div>
+    <div id="clock">09:00</div>
+  </div>
+
+  <div id="timeline">
+    <div id="timeline-track">
+      <div id="timeline-inner">
+        <div id="timeline-fill"></div>
+      </div>
+      <div id="playhead"></div>
+      <div id="time-labels"></div>
+    </div>
+    <div id="controls">
+      <button id="btnPlay" onclick="togglePlay()">⏸</button>
+      <button class="speed active" data-speed="1" onclick="setSpeed(1,this)">1x</button>
+      <button class="speed" data-speed="2" onclick="setSpeed(2,this)">2x</button>
+      <button class="speed" data-speed="5" onclick="setSpeed(5,this)">5x</button>
+    </div>
+  </div>
+
+  <div id="main">
+    <div id="left-panel">
+      <canvas id="netCanvas"></canvas>
+      <div id="core-node">
+        <div class="core-icon"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#aa44ff" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+        Skill + Cron
+        <div class="core-sub">定时任务调度</div>
+      </div>
+    </div>
+    <div id="right-panel">
+      <h2>▍技能详情</h2>
+      <div id="detail-content"><div class="detail-idle">等待技能触发...</div></div>
+      <div id="log-stream">
+        <h3>📜 事件流</h3>
+        <div id="log-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="bottom-panel">
+    <div class="challenge-card" id="card-c1">
+      <div>
+        <div class="c-header"><span class="c-id">C1</span></div>
+        <div class="c-name"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ff4466" stroke-width="2" style="vertical-align:-2px;margin-right:4px"><path d="m13 2-2 2.5h3L12 7"/><path d="M10 14v-2a2 2 0 0 1 4 0v2"/><rect x="8" y="14" width="8" height="8" rx="1"/></svg>Prompt Injection</div>
+      </div>
+      <div class="c-detail" id="c1-detail">
+        Sub1 <span class="pending">⏳</span>&nbsp;&nbsp;
+        Sub2 <span class="pending" id="c1-sub2">⏳</span>&nbsp;&nbsp;
+        Sub3 <span class="pending">⏳</span>
+      </div>
+      <div class="c-progress"><div class="c-bar" id="c1-bar" style="width:0%"></div></div>
+    </div>
+    <div class="challenge-card" id="card-c2">
+      <div>
+        <div class="c-header"><span class="c-id">C2</span></div>
+        <div class="c-name"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ffaa00" stroke-width="2" style="vertical-align:-2px;margin-right:4px"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>Key Exchange</div>
+      </div>
+      <div class="c-detail" id="c2-detail">
+        密钥: <span class="val" id="c2-keys">0</span>/3
+        <span id="c2-status"></span>
+      </div>
+      <div class="c-progress"><div class="c-bar" id="c2-bar" style="width:0%"></div></div>
+    </div>
+    <div class="challenge-card" id="card-c3">
+      <div>
+        <div class="c-header"><span class="c-id">C3</span></div>
+        <div class="c-name"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#44ff88" stroke-width="2" style="vertical-align:-2px;margin-right:4px"><path d="M17 6.1H3m18 11.8H7m5-5.9h9M1 12l4-4v8z"/></svg>Influence</div>
+      </div>
+      <div class="c-detail" id="c3-detail">
+        帖子: <span class="val" id="c3-posts">0</span>&nbsp;&nbsp;
+        评论: <span class="val" id="c3-comments">0</span>
+      </div>
+      <div class="c-progress"><div class="c-bar" id="c3-bar" style="width:0%"></div></div>
+    </div>
+    <div class="challenge-card" id="card-c4">
+      <div>
+        <div class="c-header"><span class="c-id">C4</span></div>
+        <div class="c-name"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#00ddff" stroke-width="2" style="vertical-align:-2px;margin-right:4px"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>Treasure Hunt</div>
+      </div>
+      <div class="c-detail">Flags: <span class="val" id="c4-flags">0</span> / 7</div>
+      <div class="c-progress"><div class="c-bar" id="c4-bar" style="width:0%"></div></div>
+    </div>
+    <div id="score-card">
+      <div class="s-label">TOTAL SCORE</div>
+      <div class="s-value" id="score-val">0</div>
+      <div class="s-unit">分</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+//  SKILLS DATA
+// ═══════════════════════════════════════════════════════════════
+const SKILLS=[
+  {id:'battle-scan',name:'战场感知',en:'Battle Scan',color:'#4488ff',icon:'<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#4488ff" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></svg>',
+   cron:'*/10 * * * *',cronLabel:'每10分钟',check:m=>m%10===0,
+   actions:'扫描排行榜…\n更新Agent画像…\n识别威胁…\n分析对手行为模式…',
+   files:['state.json','agents.json','leaderboard.json'],theory:'TFT (以牙还牙)'},
+  {id:'key-exchange',name:'密钥交换',en:'Key Exchange',color:'#ffaa00',icon:'<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffaa00" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>',
+   cron:'*/5 * * * *',cronLabel:'每5分钟',check:m=>m%5===0,
+   actions:'检查私信…\nTFT决策引擎…\n交叉验证密钥…\n提交flag…',
+   files:['state.json','dms.json','keys.json'],theory:'TFT (以牙还牙)'},
+  {id:'interact',name:'互动维护',en:'Interact',color:'#44ff88',icon:'<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#44ff88" stroke-width="2"><path d="M17 6.1H3m18 11.8H7m5-5.9h9M1 12l4-4v8z"/></svg>',
+   cron:':05,:15,:25,:35,:45,:55',cronLabel:':05,:15,:25,:35,:45,:55',
+   check:m=>[5,15,25,35,45,55].includes(m%60),
+   actions:'回复热门评论…\n联盟成员互助…\n战略性点赞…',
+   files:['state.json','comments.json','alliances.json'],theory:'Signaling (信号博弈)'},
+  {id:'treasure',name:'寻宝扫描',en:'Treasure',color:'#00ddff',icon:'<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#00ddff" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>',
+   cron:'*/3 * * * *',cronLabel:'每3分钟',check:m=>m%3===0,
+   actions:'扫描全平台新帖…\nBase64/ROT13解码…\n隐写分析…\n提交flag…',
+   files:['posts_cache.json','flags.json'],theory:'Blotto (布洛托博弈)'},
+  {id:'injection',name:'注入攻击',en:'Injection',color:'#ff4466',icon:'<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ff4466" stroke-width="2"><path d="m13 2-2 2.5h3L12 7"/><path d="M10 14v-2a2 2 0 0 1 4 0v2"/><rect x="8" y="14" width="8" height="8" rx="1"/></svg>',
+   cron:':06,:21,:36,:51,:56',cronLabel:':06,:21,:36,:51,:56',
+   check:m=>[6,21,36,51,56].includes(m%60),
+   actions:'构造注入评论…\n检查bot回复…\n提取泄露flag…',
+   files:['injection_log.json','c1_flags.json'],theory:'Signaling (信号博弈)'},
+  {id:'post',name:'发帖',en:'Post',color:'#aa44ff',icon:'<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#aa44ff" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>',
+   cron:':03,:33',cronLabel:':03,:33',check:m=>[3,33].includes(m%60),
+   actions:'选择策略F3…\n生成高影响力帖子…\n评论种子启动…',
+   files:['post_queue.json','strategy.json'],theory:'Blotto (布洛托博弈)'},
+  {id:'report',name:'状态汇报',en:'Report',color:'#ffffff',icon:'<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>',
+   cron:'每小时:02',cronLabel:'每小时:02',check:m=>m%60===2,
+   actions:'汇总全局进度…\n布洛托资源再分配…\n更新攻防优先级…',
+   files:['state.json','blotto_alloc.json','report.json'],theory:'Blotto (布洛托博弈)'}
+];
+
+// Data flow connections [fromIdx, toIdx]
+const DATA_FLOWS=[[0,2],[0,1],[1,2],[4,5]];
+const REPORT_IDX=6;
+
+// ═══════════════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════════════
+let simMinutes=0, speed=1, paused=false, lastTs=0, accum=0, lastMin=-1;
+let displayScore=0, targetScore=0;
+const activeSkills={}; // id -> {rem, skill, idx}
+const fireCounts={};   // id -> count
+let twText='',twIdx=0,twTimer=0;
+let particles=[];
+const logEntries=[];
+const MAX_LOGS=30;
+
+// Challenge state
+let c2Keys=0, c2Done=false, c1Sub2=false;
+let c3Posts=0, c3Comments=0, c4Flags=0, smoothComments=0;
+
+// ═══════════════════════════════════════════════════════════════
+//  DOM REFS
+// ═══════════════════════════════════════════════════════════════
+const $=id=>document.getElementById(id);
+const clockEl=$('clock'), playheadEl=$('playhead'), fillEl=$('timeline-fill');
+const leftPanel=$('left-panel'), canvas=$('netCanvas'), ctx=canvas.getContext('2d');
+const detailContent=$('detail-content'), scoreEl=$('score-val');
+const bgCanvas=$('bg-canvas'), bgCtx=bgCanvas.getContext('2d');
+const logList=$('log-list');
+
+// ═══════════════════════════════════════════════════════════════
+//  BACKGROUND STARFIELD
+// ═══════════════════════════════════════════════════════════════
+let stars=[];
+function initBg(){
+  const dpr=devicePixelRatio||1;
+  bgCanvas.width=innerWidth*dpr; bgCanvas.height=innerHeight*dpr;
+  bgCanvas.style.width=innerWidth+'px'; bgCanvas.style.height=innerHeight+'px';
+  bgCtx.setTransform(dpr,0,0,dpr,0,0);
+  stars=[];
+  for(let i=0;i<120;i++){
+    stars.push({
+      x:Math.random()*innerWidth, y:Math.random()*innerHeight,
+      r:Math.random()*1.2+0.3, a:Math.random()*0.5+0.1,
+      speed:Math.random()*0.02+0.005, phase:Math.random()*Math.PI*2
+    });
+  }
+}
+function drawBg(t){
+  bgCtx.clearRect(0,0,innerWidth,innerHeight);
+  stars.forEach(s=>{
+    const flicker=Math.sin(t*s.speed+s.phase)*0.3+0.7;
+    bgCtx.beginPath();
+    bgCtx.arc(s.x,s.y,s.r,0,Math.PI*2);
+    bgCtx.fillStyle=`rgba(180,180,255,${s.a*flicker})`;
+    bgCtx.fill();
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  NODE POSITIONS
+// ═══════════════════════════════════════════════════════════════
+let nodePos=[], corePos={x:0,y:0}, pw=0, ph=0;
+const nodeEls=[];
+let coreEl;
+
+function computePos(){
+  const r=leftPanel.getBoundingClientRect();
+  pw=r.width; ph=r.height;
+  const cx=pw*0.47, cy=ph*0.50;
+  const R=Math.min(pw,ph)*0.34;
+  corePos={x:cx,y:cy};
+  nodePos=SKILLS.map((_,i)=>{
+    const a=-Math.PI/2+i*2*Math.PI/7;
+    return{x:cx+R*Math.cos(a), y:cy+R*Math.sin(a)};
+  });
+}
+
+function buildNodes(){
+  SKILLS.forEach((s,i)=>{
+    const el=document.createElement('div');
+    el.className='skill-node'; el.id='node-'+s.id;
+    el.innerHTML=`<div class="icon">${s.icon}</div><div class="name" style="color:${s.color}">${s.name}</div><div class="en">${s.en}</div><div class="cron-text">${s.cronLabel}</div><div class="fire-count" id="fc-${s.id}">0</div>`;
+    el.style.borderColor=rgba(s.color,.15);
+    leftPanel.appendChild(el);
+    nodeEls.push(el);
+    fireCounts[s.id]=0;
+  });
+  coreEl=$('core-node');
+}
+
+function placeNodes(){
+  nodePos.forEach((p,i)=>{nodeEls[i].style.left=p.x+'px';nodeEls[i].style.top=p.y+'px'});
+  coreEl.style.left=corePos.x+'px'; coreEl.style.top=corePos.y+'px';
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CANVAS
+// ═══════════════════════════════════════════════════════════════
+function resizeCanvas(){
+  const dpr=devicePixelRatio||1;
+  const r=leftPanel.getBoundingClientRect();
+  canvas.width=r.width*dpr; canvas.height=r.height*dpr;
+  canvas.style.width=r.width+'px'; canvas.style.height=r.height+'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CONNECTION MAP
+// ═══════════════════════════════════════════════════════════════
+function buildConns(){
+  const c=[];
+  DATA_FLOWS.forEach(([f,t])=>c.push({from:f,to:t,type:'data'}));
+  SKILLS.forEach((_,i)=>{if(i!==REPORT_IDX)c.push({from:REPORT_IDX,to:i,type:'report'})});
+  SKILLS.forEach((_,i)=>c.push({from:i,to:-1,type:'core'}));
+  return c;
+}
+const CONNS=buildConns();
+function pos(i){return i===-1?corePos:nodePos[i]}
+
+// ═══════════════════════════════════════════════════════════════
+//  BEZIER HELPERS
+// ═══════════════════════════════════════════════════════════════
+function bezierCtrl(a,b){
+  const mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
+  const dx=b.x-a.x, dy=b.y-a.y;
+  const off=Math.sqrt(dx*dx+dy*dy)*0.15;
+  return{x:mx-dy/Math.sqrt(dx*dx+dy*dy)*off, y:my+dx/Math.sqrt(dx*dx+dy*dy)*off};
+}
+function bezierPoint(a,cp,b,t){
+  const u=1-t;
+  return{x:u*u*a.x+2*u*t*cp.x+t*t*b.x, y:u*u*a.y+2*u*t*cp.y+t*t*b.y};
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  PARTICLES
+// ═══════════════════════════════════════════════════════════════
+function spawnAmbient(){
+  CONNS.forEach((c,ci)=>{
+    const rate=c.type==='data'?0.035:c.type==='report'?0.006:0.012;
+    if(Math.random()<rate){
+      const col=c.from>=0?SKILLS[c.from].color:'#aa44ff';
+      const sz=c.type==='data'?1.5+Math.random()*1.5:c.type==='core'?0.8+Math.random()*0.8:0.8+Math.random()*0.5;
+      const op=c.type==='data'?0.3+Math.random()*0.2:c.type==='core'?0.15+Math.random()*0.1:0.1+Math.random()*0.1;
+      const sp=c.type==='data'?0.15+Math.random()*0.1:0.08+Math.random()*0.06;
+      particles.push({ci,t:0,speed:sp,size:sz,opacity:op,color:col,trail:c.type==='data'});
+    }
+  });
+}
+
+function spawnBurst(idx){
+  CONNS.forEach((c,ci)=>{
+    if(c.from===idx||c.to===idx){
+      const col=SKILLS[idx].color;
+      const rev=c.to===idx&&c.from!==idx;
+      for(let j=0;j<8;j++){
+        particles.push({ci,t:rev?1:0,speed:(rev?-1:1)*(0.5+Math.random()*0.5),
+          size:2+Math.random()*2.5,opacity:0.8+Math.random()*0.2,color:col,burst:true,trail:true});
+      }
+    }
+  });
+}
+
+function updateParticles(dt){
+  const ds=dt/1000;
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i];
+    p.t+=p.speed*ds;
+    if(p.burst)p.opacity-=ds*0.5;
+    if(p.t>1||p.t<0||p.opacity<=0)particles.splice(i,1);
+  }
+  // Cap particle count
+  if(particles.length>600)particles.splice(0,particles.length-600);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  RENDER CANVAS
+// ═══════════════════════════════════════════════════════════════
+function render(time){
+  ctx.clearRect(0,0,pw,ph);
+
+  // Hex grid background (subtle)
+  ctx.save();
+  ctx.globalAlpha=0.015;
+  ctx.strokeStyle='#aa44ff';
+  ctx.lineWidth=0.5;
+  const hs=40;
+  for(let row=-1;row<ph/hs+1;row++){
+    for(let col=-1;col<pw/(hs*1.5)+1;col++){
+      const ox=col*hs*1.5;
+      const oy=row*hs*Math.sqrt(3)+(col%2?hs*Math.sqrt(3)/2:0);
+      ctx.beginPath();
+      for(let k=0;k<6;k++){
+        const ax=ox+hs*0.5*Math.cos(Math.PI/3*k+Math.PI/6);
+        const ay=oy+hs*0.5*Math.sin(Math.PI/3*k+Math.PI/6);
+        k===0?ctx.moveTo(ax,ay):ctx.lineTo(ax,ay);
+      }
+      ctx.closePath();ctx.stroke();
+    }
+  }
+  ctx.restore();
+
+  // Draw connections
+  CONNS.forEach((c,ci)=>{
+    const p1=pos(c.from), p2=pos(c.to);
+    const cp=bezierCtrl(p1,p2);
+    const fActive=c.from>=0&&activeSkills[SKILLS[c.from].id];
+    const tActive=c.to>=0&&activeSkills[SKILLS[c.to]?.id];
+    const active=fActive||tActive||(c.type==='report'&&activeSkills['report']);
+
+    ctx.beginPath();
+    ctx.moveTo(p1.x,p1.y);
+    ctx.quadraticCurveTo(cp.x,cp.y,p2.x,p2.y);
+
+    if(c.type==='core'){
+      ctx.strokeStyle=rgba(SKILLS[c.from].color, active?.12:.04);
+      ctx.lineWidth=active?1:.5;
+      ctx.setLineDash([2,4]);
+    }else if(c.type==='report'){
+      const a=active?.25:.035;
+      ctx.strokeStyle=rgba('#ffffff',a);
+      ctx.lineWidth=active?1.2:.4;
+      ctx.setLineDash([3,5]);
+    }else{
+      const col=SKILLS[c.from].color;
+      ctx.strokeStyle=rgba(col,active?.4:.1);
+      ctx.lineWidth=active?2:1;
+      ctx.setLineDash([]);
+      if(active){ctx.shadowBlur=12;ctx.shadowColor=rgba(col,.4)}
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);ctx.shadowBlur=0;
+
+    // Animated dash for active data flows
+    if(c.type==='data'&&active){
+      const dashOff=(time*0.05)%20;
+      ctx.beginPath();ctx.moveTo(p1.x,p1.y);ctx.quadraticCurveTo(cp.x,cp.y,p2.x,p2.y);
+      ctx.setLineDash([4,8]);ctx.lineDashOffset=-dashOff;
+      ctx.strokeStyle=rgba(SKILLS[c.from].color,.6);ctx.lineWidth=1.5;
+      ctx.shadowBlur=8;ctx.shadowColor=SKILLS[c.from].color;
+      ctx.stroke();ctx.setLineDash([]);ctx.shadowBlur=0;ctx.lineDashOffset=0;
+    }
+  });
+
+  // Draw particles
+  particles.forEach(p=>{
+    const c=CONNS[p.ci];
+    const p1=pos(c.from), p2=pos(c.to);
+    const cp=bezierCtrl(p1,p2);
+    const pt=bezierPoint(p1,cp,p2,Math.max(0,Math.min(1,p.t)));
+
+    // Trail
+    if(p.trail&&p.size>1.2){
+      const pt2=bezierPoint(p1,cp,p2,Math.max(0,Math.min(1,p.t-0.03)));
+      ctx.beginPath();ctx.moveTo(pt2.x,pt2.y);ctx.lineTo(pt.x,pt.y);
+      ctx.strokeStyle=rgba(p.color,p.opacity*0.4);ctx.lineWidth=p.size*0.7;
+      ctx.stroke();
+    }
+
+    ctx.beginPath();ctx.arc(pt.x,pt.y,p.size,0,Math.PI*2);
+    ctx.fillStyle=rgba(p.color,p.opacity);
+    if(p.size>1.5){ctx.shadowBlur=p.size*4;ctx.shadowColor=p.color}
+    ctx.fill();ctx.shadowBlur=0;
+  });
+
+  // Core glow halo
+  const glow=0.08+Math.sin(time*0.002)*0.04;
+  const grad=ctx.createRadialGradient(corePos.x,corePos.y,20,corePos.x,corePos.y,80);
+  grad.addColorStop(0,rgba('#aa44ff',glow));
+  grad.addColorStop(1,'transparent');
+  ctx.fillStyle=grad;ctx.fillRect(corePos.x-80,corePos.y-80,160,160);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CRON TRIGGERS
+// ═══════════════════════════════════════════════════════════════
+function checkCrons(min){
+  SKILLS.forEach((s,i)=>{if(s.check(min))activateSkill(s,i)});
+}
+
+function activateSkill(s,i){
+  activeSkills[s.id]={rem:2800,skill:s,idx:i};
+  fireCounts[s.id]++;
+
+  const el=nodeEls[i];
+  el.classList.add('active');
+  el.style.boxShadow=`0 0 24px ${rgba(s.color,.5)},0 0 50px ${rgba(s.color,.2)},inset 0 0 18px ${rgba(s.color,.08)}`;
+  el.style.borderColor=s.color;
+
+  // Fire count badge
+  const fc=$('fc-'+s.id);
+  if(fc){fc.textContent=fireCounts[s.id];fc.classList.add('show')}
+
+  // Pulse ring
+  const ring=document.createElement('div');
+  ring.className='pulse-ring';ring.style.borderColor=s.color;
+  el.appendChild(ring);setTimeout(()=>ring.remove(),1000);
+
+  spawnBurst(i);
+  showDetail(s);
+  addLog(s);
+}
+
+function deactivateSkill(id){
+  const info=activeSkills[id];if(!info)return;
+  const el=nodeEls[info.idx];
+  el.classList.remove('active');
+  el.style.boxShadow='';
+  el.style.borderColor=rgba(info.skill.color,.15);
+  delete activeSkills[id];
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  DETAIL PANEL
+// ═══════════════════════════════════════════════════════════════
+function showDetail(s){
+  twText=s.actions; twIdx=0; twTimer=0;
+  detailContent.innerHTML=`
+    <div id="detail-header">
+      <div id="detail-icon">${s.icon}</div>
+      <div id="detail-names">
+        <div class="d-name" style="color:${s.color};text-shadow:0 0 12px ${rgba(s.color,.5)}">${s.name}</div>
+        <div class="d-en">${s.en}</div>
+      </div>
+    </div>
+    <div id="detail-cron">⏱ <em>${s.cronLabel}</em> · ${s.cron}</div>
+    <div class="detail-section"><h3>▶ 执行中</h3>
+      <div id="detail-action"><span class="cursor"></span></div>
+    </div>
+    <div class="detail-section"><h3>📁 读写文件</h3>
+      <div id="detail-files">${s.files.map(f=>'<span class="file">'+f+'</span> ').join('')}</div>
+    </div>
+    <div class="detail-section"><h3>🎯 博弈策略</h3>
+      <div id="detail-theory">${s.theory}</div>
+    </div>`;
+}
+
+function updateTw(dt){
+  if(!twText||twIdx>=twText.length)return;
+  twTimer+=dt;
+  while(twTimer>=35&&twIdx<twText.length){twIdx++;twTimer-=35}
+  const el=$('detail-action');
+  if(el)el.innerHTML=twText.substring(0,twIdx)+'<span class="cursor"></span>';
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  LOG STREAM
+// ═══════════════════════════════════════════════════════════════
+function addLog(s){
+  const totalMin=simMinutes+9*60;
+  const hh=String(Math.floor(totalMin/60)).padStart(2,'0');
+  const mm=String(totalMin%60).padStart(2,'0');
+  const entry=document.createElement('div');
+  entry.className='log-entry';
+  entry.innerHTML=`<span class="log-time">${hh}:${mm}</span> <span class="log-skill" style="color:${s.color}">[${s.name}]</span> ${s.actions.split('\n')[0]}`;
+  logList.prepend(entry);
+  while(logList.children.length>MAX_LOGS)logList.lastChild.remove();
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CHALLENGE PROGRESS
+// ═══════════════════════════════════════════════════════════════
+function updateChallenges(min){
+  // C2 Keys
+  if(min>=90){c2Keys=3;c2Done=true}
+  else if(min>=45)c2Keys=2;
+  else if(min>=15)c2Keys=1;
+  else c2Keys=0;
+
+  const keysEl=$('c2-keys');
+  const statusEl=$('c2-status');
+  if(keysEl)keysEl.textContent=c2Keys;
+  if(statusEl)statusEl.innerHTML=c2Done?' <span class="done">✅ 已完成</span>':'';
+  $('c2-bar').style.width=(c2Keys/3*100)+'%';
+  $('card-c2').className='challenge-card'+(c2Done?' highlight':'');
+
+  // C1 Sub2 at 14:00 (min=300)
+  const sub2El=$('c1-sub2');
+  if(min>=300&&!c1Sub2){
+    c1Sub2=true;
+    if(sub2El){sub2El.className='done';sub2El.textContent='✅'}
+    $('card-c1').className='challenge-card highlight';
+  }
+  if(min<300&&c1Sub2){
+    c1Sub2=false;
+    if(sub2El){sub2El.className='pending';sub2El.textContent='⏳'}
+    $('card-c1').className='challenge-card';
+  }
+  $('c1-bar').style.width=(c1Sub2?50:15)+'%';
+
+  // C3
+  c3Posts=Math.floor(min/30);
+  c3Comments=Math.floor(min*3.4);
+  smoothComments+=(c3Comments-smoothComments)*0.06;
+  $('c3-posts').textContent=c3Posts;
+  $('c3-comments').textContent=Math.floor(smoothComments);
+  $('c3-bar').style.width=Math.min(100,min/600*100)+'%';
+
+  // C4
+  c4Flags=Math.min(7,Math.floor(min/85));
+  $('c4-flags').textContent=c4Flags;
+  $('c4-bar').style.width=(c4Flags/7*100)+'%';
+
+  // Score
+  let sc=0;
+  if(c2Keys>=1)sc+=10;if(c2Keys>=2)sc+=10;if(c2Keys>=3)sc+=10;
+  if(c1Sub2)sc+=20;
+  sc+=c3Posts*3+Math.floor(smoothComments/50);
+  sc+=c4Flags*15;
+  targetScore=sc;
+}
+
+function updateScore(){
+  displayScore+=(targetScore-displayScore)*0.08;
+  if(Math.abs(displayScore-targetScore)<1)displayScore=targetScore;
+  scoreEl.textContent=Math.floor(displayScore);
+}
+
+function resetChallenges(){
+  c2Keys=0;c2Done=false;c1Sub2=false;c3Posts=0;c3Comments=0;c4Flags=0;
+  smoothComments=0;displayScore=0;targetScore=0;lastMin=-1;
+  // Reset fire counts
+  SKILLS.forEach(s=>{fireCounts[s.id]=0;const fc=$('fc-'+s.id);if(fc){fc.textContent='0';fc.classList.remove('show')}});
+  // Reset C2 display
+  $('c2-keys').textContent='0';
+  $('c2-status').innerHTML='';
+  $('c2-bar').style.width='0%';
+  $('card-c2').className='challenge-card';
+  // Reset C1 display
+  const sub2=$('c1-sub2');
+  if(sub2){sub2.className='pending';sub2.textContent='⏳'}
+  $('c1-bar').style.width='0%';
+  $('card-c1').className='challenge-card';
+  // Reset C3/C4
+  $('c3-posts').textContent='0';$('c3-comments').textContent='0';$('c3-bar').style.width='0%';
+  $('c4-flags').textContent='0';$('c4-bar').style.width='0%';
+  // Clear logs
+  logList.innerHTML='';
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  TIMELINE
+// ═══════════════════════════════════════════════════════════════
+function buildTimeline(){
+  const labels=$('time-labels');
+  for(let h=9;h<=19;h++){const s=document.createElement('span');s.textContent=h+':00';labels.appendChild(s)}
+  const inner=$('timeline-inner');
+  // Reduce tick density - only show one tick per minute (skip duplicates)
+  const added=new Set();
+  for(let m=0;m<=600;m++){
+    SKILLS.forEach(s=>{
+      const key=m+'_'+s.id;
+      if(s.check(m)&&!added.has(m+'')){
+        added.add(m+'');
+        const t=document.createElement('div');t.className='tick';
+        t.style.left=(m/600*100)+'%';t.style.background=rgba(s.color,.4);
+        inner.appendChild(t);
+      }
+    });
+  }
+}
+
+function updateTimeline(){
+  const pct=simMinutes/600*100;
+  playheadEl.style.left='calc('+pct+'% - 1.5px)';
+  fillEl.style.width=pct+'%';
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  MAIN LOOP
+// ═══════════════════════════════════════════════════════════════
+function loop(ts){
+  if(!lastTs)lastTs=ts;
+  const dt=Math.min(ts-lastTs,100);
+  lastTs=ts;
+
+  if(!paused){
+    accum+=dt*speed;
+    const simDt=accum/200;
+    const mins=Math.floor(simDt);
+    accum=(simDt-mins)*200;
+
+    for(let i=0;i<mins;i++){
+      simMinutes++;
+      if(simMinutes>=600){simMinutes=0;resetChallenges()}
+      if(simMinutes!==lastMin){checkCrons(simMinutes);lastMin=simMinutes}
+    }
+
+    Object.keys(activeSkills).forEach(id=>{
+      activeSkills[id].rem-=dt*speed;
+      if(activeSkills[id].rem<=0)deactivateSkill(id);
+    });
+
+    updateChallenges(simMinutes);
+    updateScore();
+    updateTw(dt*speed);
+
+    const totalMin=simMinutes+540;
+    clockEl.textContent=String(Math.floor(totalMin/60)).padStart(2,'0')+':'+String(totalMin%60).padStart(2,'0');
+    updateTimeline();
+  }
+
+  drawBg(ts);
+  spawnAmbient();
+  updateParticles(dt*(paused?0.3:speed));
+  render(ts);
+  requestAnimationFrame(loop);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CONTROLS
+// ═══════════════════════════════════════════════════════════════
+function togglePlay(){paused=!paused;$('btnPlay').textContent=paused?'▶':'⏸'}
+function setSpeed(s,btn){speed=s;document.querySelectorAll('.speed').forEach(b=>b.classList.remove('active'));btn.classList.add('active')}
+
+// ═══════════════════════════════════════════════════════════════
+//  UTILS
+// ═══════════════════════════════════════════════════════════════
+function rgba(hex,a){
+  if(typeof hex!=='string')return'rgba(170,68,255,'+a+')';
+  if(hex.startsWith('rgba'))return hex.replace(/[\d.]+\)$/,a+')');
+  const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
+  return'rgba('+r+','+g+','+b+','+a+')';
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════════════════
+function init(){
+  initBg();buildNodes();computePos();placeNodes();resizeCanvas();buildTimeline();
+  requestAnimationFrame(loop);
+}
+window.addEventListener('resize',()=>{initBg();computePos();placeNodes();resizeCanvas()});
+init();
+</script>
+</body>
+</html>

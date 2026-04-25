@@ -1,0 +1,20 @@
+# AWS - Other Services Enum
+
+## Directconnect
+
+Allows to **connect a corporate private network with AWS** (so you could compromise an EC2 instance and access the corporate network).
+
+```
+aws directconnect describe-connections
+aws directconnect describe-interconnects
+aws directconnect describe-virtual-gateways
+aws directconnect describe-virtual-interfaces
+```
+
+## Support
+
+In AWS you can access current and previous support cases via the API
+
+```
+aws support describe-cases --include-resolved-cases
+```

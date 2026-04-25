@@ -1,62 +1,187 @@
-import os
-from typing import Optional
-from dotenv import load_dotenv
+"""
+统一配置管理
+============
 
+集中管理所有 Agent 相关的配置，包括：
+- LLM API 配置
+- Docker 执行器配置
+- MCP 配置
+- 运行时参数
+
+环境变量命名规范：
+- LLM_* : LLM API 配置
+- DOCKER_* : Docker 配置
+- MCP_* : MCP 配置
+"""
+
+import os
+from dataclasses import dataclass, field
+from typing import Optional
+from enum import Enum
+
+
+class RunMode(str, Enum):
+    """运行模式枚举"""
+    CTF = "ctf"
+    CTF_WEB = "ctf-web"
+    PENTEST = "pentest"
+
+
+AVAILABLE_MODES = [mode.value for mode in RunMode]
+
+
+@dataclass
+class LLMConfig:
+    """LLM API 配置"""
+
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    response_language: str = ""
+    cli_path: Optional[str] = None
+    cli_model_routing: bool = True
+
+    @classmethod
+    def from_env(cls) -> "LLMConfig":
+        """从环境变量加载配置"""
+        return cls(
+            model=os.getenv("LLM_MODEL") or None,
+            api_key=os.getenv("LLM_API_KEY") or None,
+            base_url=os.getenv("LLM_BASE_URL") or None,
+            response_language=os.getenv("RESPONSE_LANGUAGE", "").strip().lower(),
+            cli_path=os.getenv("CLAUDE_CLI_PATH") or None,
+            cli_model_routing=os.getenv("CLI_MODEL_ROUTING", "true").lower() in ("true", "1", "yes"),
+        )
+
+    @property
+    def use_local_cli(self) -> bool:
+        """是否使用本地 CLI 的模型路由（需同时满足：有 cli_path 且 cli_model_routing 开启）"""
+        return bool(self.cli_path) and self.cli_model_routing
+
+    @property
+    def is_configured(self) -> bool:
+        """检查是否配置了 API 或本地 CLI"""
+        return bool(self.api_key) or self.use_local_cli
+
+
+
+@dataclass
+class DockerConfig:
+    """Docker 执行器配置"""
+
+    container_name: Optional[str] = None
+    passthrough_env: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def from_env(cls) -> "DockerConfig":
+        """从环境变量加载配置"""
+        container_name = os.getenv("DOCKER_CONTAINER_NAME")
+        # 解析白名单：DOCKER_PASSTHROUGH_ENV=GH_TOKEN,SHODAN_API_KEY
+        raw = os.getenv("DOCKER_PASSTHROUGH_ENV", "")
+        passthrough: dict[str, str] = {}
+        for key in raw.split(","):
+            key = key.strip()
+            if key and key in os.environ:
+                passthrough[key] = os.environ[key]
+        return cls(container_name=container_name, passthrough_env=passthrough)
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.container_name)
+
+
+@dataclass
+class MCPConfig:
+    """MCP 服务器配置"""
+
+    config_path: str = ""
+
+    @classmethod
+    def from_env(cls) -> "MCPConfig":
+        return cls(config_path=os.getenv("MCP_CONFIG_PATH", ""))
+
+    @property
+    def is_configured(self) -> bool:
+        from pathlib import Path
+
+        if self.config_path:
+            return Path(self.config_path).exists()
+        default_path = Path(__file__).parent.parent / ".mcp.json"
+        return default_path.exists()
+
+
+@dataclass
+class RAGConfig:
+    """知识库配置
+
+    已从 RAG（embedding + BM25 检索）迁移到 Compiled Knowledge Base
+    （预编译的 markdown wiki，frontmatter 关键词匹配）。
+
+    保留 enabled 开关用于全局控制知识库功能。
+    """
+
+    enabled: bool = True
+
+    @classmethod
+    def from_env(cls) -> "RAGConfig":
+        return cls(
+            enabled=os.getenv("RAG_ENABLED", "true").lower() in ("true", "1", "yes"),
+        )
+
+
+@dataclass
+class RuntimeConfig:
+    """运行时配置"""
+
+    single_task_timeout: int = 2400
+    db_echo: bool = False
+
+    @classmethod
+    def from_env(cls) -> "RuntimeConfig":
+        return cls(
+            single_task_timeout=int(os.getenv("SINGLE_TASK_TIMEOUT", "2400")),
+            db_echo=os.getenv("DB_ECHO", "false").lower() == "true",
+        )
+
+
+@dataclass
 class AgentConfig:
-    def __init__(self,
-                 llm_api_key: str,
-                 llm_base_url: str,
-                 llm_model_name: str = "deepseek-v3.1-terminus",
-                 # 环境模式配置（已移除 test 模式，只支持 competition）
-                 env_mode: str = "competition",
-                 # Docker 配置（用于 Kali Linux）
-                 docker_container_name: Optional[str] = None,
-                 # Microsandbox 配置（用于 Python 代码） 云环境还不支持这个
-                 sandbox_enabled: bool = False,
-                 sandbox_name: str = "CHYing-sandbox"):
-        self.llm_api_key = llm_api_key
-        self.llm_base_url = llm_base_url
-        self.llm_model_name = llm_model_name
-        # 环境模式（只支持 competition）
-        self.env_mode = env_mode
-        # Docker 配置
-        self.docker_container_name = docker_container_name
-        # Microsandbox 配置
-        self.sandbox_enabled = sandbox_enabled
-        self.sandbox_name = sandbox_name
+    """统一配置类"""
+
+    brain: LLMConfig
+    docker: DockerConfig
+    mcp: MCPConfig
+    runtime: RuntimeConfig
+    rag: RAGConfig
+
+    @classmethod
+    def from_env(cls) -> "AgentConfig":
+        return cls(
+            brain=LLMConfig.from_env(),
+            docker=DockerConfig.from_env(),
+            mcp=MCPConfig.from_env(),
+            runtime=RuntimeConfig.from_env(),
+            rag=RAGConfig.from_env(),
+        )
+
+    @property
+    def docker_container_name(self) -> Optional[str]:
+        return self.docker.container_name
+
 
 def load_agent_config() -> AgentConfig:
-    load_dotenv() # 确保.env文件被加载
+    """从环境变量加载 Agent 配置"""
+    return AgentConfig.from_env()
 
-    # 统一LLM API Key和Base URL的加载
-    llm_api_key = os.getenv("DEEPSEEK_API_KEY")
-    if not llm_api_key:
-        llm_api_key = os.getenv("OPENAI_API_KEY") # 兼容OpenAI
-    
-    if not llm_api_key:
-        raise ValueError("配置错误: 未找到LLM API Key。请设置 DEEPSEEK_API_KEY 或 OPENAI_API_KEY。")
 
-    llm_base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.lkeap.cloud.tencent.com/v1") # DeepSeek默认Base URL
-    llm_model_name = os.getenv("LLM_MODEL_NAME", "deepseek-v3.1-terminus") # 允许覆盖默认模型
-    
-    # 加载环境模式（只支持 competition）
-    env_mode = os.getenv("ENV_MODE", "competition").lower()  # 默认为比赛模式
-    if env_mode not in ["competition"]:
-        raise ValueError(f"配置错误: ENV_MODE 必须是 'competition'，当前值: {env_mode}")
-    
-    # 加载 Docker 配置（传统方案）
-    docker_container_name = os.getenv("DOCKER_CONTAINER_NAME")
-    
-    # 加载沙箱配置（Microsandbox）
-    sandbox_enabled = os.getenv("SANDBOX_ENABLED", "false").lower() == "true"
-    sandbox_name = os.getenv("SANDBOX_NAME", "CHYing-sandbox")
-
-    return AgentConfig(
-        llm_api_key=llm_api_key, 
-        llm_base_url=llm_base_url, 
-        llm_model_name=llm_model_name,
-        env_mode=env_mode,
-        docker_container_name=docker_container_name,
-        sandbox_enabled=sandbox_enabled,
-        sandbox_name=sandbox_name
-    )
+__all__ = [
+    "RunMode",
+    "AVAILABLE_MODES",
+    "LLMConfig",
+    "DockerConfig",
+    "MCPConfig",
+    "RAGConfig",
+    "RuntimeConfig",
+    "AgentConfig",
+    "load_agent_config",
+]

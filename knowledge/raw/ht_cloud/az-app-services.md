@@ -1,0 +1,316 @@
+# Az - App Services
+
+## App Service Basic Information
+
+Azure App Services enables developers to **build, deploy, and scale web applications, mobile app backends, and APIs seamlessly**. It supports multiple programming languages and integrates with various Azure tools and services for enhanced functionality and management.
+
+Each app runs inside a sandbox but isolation depends upon App Service plans:
+
+- Apps in Free and Shared tiers run on **shared VMs**
+- Apps in Standard and Premium tiers run on **dedicated VMs shared only by apps** in the same App Service plan.
+- The Isolated tiers run on **dedicated VMs on dedicated virtual networks**, improving the isolation of the apps.
+
+> [!WARNING]
+> Note that **none** of those isolations **prevents** other common **web vulnerabilities** (such as file upload, or injections). And if a **management identity** is used, it could be able to **escalate privileges to them**.
+
+Apps have some interesting configurations:
+
+- **Always On**: Ensures that the app is always running. If not enabled, the app will stop running after 20 minutes of inactivity and will start again when a request is received.
+  - This is essential if you have a webjob that needs to run continuously as the webjob will stop if the app stops.
+- **SSH**: If enabled, a user with enough permissions can connect to the app using SSH.
+- **Debugging**: If enabled, a user with enough permissions can debug the app. However, this is disabled automatically every 48h.
+- **Web App + Database**: The web console allows to create an App with a database. In this case it's possible to select the database to use (SQLAzure, PostgreSQL, MySQL, MongoDB) and it also allows you to create an Azure Cache for Redis.
+  - The URL containing the credentials for the database and Redis will be stored in the **appsettings**.
+- **Container**: It's possible to deploy a container to the App Service by indicating the URL of the container and the credentials to access it.
+- **Mounts**: It's possible to create 5 mounts from Storage accounts being these Azure Blob (Read-Only) or Azure Files. The configuration will store the access key over the Storage Account.
+- **Netowrking**: Can be publicly abaible or only accessible private endpoints from a VNet.
+
+## Basic Authentication
+
+When creating a web app (and a Azure function usually) it's possible to indicate if you want **Basic Authentication to be enabled** (disabled by default). This basically **enables SCM (Source Control Manager) and FTP (File Transfer Protocol)** for the application so it'll be possible to deploy the application using those technologies.
+
+In order to access the SCM and the FTP servers, a **username and password** is required. Therefore, Azure provides some **APIs to get the URLs** to these platforms and the credentials.
+
+The **FTP server doesn’t have any special magic**, just with the valid URL, username and password it’s possible to connect and get read and write permissions over the App environment.
+
+The SCM
+It's possible to connect to the SCM using a web browser in `https://<SMC-URL>/BasicAuth` and check all files and deployments in there.
+
+### Kudu
+
+Kudu is the platform that **manages both the SCM and a web and API interface** to manage an App Service, and provides Git-based deployments, remote debugging, and file management capabilities. It's accessible through the SCM URL of defined in the web app.
+
+Note that the Kudu versions used by App Services and by Function Apps are different, being the version of the Function apps much more limited.
+
+Some interesting endpoints you can find in Kudu are:
+- `/BasicAuth`: You need to access this path to **login inside Kudu**.
+- `/DebugConsole`: A console that allows you to execute commands in the environment where Kudu is running.
+  - Note that this environment **doesn't have access** to the metadata service to get tokens.
+- `/webssh/host`: A web-based SSH client that allows you to connect inside the container where the app is running.
+  - This environment **has access to the metadata service** in order to obtain tokens from the assigned managed identities.
+- `/Env`: Get information about the system, app settings, env variables, connection strings and HTTP headers.
+- `/wwwroot/`: The root directory of the web app. You can download all the files from here.
+
+Moreover, Kudu used to by opensource in [https://github.com/projectkudu/kudu](https://github.com/projectkudu/kudu) but the project was deprecated and comparing the behavior of the current Kudu in Azure with the old one it's possible to see that **several things have already changed**.
+
+## Sources
+
+App Services allow to upload the code as a zip file by default, but it also allows to connect to a third party service and get the code from there.
+
+- The currently supported third party sources are **Github** and **Bitbucket**.
+  - You can get the authentication tokens running `az rest --url "https://management.azure.com/providers/Microsoft.Web/sourcecontrols?api-version=2024-04-01"`
+  - Azure by default will setup a **Github Action** to deploy the code to the App Service every time the code is updated.
+- It's also possible to indicate a **remote git repository** (with username and password) to get the code from there.
+  - You can get the credentials to the remote repo running `az webapp deployment source show --name <app-name> --resource-group <res-group>` or `az rest --method POST --url "https://management.azure.com/subscriptions/<subscription-id>/resourceGroups/<res-group>/providers/Microsoft.Web/sites/<app-name>/config/metadata/list?api-version=2022-03-01" --resource "https://management.azure.com"`
+- It's also possible to use an **Azure Repository**.
+- It's also possible to configure a **local git repository**.
+  - You can get the URL of the git repo with `az webapp deployment source show --name <app-name> --resource-group <res-group>` and it's going to be the SCM URL of the app.
+  - To clone it you will need the SCM credentials that you can get with `az webapp deployment list-publishing-profiles --resource-group <res-group> -n <name>`
+
+## Webjobs
+
+Azure WebJobs are **background tasks that run in the Azure App Service environment**. They allow developers to execute scripts or programs alongside their web applications, making it easier to handle asynchronous or time-intensive operations such as file processing, data handling, or scheduled tasks.
+There are 2 types of web jobs:
+- **Continuous**: Runs indefinitely in a loop and it’s triggered as soon as it’s created. It’s ideal for tasks that require constant processing. However, if the app stops running because Always On is disabled and it hasn’t received a request in the last 20mins, the web job will also stop.
+- **Triggered**: Runs on-demand or based on a schedule. It’s best suited for periodic tasks, such as batch data updates or maintenance routines.
+
+Webjobs are very interesting from an attackers perspective as they could be used to **execute code** in the environment and **escalate privileges** to the attached managed identities.
+
+Moreover, it's always interesting to check the **logs** generated by the Webjobs as they could contain **sensitive information**.
+
+## Slots
+
+Azure App Service Slots are used to **deploy different versions of the application** to the same App Service. This allows developers to test new features or changes in a separate environment before deploying them to the production environment.
+
+Moreover, it's possible to route a **percentage of the traffic** to a specific slot, which is useful for A/B testing, and for **backdoor purposes**.
+
+## Azure Function Apps
+
+Basically **Azure Function apps are a subset of Azure App Service** in the web console and if you go to the web console and list all the app services or execute `az webapp list` in az cli you will be able to **see the Function apps also listed in there**.
+
+Therefore, both services actually have mostly the **same configurations, features and options in the az cli**, although they might configure them a bit differently (like default values of appsettings or the use of an Storage Account in the Function apps).
+
+## Enumeration
+
+{{#tabs }}
+{{#tab name="az" }}
+
+```bash
+# List webapps
+az webapp list
+## Less information
+az webapp list --query "[].{hostName: defaultHostName, state: state, name: name, resourcegroup: resourceGroup}" -o table
+## Get SCM URL of each webapp
+az webapp list | grep '"name"' | grep "\.scm\." | awk '{print $2}' | sed 's/"//g'
+
+# Get info about 1 app
+az webapp show --name <name> --resource-group <res-group>
+
+# Get instances of a webapp
+az webapp list-instances --name <name> --resource-group <res-group>
+## If you have enough perm you can go to the "consoleUrl" and access a shell inside the instance form the web
+
+# Get access restrictions of an app
+az webapp config access-restriction show --name <name> --resource-group <res-group>
+
+# Remove access restrictions
+az webapp config access-restriction remove --resource-group <res-group> -n <name> --rule-name <rule-name>
+
+# Get connection strings of a webapp
+az webapp config connection-string list --name <name> --resource-group <res-group>
+
+# Get appsettings of an app
+az webapp config appsettings list --name <name> --resource-group <res-group>
+
+# Get SCM and FTP credentials
+az webapp deployment list-publishing-profiles --name <name> --resource-group <res-group>
+
+# Get configured Auth information
+az webapp auth show --name <app-name> --resource-group <res-group>
+
+# Get backups of a webapp
+az webapp config backup list --webapp-name <name> --resource-group <res-group>
+
+# Get backups scheduled for a webapp
+az webapp config backup show --webapp-name <name> --resource-group <res-group>
+
+# Get snapshots
+az webapp config snapshot list --resource-group <res-group> -n <name>
+
+# Restore snapshot
+az webapp config snapshot restore -g <res-group> -n <name> --time 2018-12-11T23:34:16.8388367
+
+# Get slots
+az webapp deployment slot list --name <AppName> --resource-group <ResourceGroupName> --output table
+az webapp show --slot <SlotName> --name <AppName> --resource-group <ResourceGroupName>
+
+# Get traffic-routing
+az webapp traffic-routing show --name <AppName> --resource-group <ResourceGroupName>
+
+# Get used container by the app
+az webapp config container show --name <name> --resource-group <res-group>
+
+# Get storage account configurations of a webapp (contains access key)
+az webapp config storage-account list --name <name> --resource-group <res-group>
+
+# Get configured container (if any) in the webapp, it could contain credentials
+az webapp config container show --name <name> --resource-group <res-group>
+
+# Get git URL to access the code
+az webapp deployment source config-local-git --resource-group <res-group> -n <name>
+
+# Get Webjobs
+az webapp webjob continuous list --resource-group <res-group> --name <app-name>
+az webapp webjob triggered list --resource-group <res-group> --name <app-name>
+
+# Read webjobs logs with Azure permissions
+az rest --method GET --url "<SCM-URL>/vfs/data/jobs/<continuous | triggered>/rev5/job_log.txt"  --resource "https://management.azure.com/"
+az rest --method GET --url "https://lol-b5fyaeceh4e9dce0.scm.canadacentral-01.azurewebsites.net/vfs/data/jobs/continuous/rev5/job_log.txt"  --resource "https://management.azure.com/"
+
+# Read webjobs logs with SCM credentials
+curl "https://windowsapptesting-ckbrg3f0hyc8fkgp.scm.canadacentral-01.azurewebsites.net/vfs/data/jobs/continuous/lala/job_log.txt" \
+  --user '<username>:<password>' -v
+
+# Get connections of a webapp
+az webapp conection list --name <name> --resource-group <res-group>
+
+# Get hybrid-connections of a webapp
+az webapp hybrid-connections list --name <name> --resource-group <res-group>
+
+# Get configured SMC users by your account
+az webapp deployment user show
+## If any user is created, the username should appear in the "publishingUserName" field
+```
+
+{{#endtab }}
+
+{{#tab name="Az Powershell" }}
+
+```bash
+Get-Command -Module Az.Websites
+
+# Get App Services and Function Apps
+Get-AzWebApp
+# Get only App Services
+Get-AzWebApp | ?{$_.Kind -notmatch "functionapp"}
+
+# Retrieves details of a specific App Service Environment in the specified resource group.
+Get-AzAppServiceEnvironment -ResourceGroupName <ResourceGroupName> -Name <Name>
+# Retrieves the access restriction configuration for a specified Web App.
+Get-AzWebAppAccessRestrictionConfig -ResourceGroupName <ResourceGroupName> -Name <Name>
+# Retrieves the SSL certificates for a specified resource group.
+Get-AzWebAppCertificate -ResourceGroupName <ResourceGroupName>
+# Retrieves the continuous deployment URL for a containerized Web App.
+Get-AzWebAppContainerContinuousDeploymentUrl -ResourceGroupName <ResourceGroupName> -Name <Name>
+# Retrieves the list of continuous WebJobs for a specified Web App.
+Get-AzWebAppWebJob -ResourceGroupName <ResourceGroupName> -AppName <AppName>
+# Retrieves the list of triggered WebJobs for a specified Web App.
+Get-AzWebAppTriggeredWebJob -ResourceGroupName <ResourceGroupName> -AppName <AppName>
+
+# Retrieves details of a deleted Web App in the specified resource group.
+Get-AzDeletedWebApp -ResourceGroupName <ResourceGroupName> -Name <Name>
+# Retrieves a list of snapshots for a specified Web App.
+Get-AzWebAppSnapshot -ResourceGroupName <ResourceGroupName> -Name <Name>
+# Retrieves the history of a specific triggered WebJob for a Web App.
+Get-AzWebAppTriggeredWebJobHistory -ResourceGroupName <ResourceGroupName> -AppName <AppName> -Name <Name>
+
+# Retrieves information about deployment slots for a specified Web App.
+Get-AzWebAppSlot -ResourceGroupName <ResourceGroupName> -Name <Name>
+# Retrieves the continuous WebJobs for a specific deployment slot of a Web App.
+Get-AzWebAppSlotWebJob -ResourceGroupName <ResourceGroupName> -AppName <AppName> -SlotName <SlotName>
+# Retrieves the triggered WebJobs for a specific deployment slot of a Web App.
+Get-AzWebAppSlotTriggeredWebJob -ResourceGroupName <ResourceGroupName> -AppName <AppName> -SlotName <SlotName>
+# Retrieves the history of a specific triggered WebJob for a deployment slot of a Web App.
+Get-AzWebAppSlotTriggeredWebJobHistory -ResourceGroupName <ResourceGroupName> -AppName <AppName> -SlotName <SlotName> -Name <Name>
+# Retrieves the continuous WebJobs for a Web App.
+Get-AzWebAppContinuousWebJob -ResourceGroupName <ResourceGroupName> -AppName <AppName>
+# Retrieves the continuous WebJobs for a specific deployment slot of a Web App.
+Get-AzWebAppSlotContinuousWebJob -ResourceGroupName <ResourceGroupName> -AppName <AppName> -SlotName <SlotName>
+
+# Retrieves the traffic routing rules for a Web App.
+Get-AzWebAppTrafficRouting -ResourceGroupName <ResourceGroupName> -WebAppName <WebAppName> -RuleName <RuleName>
+
+# Retrieves details of a specific backup for a Web App.
+Get-AzWebAppBackup -ResourceGroupName <ResourceGroupName> -Name <Name> -BackupId <BackupId>
+# Retrieves the backup configuration for a Web App.
+Get-AzWebAppBackupConfiguration -ResourceGroupName <ResourceGroupName> -Name <Name>
+# Retrieves the list of all backups for a Web App.
+Get-AzWebAppBackupList -ResourceGroupName <ResourceGroupName> -Name <Name> 
+```
+{{#endtab }}
+
+{{#tab name="az get all" }}
+
+```bash
+#!/bin/bash
+
+# Get all App Service and Function Apps
+
+# Define Azure subscription ID
+azure_subscription="your_subscription_id"
+
+# Log in to Azure
+az login
+
+# Select Azure subscription
+az account set --subscription $azure_subscription
+
+# Get all App Services in the specified subscription
+list_app_services=$(az appservice list --query "[].{appServiceName: name, group: resourceGroup}" -o tsv)
+
+# Iterate over each App Service
+echo "$list_app_services" | while IFS=$'\t' read -r appServiceName group; do
+  # Get the type of the App Service
+  service_type=$(az appservice show --name $appServiceName --resource-group $group --query "kind" -o tsv)
+
+  # Check if it is a Function App and print its name
+  if [ "$service_type" == "functionapp" ]; then
+    echo "Function App Name: $appServiceName"
+  fi
+done
+```
+
+{{#endtab }}
+{{#endtabs }}
+
+## Examples to generate Web Apps
+
+### Python from local
+
+This tutorial is based on the one from [https://learn.microsoft.com/en-us/azure/app-service/quickstart-python](https://learn.microsoft.com/en-us/azure/app-service/quickstart-python?tabs=flask%2Cwindows%2Cazure-cli%2Cazure-cli-deploy%2Cdeploy-instructions-azportal%2Cterminal-bash%2Cdeploy-instructions-zip-azcli).
+
+```bash
+# Clone repository
+git clone https://github.com/Azure-Samples/msdocs-python-flask-webapp-quickstart
+cd msdocs-python-flask-webapp-quickstart
+
+# Create webapp from this code
+az webapp up --runtime PYTHON:3.9 --sku B1 --logs
+```
+
+Logging into the SCM portal or logging via FTP it's possible to see in `/wwwroot` the compressed file `output.tar.gz` that contains the code of the webapp.
+
+> [!TIP]
+> Just connecting via FTP and modifying the file `output.tar.gz` isn't enough to change the code executed by the webapp.
+
+**An attacker could download this file, modify it, and upload it again to execute arbitrary code in the webapp.**
+
+### Python from Github
+
+This tutorial is based on the previous one but using a Github repository.
+
+1. Fork the repo msdocs-python-flask-webapp-quickstart in your Github account.
+2. Create a new python Web App in Azure
+3. In `Deployment Center` change the source, login with Github, select the forked repo and click `Save`.
+
+Like in the previous case, logging into the SCM portal or logging via FTP it's possible to see in `/wwwroot` the compressed file `output.tar.gz` that contains the code of the webapp.
+
+> [!TIP]
+> Just connecting via FTP and modifying the file `output.tar.gz` and retriggering a deployment isn't enough to change the code executed by the webapp.
+
+## Privilege Escalation
+
+## References
+
+- [https://learn.microsoft.com/en-in/azure/app-service/overview](https://learn.microsoft.com/en-in/azure/app-service/overview)
+- [https://learn.microsoft.com/en-us/azure/app-service/overview-hosting-plans](https://learn.microsoft.com/en-us/azure/app-service/overview-hosting-plans)

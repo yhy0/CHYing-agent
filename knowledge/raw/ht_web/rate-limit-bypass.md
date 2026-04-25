@@ -1,0 +1,160 @@
+# Rate Limit Bypass
+
+## Rate limit bypass techniques
+
+### Exploring Similar Endpoints
+
+Attempts should be made to perform brute force attacks on variations of the targeted endpoint, such as `/api/v3/sign-up`, including alternatives like `/Sing-up`, `/SignUp`, `/singup`, `/api/v1/sign-up`, `/api/sign-up` etc.
+
+### Incorporating Blank Characters in Code or Parameters
+
+Inserting blank bytes like `%00`, `%0d%0a`, `%0d`, `%0a`, `%09`, `%0C`, `%20` into code or parameters can be a useful strategy. For example, adjusting a parameter to `code=1234%0a` allows for extending attempts through variations in input, like adding newline characters to an email address to get around attempt limitations.
+
+### Manipulating IP Origin via Headers
+
+Modifying headers to alter the perceived IP origin can help evade IP-based rate limiting. Headers such as `X-Originating-IP`, `X-Forwarded-For`, `X-Remote-IP`, `X-Remote-Addr`, `X-Client-IP`, `X-Host`, `X-Forwared-Host`, including using multiple instances of `X-Forwarded-For`, can be adjusted to simulate requests from different IPs.
+
+```bash
+X-Originating-IP: 127.0.0.1
+X-Forwarded-For: 127.0.0.1
+X-Remote-IP: 127.0.0.1
+X-Remote-Addr: 127.0.0.1
+X-Client-IP: 127.0.0.1
+X-Host: 127.0.0.1
+X-Forwared-Host: 127.0.0.1
+
+# Double X-Forwarded-For header example
+X-Forwarded-For:
+X-Forwarded-For: 127.0.0.1
+```
+
+### Changing Other Headers
+
+Altering other request headers such as the user-agent and cookies is recommended, as these can also be used to identify and track request patterns. Changing these headers can prevent recognition and tracking of the requester's activities.
+
+### Leveraging API Gateway Behavior
+
+Some API gateways are configured to apply rate limiting based on the combination of endpoint and parameters. By varying the parameter values or adding non-significant parameters to the request, it's possible to circumvent the gateway's rate-limiting logic, making each request appear unique. For exmple `/resetpwd?someparam=1`.
+
+### Logging into Your Account Before Each Attempt
+
+Logging into an account before each attempt, or every set of attempts, might reset the rate limit counter. This is especially useful when testing login functionalities. Utilizing a Pitchfork attack in tools like Burp Suite, to rotate credentials every few attempts and ensuring follow redirects are marked, can effectively restart rate limit counters.
+
+### Utilizing Proxy Networks
+
+Deploying a network of proxies to distribute the requests across multiple IP addresses can effectively bypass IP-based rate limits. By routing traffic through various proxies, each request appears to originate from a different source, diluting the rate limit's effectiveness.
+
+### Splitting the Attack Across Different Accounts or Sessions
+
+If the target system applies rate limits on a per-account or per-session basis, distributing the attack or test across multiple accounts or sessions can help in avoiding detection. This approach requires managing multiple identities or session tokens, but can effectively distribute the load to stay within allowable limits.
+
+### Keep Trying
+
+Note that even if a rate limit is in place you should try to see if the response is different when the valid OTP is sent. In [**this post**](https://mokhansec.medium.com/the-2-200-ato-most-bug-hunters-overlooked-by-closing-intruder-too-soon-505f21d56732), the bug hunter discovered that even if a rate limit is triggered after 20 unsuccessful attempts by responding with 401, if the valid one was sent a 200 response was received.
+
+---
+
+### Abusing HTTP/2 multiplexing & request pipelining (2023-2025)
+
+Modern rate–limiter implementations frequently count **TCP connections** (or even individual HTTP/1.1 requests) instead of the *number of HTTP/2 streams* a connection contains. When the same TLS connection is reused, an attacker can open hundreds of parallel streams, each carrying a separate request, while the gateway only deducts *one* request from the quota.
+
+```bash
+# Send 100 POST requests in a single HTTP/2 connection with curl
+seq 1 100 | xargs -I@ -P0 curl -k --http2-prior-knowledge -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"code":"@"}' https://target/api/v2/verify &>/dev/null
+```
+
+If the limiter protects only `/verify` but not `/api/v2/verify`, you can also combine **path confusion** with HTTP/2 multiplexing for *extremely* high-speed OTP or credential brute-forcing.
+
+> 🐾  **Tip:** PortSwigger’s [Turbo Intruder](https://portswigger.net/research/turbo-intruder) supports HTTP/2 and lets you fine-tune `maxConcurrentConnections` and `requestsPerConnection` to automate this attack.
+
+### GraphQL aliases & batched operations
+
+GraphQL allows the client to send **several logically independent queries or mutations in a single request** by prefixing them with *aliases*. Because the server executes every alias but the rate-limiter often counts only *one* request, this is a reliable bypass for login or password-reset throttling.
+
+```graphql
+mutation bruteForceOTP {
+  a: verify(code:"111111") { token }
+  b: verify(code:"222222") { token }
+  c: verify(code:"333333") { token }
+  # … add up to dozens of aliases …
+}
+```
+
+Look at the response: exactly one alias will return 200 OK when the correct code is hit, while the others are rate-limited.
+
+The technique was popularised by PortSwigger’s research on “GraphQL batching & aliases” in 2023 and has been responsible for many recent bug-bounty payouts.
+
+### Abuse of *batch* or *bulk* REST endpoints
+
+Some APIs expose helper endpoints such as `/v2/batch` or accept an **array of objects** in the request body. If the limiter is placed in front of the *legacy* endpoints only, wrapping multiple operations inside a single bulk request may completely sidestep the protection.
+
+```json
+[
+  {"path": "/login", "method": "POST", "body": {"user":"bob","pass":"123"}},
+  {"path": "/login", "method": "POST", "body": {"user":"bob","pass":"456"}}
+]
+```
+
+### Timing the sliding-window
+
+A classic token-bucket or leaky-bucket limiter *resets* on a fixed time boundary (for example, every minute). If the window is known (e.g. via error messages such as `X-RateLimit-Reset: 27`), fire the maximum allowed number of requests **just before** the bucket resets, then immediately fire another full burst.
+
+```
+|<-- 60 s window ‑->|<-- 60 s window ‑->|
+       ######                 ######
+```
+
+This simple optimisation can more than double your throughput without touching any other bypass technique.
+
+### Upgrading to WebSockets / gRPC streaming after the handshake
+
+Many edge rate-limiters only inspect the **initial HTTP request**. Once the connection is upgraded to WebSocket (HTTP 101) or gRPC bidirectional streaming, subsequent messages often bypass request-per-second counters because they are no longer separate HTTP requests. Cloudflare’s own docs note that only the initial upgrade request is subject to WAF/rate-limiting rules; frames sent afterwards are opaque.
+
+Practical workflow:
+
+```bash
+# Flood 1,000 OTP guesses through a single WebSocket connection
+seq -w 000000 000999 | websocat -n ws://target.tld/api/verify-ws
+
+# gRPC streaming: send multiple Verify requests in one stream
+grpcurl -d @ -plaintext target.tld:50051 service.VerifyOTP/Stream <<'EOF'
+{ "code": "111111" }
+{ "code": "222222" }
+{ "code": "333333" }
+EOF
+```
+
+If the login/OTP endpoint exposes both HTTP and WebSocket/gRPC variants, establish the upgraded channel first and then spray codes within that single connection to evade per-request throttles.
+
+### Exploiting CDN PoP‑sharded counters
+
+Some CDNs shard rate-limit counters **per data center/PoP instead of globally**. Cloudflare explicitly states counters are not shared across data centers. By routing requests through egress nodes in many regions (residential proxy pools, anycast VPNs, or cloud VMs pinned to different continents), you multiply the allowed throughput: every PoP maintains an independent bucket for the same key.
+
+Quick and dirty layout using open proxies (example with `proxychains` + a country‑rotating list):
+
+```bash
+for p in $(cat proxies.txt); do
+  HTTPS_PROXY=$p curl -s -X POST https://target/api/login -d @payload.json &
+done
+wait
+```
+
+Make sure the limiter key is not per-account; otherwise also rotate user IDs / session tokens.
+
+---
+
+## Tools
+
+- [**https://github.com/Hashtag-AMIN/hashtag-fuzz**](https://github.com/Hashtag-AMIN/hashtag-fuzz): Fuzzing tool that supports header randomisation, chunked word-lists and round-robin proxy rotation.
+- [**https://github.com/ustayready/fireprox**](https://github.com/ustayready/fireprox): Automatically creates disposable AWS API Gateway endpoints so every request originates from a different IP address – perfect for defeating IP-based throttling.
+- **Burp Suite – IPRotate + extension**: Uses a pool of SOCKS/HTTP proxies (or AWS API Gateway) to rotate the source IP transparently during *Intruder* and *Turbo Intruder* attacks.
+- **Turbo Intruder (BApp)**: High-performance attack engine supporting HTTP/2 multiplexing; tune `requestsPerConnection` to 100-1000 to collapse hundreds of requests into a single connection.
+
+## References
+
+- [PortSwigger Research – “Bypassing rate limits with GraphQL aliasing” (2023)](https://portswigger.net/research/graphql-authorization-bypass)
+- [PortSwigger Research – “HTTP/2: The Sequel is Always Worse” (connection-based throttling) (2024)](https://portswigger.net/research/http2)
+- [Cloudflare Docs – WebSockets & WAF applicability (2025)](https://developers.cloudflare.com/network/websockets/)
+- [Cloudflare Docs – Request rate calculation and PoP-local counters (2025)](https://developers.cloudflare.com/waf/rate-limiting-rules/request-rate/)

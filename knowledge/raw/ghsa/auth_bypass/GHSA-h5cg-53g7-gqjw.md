@@ -1,0 +1,32 @@
+# RPyC's missing security check results in code execution when using numpy.array on the server-side.
+
+**GHSA**: GHSA-h5cg-53g7-gqjw | **CVE**: CVE-2024-27758 | **Severity**: high (CVSS 8.5)
+
+**CWE**: CWE-306, CWE-358, CWE-913
+
+**Affected Packages**:
+- **rpyc** (pip): >= 4.0.0, < 6.0.0
+
+## Description
+
+An issue in Open Source: RPyC v.4.00 thru v.5.3.1 allows a remote attacker to execute arbitrary code via a crafted script to the `__array__` attribute component. This vulnerability was introduced in [9f45f826](https://github.com/tomerfiliba-org/rpyc/commit/9f45f8269d4106905db61d82cd529cacdb178911).
+
+### Attack Vector
+RPyC services that rely on the `__array__` attribute used by numpy are impacted. When the server-side exposes a method that calls the attribute named `__array__` for a a client provided netref (e.g., `np.array(client_netref)`), a remote attacker can craft a class which results in remote code execution
+
+### Impact
+Assuming the system exposes a method that calls the attribute `__array__`, an attacker can execute code using the vulnerable component. 
+
+### Patches
+The fix is available in RPyC 6.0.0. The major version change is because some users may need to set `allow_pickle` to `True` when migrating to RPyC 6.
+
+### Workarounds
+While the recommend fix is to upgrade to RPyC 6.0.0, the workaround is to [apply bba1d356 as patch.](https://github.com/tomerfiliba-org/rpyc/commit/bba1d3562e6f9f1256ec64048cc23001c0bb7516)
+
+### Affected Component
+[The affected component](https://github.com/tomerfiliba-org/rpyc/blob/5.3.1/rpyc/core/netref.py#L252-L255) is the `__array__` method constructed for `NetrefClass`.
+
+### References
+- [Original disclosure](https://gist.github.com/renbou/957f70d27470982994f12a1d70153d09) by [renbou (Artem Mikheev)](https://gist.github.com/renbou)
+- [CVE-2024-27758](https://nvd.nist.gov/vuln/detail/CVE-2024-27758)
+

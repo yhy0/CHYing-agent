@@ -1,0 +1,96 @@
+# Evil Twin EAP-TLS
+
+EAP-TLS is the common "secure" choice for WPA2/3-Enterprise, but two practical weaknesses regularly show up during assessments:
+
+- **Unauthenticated identity leakage**: the outer EAP-Response/Identity is sent in cleartext before any TLS tunnel is built, so real domain usernames often leak over the air.
+- **Broken client server-validation**: if the supplicant doesn’t strictly verify the RADIUS server certificate (or allows users to click through warnings), a rogue AP with a self-signed cert can still onboard victims – turning mutual TLS into one-way TLS.
+
+## Unauthenticated EAP identity leakage / username enumeration
+
+EAP drives an identity exchange *before* TLS starts. If the client uses the real domain username as its outer identity, anyone in RF range can harvest it without authenticating.
+
+**Passive harvest workflow**
+
+```bash
+# 1) Park on the right channel/BSSID
+airodump-ng -i $IFACE -c $CHAN --bssid $BSSID
+
+# 2) Decode EAP frames and extract identities
+# Trigger a client connection (e.g., your phone) to see the leak
+tshark -i "$IFACE" -Y eap -V | grep "Identity: *[a-z]\|*[A-Z]\|*[0-9]"
+```
+
+Impact: fast, no-auth username collection → fuels password spraying, phishing, account correlation. Worse when usernames match email addresses.
+
+## TLS 1.3 privacy vs downgrade games
+
+TLS 1.3 encrypts client certs and most handshake metadata, so when a supplicant *actually* negotiates TLS 1.3, an Evil Twin cannot passively learn the client certificate/identity. Many enterprise stacks still allow TLS 1.2 for compatibility; RFC 9190 warns that a rogue AP can offer only TLS 1.2 static-RSA suites to force a fallback and re-expose the outer identity (or even the client cert) in cleartext EAP-TLS.
+
+**Offensive playbook (downgrade to leak ID):**
+- Compile hostapd-wpe with only TLS 1.2 static RSA ciphers enabled and TLS 1.3 disabled in `openssl_ciphersuite` / `ssl_ctx_flags`.
+- Advertise the corporate SSID; when the victim initiates TLS 1.3, respond with a TLS alert and restart the handshake so the peer retries with TLS 1.2, revealing its real identity before cert validation succeeds.
+- Pair this with `force_authorized=1` in hostapd-wpe so the 4-way handshake completes even if client-auth fails, giving you DHCP/DNS-level traffic to phish or portal.
+
+**Defensive toggle (what to look for during an assessment):**
+- hostapd/wpa_supplicant 2.10 added EAP-TLS server *and* peer support for TLS 1.3 but ships it **disabled by default**; enabling it on clients with `phase1="tls_disable_tlsv1_3=0"` removes the downgrade window.
+
+### TLS 1.3 realities in 2024–2025
+
+- FreeRADIUS 3.0.23+ accepts EAP-TLS 1.3, but clients still break (Windows 11 has no EAP-TLS 1.3 session resumption, Android support varies), so many deployments pin `tls_max_version = "1.2"` for stability.
+- Windows 11 enables EAP-TLS 1.3 by default (22H2+), yet failed resumptions and flaky RADIUS stacks often force a fallback to TLS 1.2.
+- RSA key exchange for TLS 1.2 is being deprecated; OpenSSL 3.x drops static-RSA suites at security level ≥2, so a TLS 1.2 static-RSA rogue needs OpenSSL 1.1.1 with `@SECLEVEL=0` or older.
+
+**Practical version steering during an engagement**
+
+- **Force TLS 1.2 on the rogue** (to leak identities):
+  ```bash
+  # hostapd-wpe.conf
+  ssl_ctx_flags=0
+  openssl_ciphers=RSA+AES:@SECLEVEL=0   # requires OpenSSL 1.1.1
+  disable_tlsv1_3=1
+  ```
+- **Probe client TLS intolerance**: run two rogues – one advertising TLS 1.3-only (`disable_tlsv1=1`, `disable_tlsv1_1=1`, `disable_tlsv1_2=1`) and one TLS 1.2-only. Clients that only join the 1.2 BSS are downgradeable.
+- **Watch for fallback in captures**: filter in Wireshark for `tls.handshake.version==0x0303` after an initial `ClientHello` with `supported_versions` containing 0x0304; victims that retry 0x0303 are leaking their outer ID again.
+
+## Evil Twin via broken server validation ("mTLS?")
+
+Rogue APs broadcasting the corporate SSID can present any certificate. If the client:
+- **doesn’t validate** the server cert, or
+- **prompts the user** and allows override of untrusted CAs/self-signed certs,
+then EAP-TLS stops being mutual. A modified **hostapd/hostapd-wpe** that skips client-cert validation (e.g., `SSL_set_verify(..., 0)`) is enough to stand up the Evil Twin.
+
+### Rogue infra quick note
+
+On recent Kali, compile `hostapd-wpe` using hostapd-2.6 (from https://w1.fi/releases/) and install the legacy OpenSSL headers first:
+
+```bash
+apt-get install libssl1.0-dev
+# patch hostapd-wpe to set verify_peer=0 in SSL_set_verify to accept any client cert
+```
+
+### Windows supplicant misconfig pitfalls (GUI/GPO)
+
+Key knobs from the Windows EAP-TLS profile:
+- **Verify the server's identity by validating the certificate**
+  - Checked → chain must be trusted; unchecked → any self-signed cert is accepted.
+- **Connect to these servers**
+  - Empty → any cert from a trusted CA is accepted; set CN/SAN list to pin expected RADIUS names.
+- **Don't prompt user to authorise new servers or trusted certification authorities**
+  - Checked → users cannot click through; unchecked → user can trust an untrusted CA/cert and join the rogue AP.
+
+Observed outcomes:
+- **Strict validation + no prompts** → rogue cert rejected; Windows logs an event and TLS fails (good detection signal).
+- **Validation + user prompt** → user acceptance = successful Evil Twin association.
+- **No validation** → silent Evil Twin association with any cert.
+
+## References
+
+- [EAP-TLS: The most secure option? (NCC Group)](https://www.nccgroup.com/research-blog/eap-tls-the-most-secure-option/)
+- [EAP-TLS wireless infrastructure (Versprite hostapd bypass)](https://versprite.com/blog/eap-tls-wireless-infrastructure/)
+- [RFC 4282 - Network Access Identifier](https://datatracker.ietf.org/doc/html/rfc4282)
+- [Microsoft ServerValidationParameters (WLAN profile)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpwl/0765966e-a16a-4e75-aec6-0f5f7bfbf31c)
+- [RFC 9190 – EAP-TLS 1.3](https://datatracker.ietf.org/doc/rfc9190/)
+- [hostapd/wpa_supplicant 2.10 release notes (TLS 1.3 EAP-TLS support)](https://lists.infradead.org/pipermail/hostap/2022-February/040204.html)
+- [FreeRADIUS TLS 1.3 support thread (Nov 2024)](https://lists.freeradius.org/pipermail/freeradius-users/2024-November/104969.html)
+- [Windows 11 enabling TLS 1.3 for EAP (SecurityBoulevard, Jan 2024)](https://securityboulevard.com/2024/01/windows-11-changes-you-need-to-know/)
+- [draft-ietf-tls-deprecate-obsolete-kex](https://datatracker.ietf.org/doc/html/draft-ietf-tls-deprecate-obsolete-kex)

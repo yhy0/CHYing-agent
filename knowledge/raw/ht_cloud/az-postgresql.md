@@ -1,0 +1,127 @@
+# Az - PostgreSQL Databases
+
+## Azure PostgreSQL
+**Azure Database for PostgreSQL** is a fully managed **relational database service based on the PostgreSQL** Community Edition. It is designed to provide scalability, security, and flexibility for diverse application needs. Similar to Azure MySQL, PostgreSQL offers two deployment models:
+
+* **Single Server** (on the retirement path):
+    - Optimized for straightforward, cost-effective PostgreSQL deployments.
+    - Features automated backups, basic monitoring, and high availability.
+    - Ideal for applications with predictable workloads.
+* **Flexible Server**:
+    - Provides greater control over database management and configuration.
+    - Supports high availability, both in the same zone and across zones.
+    - Features elastic scaling, automated maintenance, and cost-saving functionality.
+    - Allows starting and stopping the server to optimize costs.
+
+### Key Features
+
+* **Custom Maintenance Windows**: Schedule updates to minimize disruption.
+* **Active Monitoring**: Access detailed metrics and logs to track and improve database performance.
+* **Stop/Start Server**: Users can stop and start the server.
+* **Automatic Backups**: Built-in daily backups with retention periods configurable up to 35 days.
+* **Role-Based Access**: Control user permissions and administrative access through Azure Active Directory.
+* **Security and Networking**: can manage server firewall rules for secure database access and detach virtual network configurations as needed.
+* **Managed Identities**: allow your server to securely authenticate with other Azure services without storing credentials. It allow to access other services which would be System assigned managed identity and be accessed by other services with other identities which is User assigned managed identity.
+
+### Enumeration
+
+{{#tabs }}
+{{#tab name="az cli" }}
+```bash
+# List servers in a resource group
+az postgres flexible-server list --resource-group <resource-group-name>
+# List databases in a flexible-server
+az postgres flexible-server db list --resource-group <resource-group-name> --server-name <server_name>
+# Show specific details of a Postgre database
+az postgres flexible-server db show --resource-group <resource-group-name> --server-name <server_name> --database-name <database_name>
+
+# List firewall rules of the a server
+az postgres flexible-server firewall-rule list --resource-group <resource-group-name> --name <server_name>
+# List parameter values for a felxible server
+az postgres flexible-server parameter list --resource-group <resource-group-name> --server-name <server_name>
+# List private link
+az postgres flexible-server private-link-resource list --resource-group <resource-group-name> --server-name <server_name>
+
+# List all ad-admin in a server
+az postgres flexible-server ad-admin list --resource-group <resource-group-name> --server-name <server_name>
+# List all user assigned managed identities from the server
+az postgres flexible-server identity list --resource-group <resource-group-name> --server-name <server_name>
+
+# List the server backups
+az postgres flexible-server backup list --resource-group <resource-group-name> --name <server_name>
+# List all read replicas for a given server
+az postgres flexible-server replica list --resource-group <resource-group-name> --name <server_name>
+# List migrations
+az postgres flexible-server migration list --resource-group <resource-group-name> --name <server_name>
+
+# Get the server's advanced threat protection setting
+az postgres flexible-server advanced-threat-protection-setting show --resource-group <resource-group-name> --name <server_name>
+# List all of the maintenances of a flexible server
+az postgres flexible-server maintenance list --resource-group <resource-group-name> --server-name <server_name>
+# List log files for a server.
+az postgres flexible-server server-logs list --resource-group <resource-group-name> --server-name <server_name>
+
+```
+{{#endtab }}
+
+{{#tab name="Az Powershell" }}
+```bash
+Get-Command -Module Az.PostgreSql
+
+# List flexible-servers in a resource group
+Get-AzPostgreSqlFlexibleServer -ResourceGroupName <resource-group-name>
+# List databases in a flexible-server
+Get-AzPostgreSqlFlexibleServerDatabase -ResourceGroupName <resource-group-name> -ServerName <server_name>
+
+# List firewall rules of the a flexible-server
+Get-AzPostgreSqlFlexibleServerFirewallRule -ResourceGroupName <resource-group-name> -ServerName <server_name>
+
+# List configuration settings of a flexible server
+Get-AzPostgreSqlFlexibleServerConfiguration -ResourceGroupName <resource-group-name> -ServerName <server_name>
+# Get the connection string for a flexible server
+Get-AzPostgreSqlFlexibleServerConnectionString -ResourceGroupName <resource-group-name> -ServerName <server_name> -Client <client>
+
+Get-AzPostgreSqlFlexibleServerLocationBasedCapability -Location <location>
+
+# List servers in a resource group
+Get-AzPostgreSqlServer -ResourceGroupName <resource-group-name>
+
+```
+{{#endtab }}
+{{#endtabs }}
+
+### Connection
+
+With the extension rdbms-connect you can access the database with:
+
+```bash
+az postgres flexible-server connect -n <server-name> -u <username> -p <password> --interactive
+
+#or execute commands
+az postgres flexible-server execute \
+  -n <server-name> \
+  -u <username> \
+  -p "<password>" \
+  -d <database-name> \
+  --querytext "SELECT * FROM <table-name>;"
+
+```
+
+Or 
+```bash
+psql -h testpostgresserver1994.postgres.database.azure.com -p 5432 -U adminuser <database-name>
+```
+
+## References
+
+- [https://learn.microsoft.com/en-us/azure/postgresql/](https://learn.microsoft.com/en-us/azure/postgresql/)
+- [https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/service-overview](https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/service-overview)
+- [https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/overview](https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/overview)
+
+## Privilege Escalation
+
+## Post Exploitation
+
+## ToDo
+
+* Look a way to access with ad-admin to verify its a privesc method

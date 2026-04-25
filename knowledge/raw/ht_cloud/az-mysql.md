@@ -1,0 +1,149 @@
+# Az - MySQL Databases
+
+## Azure MySQL
+Azure Database for MySQL is a fully managed relational database service based on the MySQL Community Edition, designed to provide scalability, security, and flexibility for various application needs. It has two different deployment models:
+
+* **Single Server** (is on the retirement path):
+ - Optimized for cost-effective and easy-to-manage MySQL deployments.
+ - Features include automated backups, high availability, and basic monitoring.
+ - Ideal for applications with predictable workloads.
+* **Flexible Server**:
+ - Provides more control over database management and configuration.
+ - Supports high availability (same-zone and zone-redundant).
+ - Features elastic scaling, patch management, and workload optimization.
+ - Offers stop/start functionality for cost savings.
+
+### Security Features
+
+**The options are very similar to an Azure SQL Server.**
+
+* **Authentication**: It’s possible to configure the authentication as MySQL auth only, Entra ID auth only or both MySQL and Entra ID auth. 
+  * If MySQL auth is enabled it’ll be possible to login with username + password
+  * If Entrad ID is configured the MySQL requires a user-assigned MI with enough permissions mentioned **[here](https://learn.microsoft.com/en-us/azure/mysql/flexible-server/how-to-azure-ad#configure-the-microsoft-entra-admin)** and an Entra ID principal must be selected as admin.
+* **Networking**: It’s possible to allow public access indicating allowed IP addresses and private endpoints can also be used. Moreover it’s possible to allow access from any Azure service and configure more firewall rules.
+* **Encryption**: All connections are protected with TLS 1.2 encryption. Databases, backups, and logs are encrypted at rest by default using service-managed keys but custom keys could also be used.
+* **Data Protection and Backup**: Includes options to manage flexible server backups for data recover, and restore a server from backup to a specific point in time.
+
+### Enumeration
+
+{{#tabs }}
+{{#tab name="az cli" }}
+```bash
+# List all flexible-servers
+az mysql flexible-server list --resource-group <resource-group-name>
+# List databases in a flexible-server
+az mysql flexible-server db list --resource-group <resource-group-name> --server-name <server_name>
+# Show specific details of a MySQL database
+az mysql flexible-server db show --resource-group <resource-group-name> --server-name <server_name> --database-name <database_name>
+
+# List firewall rules of the a server
+az mysql flexible-server firewall-rule list --resource-group <resource-group-name> --name <server_name>
+
+# List all ad-admin in a server
+az mysql flexible-server ad-admin list --resource-group <resource-group-name> --server-name <server_name>
+# List all user assigned managed identities from the server
+az mysql flexible-server identity list --resource-group <resource-group-name> --server-name <server_name>
+
+# List the server backups
+az mysql flexible-server backup list --resource-group <resource-group-name> --name <server_name>
+# List all read replicas for a given server
+az mysql flexible-server replica list --resource-group <resource-group-name> --name <server_name>
+
+# Get the server's advanced threat protection setting
+az mysql flexible-server advanced-threat-protection-setting show --resource-group <resource-group-name> --name <server_name>
+# List all of the maintenances of a flexible server
+az mysql flexible-server maintenance list --resource-group <resource-group-name> --server-name <server_name>
+# List log files for a server.
+az mysql flexible-server server-logs list --resource-group <resource-group-name> --server-name <server_name>
+
+```
+{{#endtab }}
+
+{{#tab name="Az Powershell" }}
+```bash
+Get-Command -Module Az.MySql 
+
+# Get all flexible servers in a resource group
+Get-AzMySqlFlexibleServer -ResourceGroupName <resource-group-name>
+
+# List databases in a specific flexible server
+Get-AzMySqlFlexibleServerDatabase -ResourceGroupName <resource-group-name> -ServerName <server_name>
+
+# Get details of a specific database in a flexible server
+Get-AzMySqlFlexibleServerDatabase -ResourceGroupName <resource-group-name> -ServerName <server_name> -DatabaseName <database_name>
+
+# List all firewall rules for a flexible server
+Get-AzMySqlFlexibleServerFirewallRule -ResourceGroupName <resource-group-name> -ServerName <server_name>
+
+# Get the identity information of a flexible server
+Get-AzMySqlFlexibleServerIdentity -ResourceGroupName <resource-group-name> -ServerName <server_name>
+
+# Get the server's advanced threat protection setting
+Get-AzMySqlFlexibleServerAdvancedThreatProtection -ResourceGroupName <resource-group-name> -ServerName <server_name>
+
+# List configuration settings of a flexible server
+Get-AzMySqlFlexibleServerConfiguration -ResourceGroupName <resource-group-name> -ServerName <server_name>
+# Get the connection string for a flexible server
+Get-AzMySqlFlexibleServerConnectionString -ResourceGroupName <resource-group-name> -ServerName <server_name> -Client <client>
+
+# List all read replicas for a given server
+Get-AzMySqlFlexibleServerReplica -ResourceGroupName <resource-group-name> -ServerName <server_name>
+
+# Get the maintenance window details for a flexible server
+Get-AzMySqlFlexibleServerMaintenanceWindow -ResourceGroupName <resource-group-name> -ServerName <server_name>
+
+# List log files for a server
+Get-AzMySqlFlexibleServerLog -ResourceGroupName <resource-group-name> -ServerName <server_name>
+```
+{{#endtab }}
+{{#endtabs }}
+
+### Connection
+
+With the extension rdbms-connect you can access the database with:
+
+```bash
+az mysql flexible-server connect -n <server-name> -u <username> -p <password> --interactive
+
+#or execute commands
+az mysql flexible-server execute \
+  -n <server-name> \
+  -u <username> \
+  -p "<password>" \
+  -d <database-name> \
+  --querytext "SELECT * FROM <table-name>;"
+
+```
+
+Or with the MySQL native extension plugin
+```bash
+mysql -h <server-name>.mysql.database.azure.com -P 3306 -u <username> -p
+```
+
+Also you can execute queries with github but the password and user are also needed. You need to set up a sql file with the query to run and then:
+```bash
+# Setup
+az mysql flexible-server deploy setup \
+  -s <server-name> \
+  -g <resource-group> \
+  -u <admin-user> \
+  -p "<admin-password>" \
+  --sql-file <path-to-sql-file> \
+  --repo <github-username/repository-name> \
+  --branch <branch-name> \
+  --action-name <action-name> \
+  --allow-push
+
+# Run it
+az mysql flexible-server deploy run \
+  --action-name <action-name> \
+  --branch <branch-name>
+```
+
+## Privilege Escalation
+
+## Post Exploitation
+
+## ToDo
+
+* Look a way to access with mysql flexible-server ad-admin to verify its a privesc method

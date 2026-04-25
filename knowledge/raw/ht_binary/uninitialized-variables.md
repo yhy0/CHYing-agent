@@ -1,0 +1,109 @@
+# Uninitialized Variables
+
+## Basic Information
+
+The core idea here is to understand what happens with **uninitialized variables as they will have the value that was already in the assigned memory to them.** Example:
+
+- **Function 1: `initializeVariable`**: We declare a variable `x` and assign it a value, let's say `0x1234`. This action is akin to reserving a spot in memory and putting a specific value in it.
+- **Function 2: `useUninitializedVariable`**: Here, we declare another variable `y` but do not assign any value to it. In C, uninitialized variables don't automatically get set to zero. Instead, they retain whatever value was last stored at their memory location.
+
+When we run these two functions **sequentially**:
+
+1. In `initializeVariable`, `x` is assigned a value (`0x1234`), which occupies a specific memory address.
+2. In `useUninitializedVariable`, `y` is declared but not assigned a value, so it takes the memory spot right after `x`. Due to not initializing `y`, it ends up "inheriting" the value from the same memory location used by `x`, because that's the last value that was there.
+
+This behavior illustrates a key concept in low-level programming: **Memory management is crucial**, and uninitialized variables can lead to unpredictable behavior or security vulnerabilities, as they may unintentionally hold sensitive data left in memory.
+
+Uninitialized stack variables could pose several security risks like:
+
+- **Data Leakage**: Sensitive information such as passwords, encryption keys, or personal details can be exposed if stored in uninitialized variables, allowing attackers to potentially read this data.
+- **Information Disclosure**: The contents of uninitialized variables might reveal details about the program's memory layout or internal operations, aiding attackers in developing targeted exploits.
+- **Crashes and Instability**: Operations involving uninitialized variables can result in undefined behavior, leading to program crashes or unpredictable outcomes.
+- **Arbitrary Code Execution**: In certain scenarios, attackers could exploit these vulnerabilities to alter the program's execution flow, enabling them to execute arbitrary code, which might include remote code execution threats.
+
+### Example
+
+```c
+#include <stdio.h>
+
+// Function to initialize and print a variable
+void initializeAndPrint() {
+    int initializedVar = 100; // Initialize the variable
+    printf("Initialized Variable:\n");
+    printf("Address: %p, Value: %d\n\n", (void*)&initializedVar, initializedVar);
+}
+
+// Function to demonstrate the behavior of an uninitialized variable
+void demonstrateUninitializedVar() {
+    int uninitializedVar; // Declare but do not initialize
+    printf("Uninitialized Variable:\n");
+    printf("Address: %p, Value: %d\n\n", (void*)&uninitializedVar, uninitializedVar);
+}
+
+int main() {
+    printf("Demonstrating Initialized vs. Uninitialized Variables in C\n\n");
+
+    // First, call the function that initializes its variable
+    initializeAndPrint();
+
+    // Then, call the function that has an uninitialized variable
+    demonstrateUninitializedVar();
+
+    return 0;
+}
+```
+
+#### How This Works:
+
+- **`initializeAndPrint` Function**: This function declares an integer variable `initializedVar`, assigns it the value `100`, and then prints both the memory address and the value of the variable. This step is straightforward and shows how an initialized variable behaves.
+- **`demonstrateUninitializedVar` Function**: In this function, we declare an integer variable `uninitializedVar` without initializing it. When we attempt to print its value, the output might show a random number. This number represents whatever data was previously at that memory location. Depending on the environment and compiler, the actual output can vary, and sometimes, for safety, some compilers might automatically initialize variables to zero, though this should not be relied upon.
+- **`main` Function**: The `main` function calls both of the above functions in sequence, demonstrating the contrast between an initialized variable and an uninitialized one.
+
+## Practical exploitation patterns (2024–2025)
+
+The classic "read-before-write" bug remains relevant because modern mitigations (ASLR, canaries) often rely on secrecy. Typical attack surfaces:
+
+- **Partially initialized structs copied to userland**: Kernel or drivers frequently `memset` only a length field and then `copy_to_user(&u, &local_struct, sizeof(local_struct))`. Padding and unused fields leak stack canary halves, saved frame pointers or kernel pointers. If the struct contains a function pointer, leaving it uninitialized may also allow **controlled overwrite** when later reused.
+- **Uninitialized stack buffers reused as indexes/lengths**: An uninitialized `size_t len;` used to bound `read(fd, buf, len)` may give attackers out-of-bounds reads/writes or allow bypassing size checks when the stack slot still contains a large value from a prior call.
+- **Compiler-added padding**: Even when individual members are initialized, implicit padding bytes between them are not. Copying the whole struct to userland leaks padding that often contains prior stack content (canaries, pointers).
+- **ROP/Canary disclosure**: If a function copies a local struct to stdout for debugging, uninitialized padding can reveal the stack canary enabling subsequent stack overflow exploitation without brute-force.
+
+Minimal PoC pattern to detect such issues during review:
+
+```c
+struct msg {
+    char data[0x20];
+    uint32_t len;
+};
+
+ssize_t handler(int fd) {
+    struct msg m;              // never fully initialized
+    m.len = read(fd, m.data, sizeof(m.data));
+    // later debug helper
+    write(1, &m, sizeof(m));   // leaks padding + stale stack
+    return m.len;
+}
+```
+
+## Mitigations & compiler options (keep in mind when bypassing)
+
+- **Clang/GCC auto-init**: Recent toolchains expose `-ftrivial-auto-var-init=zero` or `-ftrivial-auto-var-init=pattern`, filling *every* automatic (stack) variable at function entry with zeros or a poison pattern (0xAA / 0xFE). This closes most uninitialized-stack info leaks and makes exploitation harder by converting secrets into known values.
+- **Linux kernel hardening**: Kernels built with `CONFIG_INIT_STACK_ALL` or the newer `CONFIG_INIT_STACK_ALL_PATTERN` zero/pattern-initialize every stack slot at function entry, wiping canaries/pointers that would otherwise leak. Look for distros shipping Clang-built kernels with these options enabled (common in 6.8+ hardening configs).
+- **Opt-out attributes**: Clang now allows `__attribute__((uninitialized))` on specific locals/structs to keep performance-critical areas uninitialized even when global auto-init is enabled. Review such annotations carefully—they often mark deliberate attack surface for side channels.
+
+From an attacker perspective, knowing whether the binary was built with these flags determines if stack-leak primitives are viable or if you must pivot to heap/data-section disclosures.
+
+## Finding uninitialized-stack bugs quickly
+
+- **Compiler diagnostics**: Build with `-Wall -Wextra -Wuninitialized` (GCC/Clang). For C++ code, `clang-tidy -checks=cppcoreguidelines-init-variables` will auto-fix many cases to zero-init and is handy to spot missed locals during audit.
+- **Dynamic tools**: `-fsanitize=memory` (MSan) in Clang or Valgrind's `--track-origins=yes` reliably flag reads of uninitialized stack bytes during fuzzing. Instrument test harnesses with these to surface subtle padding leaks.
+- **Grepping patterns**: In reviews, search for `copy_to_user` / `write` calls of whole structs, or `memcpy`/`send` of stack data where only part of the struct is set. Pay special attention to error paths where initialization is skipped.
+
+## ARM64 Example
+
+This doesn't change at all in ARM64 as local variables are also managed in the stack, you can [**check this example**](https://8ksec.io/arm64-reversing-and-exploitation-part-6-exploiting-an-uninitialized-stack-variable-vulnerability/) were this is shown.
+
+## References
+
+- [CONFIG_INIT_STACK_ALL_PATTERN documentation](https://www.kernelconfig.io/config_init_stack_all_pattern)
+- [GHSL-2024-197: GStreamer uninitialized stack variable leading to function pointer overwrite](https://securitylab.github.com/advisories/GHSL-2024-197_GStreamer/)

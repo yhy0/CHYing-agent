@@ -1,0 +1,51 @@
+# === Version Control ===
+.git
+.gitignore
+
+# === Python ===
+__pycache__
+*.pyc
+*.pyo
+.venv
+.mypy_cache
+.pytest_cache
+.ruff_cache
+
+# === Node.js ===
+node_modules
+
+
+# === IDE / Editor ===
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# === Build / CI artifacts ===
+benchmark-results
+logs
+*.egg-info
+dist
+build
+
+# === Documentation & images (not needed in image) ===
+# 只排除根目录的文档和图片，chying_agent/ 里的 .md 知识库需要保留
+images
+docs
+/README.md
+/README-v2.md
+/QUICKSTART.md
+/rag_plan.md
+/*.md
+
+# === OS artifacts ===
+.DS_Store
+Thumbs.db
+
+# === Other large/unnecessary dirs ===
+benchmark
+claude-sdk-docs
+data
+scripts
+web-ui

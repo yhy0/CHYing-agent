@@ -1,0 +1,13 @@
+# GCP - App Engine Unauthenticated Enum
+
+## App Engine
+
+For more information about App Engine check:
+
+### Brute Force Subdomains
+
+As mentioned the URL assigned to App Engine web pages is **`<project-uniq-name>.appspot.com`** and if a service name is used it'll be: **`<servicename>-dot-<project-uniq-name>.appspot.com`**.
+
+As the **`project-uniq-name`** can be set by the person creating the project, they might be not that random and **brute-forcing them could find App Engine web apps exposed by companies**.
+
+You could use tools like the ones indicated in:

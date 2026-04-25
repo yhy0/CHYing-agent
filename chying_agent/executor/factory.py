@@ -5,54 +5,50 @@
 根据配置返回相应的执行器实例。
 
 执行器类型：
-1. DockerExecutor - 在 Kali Linux 容器中执行 Shell 命令
-2. MicrosandboxExecutor - 在隔离沙箱中执行 Python 代码
-
-优化说明：
-- 移除了 @lru_cache 装饰器（因为配置对象是单例，不需要缓存）
-- 如果需要单例模式，应在调用层实现
+1. DockerExecutor - 在 Kali Linux 容器中执行 Shell 命令（宿主机模式）
+2. LocalExecutor - 在容器内本地执行命令（容器内模式）
 """
+
 import logging
 from chying_agent.config import AgentConfig
 from chying_agent.executor.base import BaseExecutor
 from chying_agent.common import log_system_event
+from chying_agent.utils.path_utils import is_in_container
 
 
 def get_executor(config: AgentConfig) -> BaseExecutor:
     """
-    根据配置获取Shell命令执行器（用于 Kali 工具）
-    
-    要求：
-    - 必须配置 DOCKER_CONTAINER_NAME
-    - 不支持本地执行（安全考虑）
-    
-    Args:
-        config: Agent 配置实例
-        
-    Returns:
-        DockerExecutor 实例
-        
-    Raises:
-        ValueError: 如果未配置 Docker 容器
+    根据配置获取Shell命令执行器
+
+    容器内模式（CHYING_IN_CONTAINER=1）：返回 LocalExecutor
+    宿主机模式：返回 DockerExecutor（需要 DOCKER_CONTAINER_NAME）
     """
+    if is_in_container():
+        from chying_agent.executor.local_executor import LocalExecutor
+
+        log_system_event(
+            "[ExecutorFactory] 容器内模式，使用 LocalExecutor",
+        )
+        return LocalExecutor()
+
     if not config.docker_container_name:
         raise ValueError(
             "未配置 Docker 容器！\n"
             "请在 .env 文件中设置 DOCKER_CONTAINER_NAME=kali-sandbox\n"
             "安全提示：不支持本地执行，所有命令必须在 Docker 容器内运行"
         )
-    
+
     try:
         from chying_agent.executor.docker_native import DockerExecutor
+
         log_system_event(
-            "[ExecutorFactory] 使用 DockerExecutor（Kali Linux）", 
-            {"container": config.docker_container_name}
+            "[ExecutorFactory] 使用 DockerExecutor（Kali Linux）",
+            {"container": config.docker_container_name},
         )
         return DockerExecutor(container_name=config.docker_container_name)
     except Exception as e:
         log_system_event(
-            f"[ExecutorFactory] DockerExecutor 初始化失败: {e}",
-            level=logging.ERROR
+            f"[ExecutorFactory] DockerExecutor 初始化失败: {e}", level=logging.ERROR
         )
         raise RuntimeError(
             f"无法创建 Docker 执行器: {e}\n"
@@ -65,30 +61,20 @@ def get_executor(config: AgentConfig) -> BaseExecutor:
 
 def get_python_executor(config: AgentConfig) -> BaseExecutor:
     """
-    获取 Python 代码执行器（用于 LLM 生成的 PoC）
-    
-    优先使用 Microsandbox，如果未启用则使用 DockerExecutor（带 Python 支持）
-    
-    Args:
-        config: Agent 配置实例
-        
-    Returns:
-        MicrosandboxExecutor 或 DockerExecutor 实例
+    获取 Python 代码执行器
+
+    容器内模式：直接使用 LocalExecutor（已支持 is_python）
+    宿主机模式：使用 DockerPythonExecutor 包装 DockerExecutor
     """
-    if config.sandbox_enabled:
-        try:
-            from chying_agent.executor.microsandbox import MicrosandboxExecutor
-            log_system_event(
-                "[ExecutorFactory] 使用 MicrosandboxExecutor（Python 沙箱）", 
-                {"name": config.sandbox_name}
-            )
-            return MicrosandboxExecutor(name=config.sandbox_name)
-        except Exception as e:
-            log_system_event(
-                f"[ExecutorFactory] MicrosandboxExecutor 初始化失败: {e}，回退到 Docker Python 执行器",
-                level=logging.WARNING
-            )
-    
-    # 回退到 Docker 执行器（包装为 Python 执行器）
+    if is_in_container():
+        return get_executor(config)
+
     from chying_agent.executor.docker_python_wrapper import DockerPythonExecutor
-    return DockerPythonExecutor(get_executor(config))
+    from chying_agent.executor.docker_native import DockerExecutor
+
+    docker_executor = get_executor(config)
+
+    if not isinstance(docker_executor, DockerExecutor):
+        raise RuntimeError("get_executor 应返回 DockerExecutor 实例")
+
+    return DockerPythonExecutor(docker_executor)

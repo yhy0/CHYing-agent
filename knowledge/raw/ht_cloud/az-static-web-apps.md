@@ -1,0 +1,192 @@
+# Az Static Web Apps
+
+## Static Web Apps Basic Information
+
+Azure Static Web Apps is a cloud service for hosting **static web apps with automatic CI/CD from repositories like GitHub**. It offers global content delivery, serverless backends, and built-in HTTPS, making it secure and scalable. However, even if the service is called "static", it doesn't mean it's completely safe. Risks include misconfigured CORS, insufficient authentication, and content tampering, which can expose apps to attacks like XSS and data leakage if not properly managed.
+
+### Deployment Authentication
+
+> [!TIP]
+> When a Static App is created you can choose the **deployment authorization policy** between **Deployment token** and **GitHub Actions workflow**.
+
+- **Deployment token**: A token is generated and used to authenticate the deployment process. Anyone with **this token is enough to deploy a new version of the app**. A **Github Action is deployed automatically** in the repo with the token in a secret to deploy a new version of the app every time the repo is updated.
+- **GitHub Actions workflow**: In this case a very similar Github Action is also deployed in the repo and the **token is also stored in a secret**. However, this Github Action has a difference, it uses the **`actions/github-script@v6`** action to get the IDToken of repository and use it to deploy the app.
+  - Even If in both cases the action **`Azure/static-web-apps-deploy@v1`** is used with a token in the `azure_static_web_apps_api_token` param, in this second case a random token with a format valid like `12345cbb198a77a092ff885781a62a15d51ef5e3654ca11234509ab54547270704-4140ccee-e04f-424f-b4ca-3d4dd123459c00f0702071d12345` is just enough to deploy the app as the authorization is done with the IDToken in the `github_id_token` param.
+
+### Web App Basic Authentication
+
+It's possible to **configure a password** to access the Web App. The web console allows to configure it to protect only staging environments or both staging and  the production one. 
+
+This is how at the time of writing a password protected web app looks like:
+
+<img src="../../../images/azure_static_password.png" alt=""><figcaption></figcaption>
+
+It's possible to see **if any password is being used** and which environments are protected with:
+
+```bash
+az rest --method GET \
+--url "/subscriptions/<subscription-id>/resourceGroups/Resource_Group_1/providers/Microsoft.Web/staticSites/<app-name>/config/basicAuth?api-version=2024-04-01"
+```
+
+However, this **won't show the password in clear text**, just something like: `"password": "**********************"`.
+
+### Routes and Roles
+
+Routes define **how incoming HTTP requests are handled** within a static web app. Configured in the **`staticwebapp.config.json`** file, they control URL rewriting, redirections, access restrictions, and role-based authorization, ensuring proper resource handling and security.
+
+Some example:
+
+```json
+{
+  "routes": [
+    {
+      "route": "/",
+      "rewrite": "/index.html"
+    },
+    {
+      "route": "/about",
+      "rewrite": "/about.html"
+    },
+    {
+      "route": "/api/*",
+      "allowedRoles": ["authenticated"]
+    },
+    {
+      "route": "/admin",
+      "redirect": "/login",
+      "statusCode": 302
+    },
+    {
+      "route": "/google",
+      "redirect": "https://google.com",
+      "statusCode": 307
+    }
+  ],
+  "navigationFallback": {
+    "rewrite": "/index.html",
+    "exclude": ["/api/*", "/assets/*"]
+  }
+}
+```
+
+Note how it's possible to **protect a path with a role**, then, users will need to authenticate to the app and be granted that role to access the path. It's also possible to **create invitations** granting specific roles to specific users login via EntraID, Facebook, GitHub, Google, Twitter which might be useful to escalate privileges within the app.
+
+> [!TIP]
+> Note that it's possible to configure the App so **changes to the `staticwebapp.config.json`** file aren't accepted. In this case, it might not be enough to just change the file from Github, but also to **change the setting in the App**.
+
+The staging URL has this format: `https://<app-subdomain>-<PR-num>.<region>.<res-of-app-domain>` like: `https://ambitious-plant-0f764e00f-2.eastus2.4.azurestaticapps.net`
+
+### Snippets
+
+It's possible to store HTML snippets inside a static web app that will be loaded inside the app. This can be used to **inject malicious code** into the app, like a **JS code to steal credentials**, a **keylogger**... More info in the privleges escalation section.
+
+### Managed Identities
+
+Azure Static Web Apps can be configured to use **managed identities**, however, as mentioned in [this FAQ](https://learn.microsoft.com/en-gb/azure/static-web-apps/faq#does-static-web-apps-support-managed-identity-) they are only supported to **extract secrets from Azure Key Vault for authentication purposes, not to access other Azure resources**.
+
+For more info you can find an Azure guide use a vault secret in a static app in https://learn.microsoft.com/en-us/azure/static-web-apps/key-vault-secrets.
+
+## Enumeration
+
+{{#tabs }}
+{{#tab name="az cli" }}
+```bash
+# List Static Webapps
+az staticwebapp list --output table
+
+# Get Static Webapp details
+az staticwebapp show --name <name> --resource-group <res-group> --output table
+
+# Get appsettings
+az staticwebapp appsettings list --name <name>
+
+# Get env information
+az staticwebapp environment list --name <name>
+az staticwebapp environment functions --name <name>
+
+# Get API key
+az staticwebapp secrets list --name <name>
+
+# Get invited users
+az staticwebapp users list --name <name>
+
+# Get current snippets
+az rest --method GET \
+  --url "https://management.azure.com/subscriptions/<subscription-id>/resourceGroups/<res-group>/providers/Microsoft.Web/staticSites/trainingdemo/snippets?api-version=2022-03-01"
+
+# Get database connections
+az rest --method GET \
+  --url "https://management.azure.com/subscriptions/<subscription-id>/resourceGroups/<res-group>/providers/Microsoft.Web/staticSites/<app-name>/databaseConnections?api-version=2021-03-01"
+
+## Once you have the database connection name ("default" by default) you can get the connection string with the credentials
+az rest --method POST \
+  --url "https://management.azure.com/subscriptions/<subscription-id>/resourceGroups/<res-group>/providers/Microsoft.Web/staticSites/<app-name>/databaseConnections/default/show?api-version=2021-03-01"
+
+# Check connected backends
+az staticwebapp backends show --name <name> --resource-group <res-group>
+```
+{{#endtab }}
+
+{{#tab name="Az Powershell" }}
+```bash
+Get-Command -Module Az.Websites
+
+# Retrieves details of a specific Static Web App in the specified resource group.
+Get-AzStaticWebApp -ResourceGroupName <ResourceGroupName> -Name <Name>
+
+# Retrieves the build details for a specific Static Web App.
+Get-AzStaticWebAppBuild -ResourceGroupName <ResourceGroupName> -Name <Name>
+
+# Retrieves the application settings for a specific build environment in a Static Web App.
+Get-AzStaticWebAppBuildAppSetting -ResourceGroupName <ResourceGroupName> -Name <Name> -EnvironmentName <EnvironmentName>
+
+# Retrieves functions for a specific build environment in a Static Web App.
+Get-AzStaticWebAppBuildFunction -ResourceGroupName <ResourceGroupName> -Name <Name> -EnvironmentName <EnvironmentName>
+
+# Retrieves function app settings for a specific build environment in a Static Web App.
+Get-AzStaticWebAppBuildFunctionAppSetting -ResourceGroupName <ResourceGroupName> -Name <Name> -EnvironmentName <EnvironmentName>
+
+# Retrieves the configured roles for a Static Web App.
+Get-AzStaticWebAppConfiguredRole -ResourceGroupName <ResourceGroupName> -Name <Name>
+
+# Retrieves the custom domains configured for a Static Web App.
+Get-AzStaticWebAppCustomDomain -ResourceGroupName <ResourceGroupName> -Name <Name>
+
+# Retrieves details of the functions associated with a Static Web App.
+Get-AzStaticWebAppFunction -ResourceGroupName <ResourceGroupName> -Name <Name>
+
+# Retrieves the app settings for the function app associated with a Static Web App.
+Get-AzStaticWebAppFunctionAppSetting -ResourceGroupName <ResourceGroupName> -Name <Name>
+
+# Retrieves the secrets for a Static Web App.
+Get-AzStaticWebAppSecret -ResourceGroupName <ResourceGroupName> -Name <Name>         
+
+# Retrieves general app settings for a Static Web App.
+Get-AzStaticWebAppSetting -ResourceGroupName <ResourceGroupName> -Name <Name>   
+
+# Retrieves user details for a Static Web App with a specified authentication provider.
+Get-AzStaticWebAppUser -ResourceGroupName <ResourceGroupName> -Name <Name> -AuthProvider <AuthProvider>
+
+# Retrieves user-provided function apps associated with a Static Web App.
+Get-AzStaticWebAppUserProvidedFunctionApp -ResourceGroupName <ResourceGroupName> -Name <Name> 
+
+```
+{{#endtab }}
+{{#endtabs }}
+
+## Examples to generate Web Apps
+
+You cna find a nice example to generate a web app in the following link: [https://learn.microsoft.com/en-us/azure/static-web-apps/get-started-portal?tabs=react&pivots=github](https://learn.microsoft.com/en-us/azure/static-web-apps/get-started-portal?tabs=react&pivots=github)
+
+1. Fork the repository https://github.com/staticwebdev/react-basic/generate to your GitHub account and name it `my-first-static-web-app`
+2. In the Azure portal create a Static Web App configuring the Github access and selecting th previously forked new repository
+3. Create it, and wait some minutes, and check your new page!
+
+## Privilege Escalation and Post Exploitation
+
+All the information about privilege escalation and post exploitation in Azure Static Web Apps can be found in the following link:
+
+## References
+
+- [https://learn.microsoft.com/en-in/azure/app-service/overview](https://learn.microsoft.com/en-in/azure/app-service/overview)
+- [https://learn.microsoft.com/en-us/azure/app-service/overview-hosting-plans](https://learn.microsoft.com/en-us/azure/app-service/overview-hosting-plans)

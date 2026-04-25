@@ -1,0 +1,33 @@
+# GitOps Run allows for Kubernetes workload injection
+
+**GHSA**: GHSA-wr3c-g326-486c | **CVE**: CVE-2022-23508 | **Severity**: high (CVSS 8.9)
+
+**CWE**: CWE-284, CWE-552
+
+**Affected Packages**:
+- **github.com/weaveworks/weave-gitops** (go): <= 0.11.0
+
+## Description
+
+### Impact
+A vulnerability in GitOps run could allow a local user or process to alter a Kubernetes cluster's resources.
+
+GitOps run has a local S3 bucket which it uses for synchronising files that are later applied against a Kubernetes cluster. Its endpoint had no security controls to block unauthorised access, therefore allowing local users (and processes) on the same machine to see and alter the bucket content.
+
+By leveraging this vulnerability, an attacker could pick a workload of their choosing and inject it into the S3 bucket, which resulted in the successful deployment in the target cluster, without the need to provide any credentials to either the S3 bucket nor the target Kubernetes cluster.
+
+### Patches
+This vulnerability has been fixed by commits [75268c4](https://github.com/weaveworks/weave-gitops/pull/3114/commits/75268c4d2c8f7e4db22c63d76b451ba6545d117f) and [966823b](https://github.com/weaveworks/weave-gitops/pull/3102/commits/966823bbda8c539a4661e2a4f8607c9307ba6225). Users should upgrade to Weave GitOps version >= v0.12.0 released on 08/12/2022.
+
+### Workarounds
+There is no workaround for this vulnerability.
+
+### References
+Disclosed by Paulo Gomes, Senior Software Engineer, Weaveworks.
+
+### For more information
+If you have any questions or comments about this advisory:
+
+- Open an issue in [Weave GitOps repository](https://github.com/weaveworks/weave-gitops)
+- Email us at [support@weave.works](mailto:support@weave.works)
+

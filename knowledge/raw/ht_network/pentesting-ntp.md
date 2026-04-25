@@ -1,0 +1,195 @@
+# 123/udp - Pentesting NTP
+
+## Basic Information
+
+The **Network Time Protocol (NTP)** ensures computers and network devices across variable-latency networks sync their clocks accurately. It's vital for maintaining precise timekeeping in IT operations, security, and logging. Because time is used in nearly every authentication, crypto-protocol and forensic process, **an attacker that can influence NTP can often bypass security controls or make attacks harder to investigate.**
+
+### Summary & Security Tips
+
+- **Purpose**: Syncs device clocks over networks.
+- **Importance**: Critical for security, logging, crypto-protocols and distributed systems.
+- **Security Measures**:
+  - Use trusted NTP or NTS (Network Time Security) sources with authentication.
+  - Restrict who can query/command the daemon (``restrict default noquery``, ``kod`` etc.).
+  - Disable legacy Mode-6/7 control queries (``monlist``, ``ntpdc``) or rate-limit them.
+  - Monitor synchronization drift/leap-second state for tampering.
+  - Keep the daemon updated (see recent CVEs below).
+
+**Default ports**
+
+```
+123/udp   NTP            (data + legacy control)
+4460/tcp  NTS-KE (RFC 8915) – TLS key-establishment for NTP
+```
+
+```
+PORT    STATE SERVICE REASON
+123/udp open  ntp     udp-response
+```
+
+---
+## Enumeration
+
+### Classic ntpd / ntpq / ntpdc
+
+```bash
+# Information & variables
+ntpq -c rv <IP>
+ntpq -c readvar <IP>
+ntpq -c peers <IP>
+ntpq -c associations <IP>
+
+# Legacy mode-7 (often disabled >=4.2.8p9)
+ntpdc -c monlist <IP>
+ntpdc -c listpeers <IP>
+ntpdc -c sysinfo  <IP>
+```
+
+### chrony / chronyc (in most modern Linux distros)
+
+Only a handful of monitoring commands are accepted from remote IPs when ``cmdallow`` is enabled:
+
+```bash
+chronyc -a -n tracking   -h <IP>
+chronyc -a -n sources -v -h <IP>
+chronyc -a -n sourcestats -h <IP>
+```
+
+See the chronyc man page for the meaning of the **M/S** flags and other fields (stratum, reach, jitter, etc.).
+
+### Nmap
+
+```bash
+# Safe discovery & vuln detection
+nmap -sU -sV --script "ntp* and (discovery or vuln) and not (dos or brute)" -p 123 <IP>
+
+# Explicit monlist check
+nmap -sU -p123 --script ntp-monlist <IP>
+```
+
+### Mass/Internet scanning
+
+```bash
+# Check if MONLIST is enabled (zgrab2 module)
+zgrab2 ntp --monlist --timeout 3 --output-file monlist.json -f "zmap_results.csv"
+```
+
+---
+## Examine configuration files
+
+- ``/etc/ntp.conf`` (ntpd)
+- ``/etc/chrony/chrony.conf`` (chrony)
+- ``/etc/systemd/timesyncd.conf`` (timesyncd – client only)
+
+Pay special attention to ``restrict`` lines, ``kod`` (Kiss-o'-Death) settings, ``disable monitor``/``includefile /etc/ntp/crypto`` and whether *NTS* is enabled (``nts enable``).
+
+---
+## Recent Vulnerabilities (2023-2025)
+
+| Year | CVE | Component | Impact |
+|------|-----|-----------|--------|
+| 2023 | **CVE-2023-26551→26555** | ntp 4.2.8p15 (libntp *mstolfp*, *praecis_parse*) | Multiple out-of-bounds writes reachable via **ntpq** responses. Patch in **4.2.8p16** 🡒 upgrade or back-port fixes. |
+| 2023 | **CVE-2023-33192** | **ntpd-rs** (Rust implementation) | Malformed **NTS** cookie causes remote **DoS** prior to v0.3.3 – affects port 123 even when NTS **disabled**. |
+| 2024 | distro updates | **chrony 4.4 / 4.5** – several security hardening & NTS-KE fixes (e.g. SUSE-RU-2024:2022) |
+| 2024 | Record DDoS | Cloudflare reports a **5.6 Tbps UDP reflection** attack (NTP among protocols used). Keep *monitor* & *monlist* disabled on Internet-facing hosts. |
+
+> **Exploit kits**: Proof-of-concept payloads for the 2023 ntpq OOB-write series are on GitHub (see Meinberg write-up) and can be weaponised for client-side phishing of sysadmins. 
+
+---
+## Advanced Attacks
+
+### 1. NTP Amplification / Reflection
+
+The legacy Mode-7 ``monlist`` query returns up to **600 host addresses** and is still present on thousands of Internet hosts. Because the reply (428-468 bytes/entry) is *~ 200×* larger than the 8-byte request, an attacker can reach triple-digit amplification factors. Mitigations:
+
+- Upgrade to ntp 4.2.8p15+ and **add** ``disable monitor``.
+- Rate-limit UDP/123 on the edge or enable *sessions-required* on DDoS appliances.
+- Enable *BCP 38* egress filtering to block source spoofing.
+
+See Cloudflare’s learning-center article for a step-by-step breakdown. 
+
+### 2. Time-Shift / Delay attacks (Khronos / Chronos research)
+
+Even with authentication, an on-path attacker can silently **shift the client clock** by dropping/delaying packets. The IETF **Khronos (formerly Chronos) draft** proposes querying a diverse set of servers in the background and sanity-checking the result to detect a shift > 𝚡 ms. Modern chrony (4.4+) already implements a similar sanity filter (``maxdistance`` / ``maxjitter``). 
+
+### 3. NTS abuse & 4460/tcp exposure
+
+NTS moves the heavy crypto to a separate **TLS 1.3 channel on 4460/tcp** (``ntske/1``). Poor implementations (see CVE-2023-33192) crash when parsing cookies or allow weak ciphers. Pentesters should:
+
+```bash
+# TLS reconnaissance
+nmap -sV -p 4460 --script ssl-enum-ciphers,ssl-cert <IP>
+
+# Grab banner & ALPN
+openssl s_client -connect <IP>:4460 -alpn ntske/1 -tls1_3 -ign_eof
+```
+
+Look for self-signed or expired certificates and weak cipher-suites (non-AEAD). Reference: RFC 8915 §4. 
+
+---
+## Hardening / Best-Current-Practice (BCP-233 / RFC 8633)
+
+*Operators SHOULD:*
+
+1. Use **≥ 4** independent, diverse time sources (public pools, GPS, PTP-bridges) to avoid single-source poisoning.
+2. Enable ``kod`` and ``limited``/``nomodify`` restrictions so abusive clients receive **Kiss-o'-Death** rate-limit packets instead of full responses.
+3. Monitor daemon logs for **panic** events or step adjustments > 1000 s. (Signatures of attack per RFC 8633 §5.3.)
+4. Consider **leap-smear** to avoid leap-second outages, but ensure *all* downstream clients use the same smear window.
+5. Keep polling ≤24 h so leap-second flags are not missed.
+
+See RFC 8633 for a comprehensive checklist. 
+
+---
+## Shodan / Censys Dorks
+
+```
+port:123 "ntpd"          # Version banner
+udp port:123 monlist:true # Censys tag for vulnerable servers
+port:4460 "ntske"         # NTS-KE
+```
+
+---
+## Useful Tools
+
+| Tool | Purpose | Example |
+|------|---------|---------|
+| ``ntpwn`` | Script-kiddie wrapper to spray monlist & peers queries | ``python ntpwn.py --monlist targets.txt`` |
+| **zgrab2 ntp** | Mass scanning / JSON output including monlist flag | See command above |
+| ``chronyd`` with ``allow`` | Run rogue NTP server in pentest lab | ``chronyd -q 'server 127.127.1.0 iburst'`` |
+| ``BetterCap`` | Inject NTP packets for time-shift MITM on Wi-Fi | ``set arp.spoof.targets <victim>; set ntp.time.delta 30s; arp.spoof on`` |
+
+---
+## HackTricks Automatic Commands
+
+```
+Protocol_Name: NTP
+Port_Number: 123
+Protocol_Description: Network Time Protocol
+
+Entry_1:
+  Name: Notes
+  Description: Notes for NTP
+  Note: |
+    The Network Time Protocol (NTP) ensures computers and network devices across variable-latency networks sync their clocks accurately. It's vital for maintaining precise timekeeping in IT operations, security, and logging. NTP's accuracy is essential, but it also poses security risks if not properly managed.
+
+    https://book.hacktricks.wiki/en/network-services-pentesting/pentesting-ntp.html
+
+Entry_2:
+  Name: Nmap
+  Description: Enumerate NTP
+  Command: nmap -sU -sV --script "ntp* and (discovery or vuln) and not (dos or brute)" -p 123 {IP}
+```
+
+---
+## References
+
+- RFC 8915 – *Network Time Security for the Network Time Protocol* (port 4460) 
+- RFC 8633 – *Network Time Protocol BCP* 
+- Cloudflare DDoS report 2024 Q4 (5.6 Tbps) 
+- Cloudflare *NTP Amplification Attack* article 
+- NTP 4.2.8p15 CVE series 2023-04 
+- NVD entries **CVE-2023-26551–55**, **CVE-2023-33192** 
+- SUSE chrony security update 2024 (chrony 4.5) 
+- Khronos/Chronos draft (time-shift mitigation) 
+- chronyc manual/examples for remote monitoring 
+- zgrab2 ntp module docs

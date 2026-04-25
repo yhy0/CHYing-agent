@@ -1,0 +1,276 @@
+# Supabase Security
+
+## Basic Information
+
+As per their [**landing page**](https://supabase.com/): Supabase is an open source Firebase alternative. Start your project with a Postgres database, Authentication, instant APIs, Edge Functions, Realtime subscriptions, Storage, and Vector embeddings.
+
+### Subdomain
+
+Basically when a project is created, the user will receive a supabase.co subdomain like: **`jnanozjdybtpqgcwhdiz.supabase.co`**
+
+## **Database configuration**
+
+> [!TIP]
+> **This data can be accessed from a link like `https://supabase.com/dashboard/project/<project-id>/settings/database`**
+
+This **database** will be deployed in some AWS region, and in order to connect to it it would be possible to do so connecting to: `postgres://postgres.jnanozjdybtpqgcwhdiz:[YOUR-PASSWORD]@aws-0-us-west-1.pooler.supabase.com:5432/postgres` (this was crated in us-west-1).\
+The password is a **password the user put** previously.
+
+Therefore, as the subdomain is a known one and it's used as username and the AWS regions are limited, it might be possible to try to **brute force the password**.
+
+This section also contains options to:
+
+- Reset the database password
+- Configure connection pooling
+- Configure SSL: Reject plan-text connections (by default they are enabled)
+- Configure Disk size
+- Apply network restrictions and bans
+
+## API Configuration
+
+> [!TIP]
+> **This data can be accessed from a link like `https://supabase.com/dashboard/project/<project-id>/settings/api`**
+
+The URL to access the supabase API in your project is going to be like: `https://jnanozjdybtpqgcwhdiz.supabase.co`.
+
+### anon api keys
+
+It'll also generate an **anon API key** (`role: "anon"`), like: `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpuYW5vemRyb2J0cHFnY3doZGl6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTQ5OTI3MTksImV4cCI6MjAzMDU2ODcxOX0.sRN0iMGM5J741pXav7UxeChyqBE9_Z-T0tLA9Zehvqk` that the application will need to use in order to contact the API key exposed in our example in
+
+It's possible to find the API REST to contact this API in the [**docs**](https://supabase.com/docs/reference/self-hosting-auth/returns-the-configuration-settings-for-the-gotrue-server), but the most interesting endpoints would be:
+
+<details>
+
+<summary>Signup (/auth/v1/signup)</summary>
+
+```
+POST /auth/v1/signup HTTP/2
+Host: id.io.net
+Content-Length: 90
+X-Client-Info: supabase-js-web/2.39.2
+Sec-Ch-Ua: "Not-A.Brand";v="99", "Chromium";v="124"
+Sec-Ch-Ua-Mobile: ?0
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpuYW5vemRyb2J0cHFnY3doZGl6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTQ5OTI3MTksImV4cCI6MjAzMDU2ODcxOX0.sRN0iMGM5J741pXav7UxeChyqBE9_Z-T0tLA9Zehvqk
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.60 Safari/537.36
+Content-Type: application/json;charset=UTF-8
+Apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpuYW5vemRyb2J0cHFnY3doZGl6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTQ5OTI3MTksImV4cCI6MjAzMDU2ODcxOX0.sRN0iMGM5J741pXav7UxeChyqBE9_Z-T0tLA9Zehvqk
+Sec-Ch-Ua-Platform: "macOS"
+Accept: */*
+Origin: https://cloud.io.net
+Sec-Fetch-Site: same-site
+Sec-Fetch-Mode: cors
+Sec-Fetch-Dest: empty
+Referer: https://cloud.io.net/
+Accept-Encoding: gzip, deflate, br
+Accept-Language: en-GB,en-US;q=0.9,en;q=0.8
+Priority: u=1, i
+
+{"email":"test@exmaple.com","password":"SomeCOmplexPwd239."}
+```
+
+</details>
+
+<details>
+
+<summary>Login (/auth/v1/token?grant_type=password)</summary>
+
+```
+POST /auth/v1/token?grant_type=password HTTP/2
+Host: hypzbtgspjkludjcnjxl.supabase.co
+Content-Length: 80
+X-Client-Info: supabase-js-web/2.39.2
+Sec-Ch-Ua: "Not-A.Brand";v="99", "Chromium";v="124"
+Sec-Ch-Ua-Mobile: ?0
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpuYW5vemRyb2J0cHFnY3doZGl6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTQ5OTI3MTksImV4cCI6MjAzMDU2ODcxOX0.sRN0iMGM5J741pXav7UxeChyqBE9_Z-T0tLA9Zehvqk
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.60 Safari/537.36
+Content-Type: application/json;charset=UTF-8
+Apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpuYW5vemRyb2J0cHFnY3doZGl6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTQ5OTI3MTksImV4cCI6MjAzMDU2ODcxOX0.sRN0iMGM5J741pXav7UxeChyqBE9_Z-T0tLA9Zehvqk
+Sec-Ch-Ua-Platform: "macOS"
+Accept: */*
+Origin: https://cloud.io.net
+Sec-Fetch-Site: same-site
+Sec-Fetch-Mode: cors
+Sec-Fetch-Dest: empty
+Referer: https://cloud.io.net/
+Accept-Encoding: gzip, deflate, br
+Accept-Language: en-GB,en-US;q=0.9,en;q=0.8
+Priority: u=1, i
+
+{"email":"test@exmaple.com","password":"SomeCOmplexPwd239."}
+```
+
+</details>
+
+So, whenever you discover a client using supabase with the subdomain they were granted (it's possible that a subdomain of the company has a CNAME over their supabase subdomain), you might try to **create a new account in the platform using the supabase API**.
+
+### secret / service_role api keys
+
+A secret API key will also be generated with **`role: "service_role"`**. This API key should be secret because it will be able to bypass **Row Level Security**.
+
+The API key looks like this: `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpuYW5vemRyb2J0cHFnY3doZGl6Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTcxNDk5MjcxOSwiZXhwIjoyMDMwNTY4NzE5fQ.0a8fHGp3N_GiPq0y0dwfs06ywd-zhTwsm486Tha7354`
+
+### JWT Secret
+
+A **JWT Secret** will also be generate so the application can **create and sign custom JWT tokens**.
+
+## Authentication
+
+### Signups
+
+> [!TIP]
+> By **default** supabase will allow **new users to create accounts** on your project by using the previously mentioned API endpoints.
+
+However, these new accounts, by default, **will need to validate their email address** to be able to login into the account. It's possible to enable **"Allow anonymous sign-ins"** to allow people to login without verifying their email address. This could grant access to **unexpected data** (they get the roles `public` and `authenticated`).\
+This is a very bad idea because supabase charges per active user so people could create users and login and supabase will charge for those:
+
+<img src="../images/image (1) (1) (1) (1) (1) (1).png" alt=""><figcaption></figcaption>
+
+#### Auth: Server-side signup enforcement
+
+Hiding the signup button in the frontend is not enough. If the **Auth server still allows signups**, an attacker can call the API directly with the public `anon` key and create arbitrary users.
+
+Quick test (from an unauthenticated client):
+
+```bash
+curl -X POST \
+  -H "apikey: <SUPABASE_ANON_KEY>" \
+  -H "Authorization: Bearer <SUPABASE_ANON_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"attacker@example.com","password":"Sup3rStr0ng!"}' \
+  https://<PROJECT_REF>.supabase.co/auth/v1/signup
+```
+
+Expected hardening:
+- Disable email/password signups in the Dashboard: Authentication → Providers → Email → Disable sign ups (invite-only), or set the equivalent GoTrue setting.
+- Verify the API now returns 4xx to the previous call and no new user is created.
+- If you rely on invites or SSO, ensure all other providers are disabled unless explicitly needed.
+
+## RLS and Views: Write bypass via PostgREST
+
+Using a Postgres VIEW to “hide” sensitive columns and exposing it via PostgREST can change how privileges are evaluated. In PostgreSQL:
+- Ordinary views execute with the privileges of the view owner by default (definer semantics). In PG ≥15 you can opt into `security_invoker`.
+- Row Level Security (RLS) applies on base tables. Table owners bypass RLS unless `FORCE ROW LEVEL SECURITY` is set on the table.
+- Updatable views can accept INSERT/UPDATE/DELETE that are then applied to the base table. Without `WITH CHECK OPTION`, writes that don’t match the view predicate may still succeed.
+
+Risk pattern observed in the wild:
+- A reduced-column view is exposed through Supabase REST and granted to `anon`/`authenticated`.
+- PostgREST allows DML on the updatable view and the operation is evaluated with the view owner’s privileges, effectively bypassing the intended RLS policies on the base table.
+- Result: low-privileged clients can mass-edit rows (e.g., profile bios/avatars) they should not be able to modify.
+
+Illustrative write via view (attempted from a public client):
+
+```bash
+curl -X PATCH \
+  -H "apikey: <SUPABASE_ANON_KEY>" \
+  -H "Authorization: Bearer <SUPABASE_ANON_KEY>" \
+  -H "Content-Type: application/json" \
+  -H "Prefer: return=representation" \
+  -d '{"bio":"pwned","avatar_url":"https://i.example/pwn.png"}' \
+  "https://<PROJECT_REF>.supabase.co/rest/v1/users_view?id=eq.<victim_user_id>"
+```
+
+Hardening checklist for views and RLS:
+- Prefer exposing base tables with explicit, least-privilege grants and precise RLS policies.
+- If you must expose a view:
+  - Make it non-updatable (e.g., include expressions/joins) or deny `INSERT/UPDATE/DELETE` on the view to all untrusted roles.
+  - Enforce `ALTER VIEW <v> SET (security_invoker = on)` so the invoker’s privileges are used instead of the owner’s.
+  - On base tables, use `ALTER TABLE <t> FORCE ROW LEVEL SECURITY;` so even owners are subject to RLS.
+  - If allowing writes via an updatable view, add `WITH [LOCAL|CASCADED] CHECK OPTION` and complementary RLS on base tables to ensure only allowed rows can be written/changed.
+- In Supabase, avoid granting `anon`/`authenticated` any write privileges on views unless you have verified end-to-end behavior with tests.
+
+Detection tip:
+- From `anon` and an `authenticated` test user, attempt all CRUD operations against every exposed table/view. Any successful write where you expected denial indicates a misconfiguration.
+
+### OpenAPI-driven CRUD probing from anon/auth roles
+
+PostgREST exposes an OpenAPI document that you can use to enumerate all REST resources, then automatically probe allowed operations from low-privileged roles.
+
+Fetch the OpenAPI (works with the public anon key):
+
+```bash
+curl -s https://<PROJECT_REF>.supabase.co/rest/v1/ \
+  -H "apikey: <SUPABASE_ANON_KEY>" \
+  -H "Authorization: Bearer <SUPABASE_ANON_KEY>" \
+  -H "Accept: application/openapi+json" | jq '.paths | keys[]'
+```
+
+Probe pattern (examples):
+- Read a single row (expect 401/403/200 depending on RLS):
+```bash
+curl -s "https://<PROJECT_REF>.supabase.co/rest/v1/<table>?select=*&limit=1" \
+  -H "apikey: <SUPABASE_ANON_KEY>" \
+  -H "Authorization: Bearer <SUPABASE_ANON_KEY>"
+```
+- Test UPDATE is blocked (use a non-existing filter to avoid altering data during testing):
+```bash
+curl -i -X PATCH \
+  -H "apikey: <SUPABASE_ANON_KEY>" \
+  -H "Authorization: Bearer <SUPABASE_ANON_KEY>" \
+  -H "Content-Type: application/json" \
+  -H "Prefer: return=minimal" \
+  -d '{"__probe":true}' \
+  "https://<PROJECT_REF>.supabase.co/rest/v1/<table_or_view>?id=eq.00000000-0000-0000-0000-000000000000"
+```
+- Test INSERT is blocked:
+```bash
+curl -i -X POST \
+  -H "apikey: <SUPABASE_ANON_KEY>" \
+  -H "Authorization: Bearer <SUPABASE_ANON_KEY>" \
+  -H "Content-Type: application/json" \
+  -H "Prefer: return=minimal" \
+  -d '{"__probe":true}' \
+  "https://<PROJECT_REF>.supabase.co/rest/v1/<table_or_view>"
+```
+- Test DELETE is blocked:
+```bash
+curl -i -X DELETE \
+  -H "apikey: <SUPABASE_ANON_KEY>" \
+  -H "Authorization: Bearer <SUPABASE_ANON_KEY>" \
+  "https://<PROJECT_REF>.supabase.co/rest/v1/<table_or_view>?id=eq.00000000-0000-0000-0000-000000000000"
+```
+
+Recommendations:
+- Automate the previous probes for both `anon` and a minimally `authenticated` user and integrate them in CI to catch regressions.
+- Treat every exposed table/view/function as a first-class surface. Don’t assume a view “inherits” the same RLS posture as its base tables.
+
+### Passwords & sessions
+
+It's possible to indicate the minimum password length (by default), requirements (no by default) and disallow to use leaked passwords.\
+It's recommended to **improve the requirements as the default ones are weak**.
+
+- User Sessions: It's possible to configure how user sessions work (timeouts, 1 session per user...)
+- Bot and Abuse Protection: It's possible to enable Captcha.
+
+### SMTP Settings
+
+It's possible to set an SMTP to send emails.
+
+### Advanced Settings
+
+- Set expire time to access tokens (3600 by default)
+- Set to detect and revoke potentially compromised refresh tokens and timeout
+- MFA: Indicate how many MFA factors can be enrolled at once per user (10 by default)
+- Max Direct Database Connections: Max number of connections used to auth (10 by default)
+- Max Request Duration: Maximum time allowed for an Auth request to last (10s by default)
+
+## Storage
+
+> [!TIP]
+> Supabase allows **to store files** and make them accesible over a URL (it uses S3 buckets).
+
+- Set the upload file size limit (default is 50MB)
+- The S3 connection is given with a URL like: `https://jnanozjdybtpqgcwhdiz.supabase.co/storage/v1/s3`
+- It's possible to **request S3 access key** that are formed by an `access key ID` (e.g. `a37d96544d82ba90057e0e06131d0a7b`) and a `secret access key` (e.g. `58420818223133077c2cec6712a4f909aec93b4daeedae205aa8e30d5a860628`)
+
+## Edge Functions
+
+It's possible to **store secrets** in supabase also which will be **accessible by edge functions** (the can be created and deleted from the web, but it's not possible to access their value directly).
+
+## References
+
+- [Building Hacker Communities: Bug Bounty Village, getDisclosed’s Supabase Misconfig, and the LHE Squad (Ep. 133) – YouTube](https://youtu.be/NI-eXMlXma4)
+- [Critical Thinking Podcast – Episode 133 page](https://www.criticalthinkingpodcast.io/episode-133-building-hacker-communities-bug-bounty-village-getdisclosed-and-the-lhe-squad/)
+- [Supabase: Row Level Security (RLS)](https://supabase.com/docs/guides/auth/row-level-security)
+- [PostgreSQL: Row Security Policies](https://www.postgresql.org/docs/current/ddl-rowsecurity.html)
+- [PostgreSQL: CREATE VIEW (security_invoker, check option)](https://www.postgresql.org/docs/current/sql-createview.html)
+- [PostgREST: OpenAPI documentation](https://postgrest.org/en/stable/references/api.html#openapi-documentation)

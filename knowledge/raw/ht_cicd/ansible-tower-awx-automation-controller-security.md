@@ -1,0 +1,204 @@
+# Ansible Tower / AWX / Automation controller Security
+
+## Basic Information
+
+**Ansible Tower** or it's opensource version [**AWX**](https://github.com/ansible/awx) is also known as **Ansible’s user interface, dashboard, and REST API**. With **role-based access control**, job scheduling, and graphical inventory management, you can manage your Ansible infrastructure from a modern UI. Tower’s REST API and command-line interface make it simple to integrate it into current tools and workflows.
+
+**Automation Controller is a newer** version of Ansible Tower with more capabilities.
+
+### Differences
+
+According to [**this**](https://blog.devops.dev/ansible-tower-vs-awx-under-the-hood-65cfec78db00), the main differences between Ansible Tower and AWX is the received support and the Ansible Tower has additional features such as role-based access control, support for custom APIs, and user-defined workflows.
+
+### Tech Stack
+
+- **Web Interface**: This is the graphical interface where users can manage inventories, credentials, templates, and jobs. It's designed to be intuitive and provides visualizations to help with understanding the state and results of your automation jobs.
+- **REST API**: Everything you can do in the web interface, you can also do via the REST API. This means you can integrate AWX/Tower with other systems or script actions that you'd typically perform in the interface.
+- **Database**: AWX/Tower uses a database (typically PostgreSQL) to store its configuration, job results, and other necessary operational data.
+- **RabbitMQ**: This is the messaging system used by AWX/Tower to communicate between the different components, especially between the web service and the task runners.
+- **Redis**: Redis serves as a cache and a backend for the task queue.
+
+### Logical Components
+
+- **Inventories**: An inventory is a **collection of hosts (or nodes)** against which **jobs** (Ansible playbooks) can be **run**. AWX/Tower allows you to define and group your inventories and also supports dynamic inventories which can **fetch host lists from other systems** like AWS, Azure, etc.
+- **Projects**: A project is essentially a **collection of Ansible playbooks** sourced from a **version control system** (like Git) to pull the latest playbooks when needed..
+- **Templates**: Job templates define **how a particular playbook will be run**, specifying the **inventory**, **credentials**, and other **parameters** for the job.
+- **Credentials**: AWX/Tower provides a secure way to **manage and store secrets, such as SSH keys, passwords, and API tokens**. These credentials can be associated with job templates so that playbooks have the necessary access when they run.
+- **Task Engine**: This is where the magic happens. The task engine is built on Ansible and is responsible for **running the playbooks**. Jobs are dispatched to the task engine, which then runs the Ansible playbooks against the designated inventory using the specified credentials.
+- **Schedulers and Callbacks**: These are advanced features in AWX/Tower that allow **jobs to be scheduled** to run at specific times or triggered by external events.
+- **Notifications**: AWX/Tower can send notifications based on the success or failure of jobs. It supports various means of notifications such as emails, Slack messages, webhooks, etc.
+- **Ansible Playbooks**: Ansible playbooks are configuration, deployment, and orchestration tools. They describe the desired state of systems in an automated, repeatable way. Written in YAML, playbooks use Ansible's declarative automation language to describe configurations, tasks, and steps that need to be executed.
+
+### Job Execution Flow
+
+1. **User Interaction**: A user can interact with AWX/Tower either through the **Web Interface** or the **REST API**. These provide front-end access to all the functionalities offered by AWX/Tower.
+2. **Job Initiation**:
+   - The user, via the Web Interface or API, initiates a job based on a **Job Template**.
+   - The Job Template includes references to the **Inventory**, **Project** (containing the playbook), and **Credentials**.
+   - Upon job initiation, a request is sent to the AWX/Tower backend to queue the job for execution.
+3. **Job Queuing**:
+   - **RabbitMQ** handles the messaging between the web component and the task runners. Once a job is initiated, a message is dispatched to the task engine using RabbitMQ.
+   - **Redis** acts as the backend for the task queue, managing queued jobs awaiting execution.
+4. **Job Execution**:
+   - The **Task Engine** picks up the queued job. It retrieves the necessary information from the **Database** about the job's associated playbook, inventory, and credentials.
+   - Using the retrieved Ansible playbook from the associated **Project**, the Task Engine runs the playbook against the specified **Inventory** nodes using the provided **Credentials**.
+   - As the playbook runs, its execution output (logs, facts, etc.) gets captured and stored in the **Database**.
+5. **Job Results**:
+   - Once the playbook finishes running, the results (success, failure, logs) are saved to the **Database**.
+   - Users can then view the results through the Web Interface or query them via the REST API.
+   - Based on job outcomes, **Notifications** can be dispatched to inform users or external systems about the job's status. Notifications could be emails, Slack messages, webhooks, etc.
+6. **External Systems Integration**:
+   - **Inventories** can be dynamically sourced from external systems, allowing AWX/Tower to pull in hosts from sources like AWS, Azure, VMware, and more.
+   - **Projects** (playbooks) can be fetched from version control systems, ensuring the use of up-to-date playbooks during job execution.
+   - **Schedulers and Callbacks** can be used to integrate with other systems or tools, making AWX/Tower react to external triggers or run jobs at predetermined times.
+
+### AWX lab creation for testing
+
+[**Following the docs**](https://github.com/ansible/awx/blob/devel/tools/docker-compose/README.md) it's possible to use docker-compose to run AWX:
+
+```bash
+git clone -b x.y.z https://github.com/ansible/awx.git # Get in x.y.z the latest release version
+
+cd awx
+
+# Build
+make docker-compose-build
+
+# Run
+make docker-compose
+
+# Or to create a more complex env
+MAIN_NODE_TYPE=control EXECUTION_NODE_COUNT=2 COMPOSE_TAG=devel make docker-compose
+
+# Clean and build the UI
+docker exec tools_awx_1 make clean-ui ui-devel
+
+# Once migrations are completed and the UI is built, you can begin using AWX. The UI can be reached in your browser at https://localhost:8043/#/home, and the API can be found at https://localhost:8043/api/v2.
+
+# Create an admin user
+docker exec -ti tools_awx_1 awx-manage createsuperuser
+
+# Load demo data
+docker exec tools_awx_1 awx-manage create_preload_data
+```
+
+## RBAC
+
+### Supported roles
+
+The most privileged role is called **System Administrator**. Anyone with this role can **modify anything**.
+
+From a **white box security** review, you would need the **System Auditor role**, which allow to **view all system data** but cannot make any changes. Another option would be to get the **Organization Auditor role**, but it would be better to get the other one.
+
+<details>
+
+<summary>Expand this to get detailed description of available roles</summary>
+
+1. **System Administrator**:
+   - This is the superuser role with permissions to access and modify any resource in the system.
+   - They can manage all organizations, teams, projects, inventories, job templates, etc.
+2. **System Auditor**:
+   - Users with this role can view all system data but cannot make any changes.
+   - This role is designed for compliance and oversight.
+3. **Organization Roles**:
+   - **Admin**: Full control over the organization's resources.
+   - **Auditor**: View-only access to the organization's resources.
+   - **Member**: Basic membership in an organization without any specific permissions.
+   - **Execute**: Can run job templates within the organization.
+   - **Read**: Can view the organization’s resources.
+4. **Project Roles**:
+   - **Admin**: Can manage and modify the project.
+   - **Use**: Can use the project in a job template.
+   - **Update**: Can update project using SCM (source control).
+5. **Inventory Roles**:
+   - **Admin**: Can manage and modify the inventory.
+   - **Ad Hoc**: Can run ad hoc commands on the inventory.
+   - **Update**: Can update the inventory source.
+   - **Use**: Can use the inventory in a job template.
+   - **Read**: View-only access.
+6. **Job Template Roles**:
+   - **Admin**: Can manage and modify the job template.
+   - **Execute**: Can run the job.
+   - **Read**: View-only access.
+7. **Credential Roles**:
+   - **Admin**: Can manage and modify the credentials.
+   - **Use**: Can use the credentials in job templates or other relevant resources.
+   - **Read**: View-only access.
+8. **Team Roles**:
+   - **Member**: Part of the team but without any specific permissions.
+   - **Admin**: Can manage the team's members and associated resources.
+9. **Workflow Roles**:
+   - **Admin**: Can manage and modify the workflow.
+   - **Execute**: Can run the workflow.
+   - **Read**: View-only access.
+
+</details>
+
+## Enumeration & Attack-Path Mapping with AnsibleHound
+
+`AnsibleHound` is an open-source BloodHound *OpenGraph* collector written in Go that turns a **read-only** Ansible Tower/AWX/Automation Controller API token into a complete permission graph ready to be analysed inside BloodHound (or BloodHound Enterprise).
+
+### Why is this useful?
+1. The Tower/AWX REST API is extremely rich and exposes **every object and RBAC relationship** your instance knows about.
+2. Even with the lowest privilege (**Read**) token it is possible to recursively enumerate all accessible resources (organisations, inventories, hosts, credentials, projects, job templates, users, teams…).
+3. When the raw data is converted to the BloodHound schema you obtain the same *attack-path* visualisation capabilities that are so popular in Active Directory assessments – but now directed at your CI/CD estate.
+
+Security teams (and attackers!) can therefore:
+* Quickly understand **who can become admin of what**.
+* Identify **credentials or hosts that are reachable** from an unprivileged account.
+* Chain multiple “Read ➜ Use ➜ Execute ➜ Admin” edges to obtain full control over the Tower instance or the underlying infrastructure.
+
+### Prerequisites
+* Ansible Tower / AWX / Automation Controller reachable over HTTPS.
+* A user API token scoped to **Read** only (created from *User Details → Tokens → Create Token → scope = Read*).
+* Go ≥ 1.20 to compile the collector (or use the pre-built binaries).
+
+### Building & Running
+```bash
+# Compile the collector
+cd collector
+go build . -o build/ansiblehound
+
+# Execute against the target instance
+./build/ansiblehound -u "https://tower.example.com/" -t "READ_ONLY_TOKEN"
+```
+Internally AnsibleHound performs *paginated* `GET` requests against (at least) the following endpoints and automatically follows the `related` links returned in every JSON object:
+```
+/api/v2/organizations/
+/api/v2/inventories/
+/api/v2/hosts/
+/api/v2/job_templates/
+/api/v2/projects/
+/api/v2/credentials/
+/api/v2/users/
+/api/v2/teams/
+```
+All collected pages are merged into a single JSON file on disk (default: `ansiblehound-output.json`).
+
+### BloodHound Transformation
+The raw Tower data is then **transformed to BloodHound OpenGraph** using custom nodes prefixed with `AT` (Ansible Tower):
+* `ATOrganization`, `ATInventory`, `ATHost`, `ATJobTemplate`, `ATProject`, `ATCredential`, `ATUser`, `ATTeam`
+
+And edges modelling relationships / privileges:
+* `ATContains`, `ATUses`, `ATExecute`, `ATRead`, `ATAdmin`
+
+The result can be imported straight into BloodHound:
+```bash
+neo4j stop   # if BloodHound CE is running locally
+bloodhound-import ansiblehound-output.json
+```
+
+Optionally you can upload **custom icons** so that the new node types are visually distinct:
+```bash
+python3 scripts/import-icons.py "https://bloodhound.example.com" "BH_JWT_TOKEN"
+```
+
+### Defensive & Offensive Considerations
+* A *Read* token is normally considered harmless but still leaks the **full topology and every credential metadata**. Treat it as sensitive!
+* Enforce **least privilege** and rotate / revoke unused tokens.
+* Monitor the API for excessive enumeration (multiple sequential `GET` requests, high pagination activity).
+* From an attacker perspective this is a perfect *initial foothold → privilege escalation* technique inside the CI/CD pipeline.
+
+## References
+* [AnsibleHound – BloodHound Collector for Ansible Tower/AWX](https://github.com/TheSleekBoyCompany/AnsibleHound)
+* [BloodHound OSS](https://github.com/BloodHoundAD/BloodHound)

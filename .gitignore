@@ -16,9 +16,12 @@ wheels/
 .installed.cfg
 *.egg
 
+.claude/worktrees/*
 # Editors
 .vscode/
 .idea/
+
+node_modules/
 
 # Environments
 .env
@@ -26,7 +29,17 @@ wheels/
 env/
 uv.lock
 # Logs and temporary files
-logs/
 
+openclaw/
+
+agent-work/ctf/
+agent-work/output/
+data/
+
+
+strix/
+
+.DS_Store
 *.tmp
 *.swp
+logs/

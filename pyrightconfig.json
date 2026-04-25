@@ -1,0 +1,13 @@
+{
+  "typeCheckingMode": "basic",
+  "diagnosticSeverityOverrides": {
+    "reportPossiblyUnbound": "none",
+    "reportMissingTypeStubs": "none",
+    "reportUnusedImport": "none",
+    "reportUnusedVariable": "none",
+    "reportMissingModuleSource": "none",
+    "reportOptionalMemberAccess": "none",
+    "reportFunctionMemberAccess": "none",
+    "reportAttributeAccessIssue": "none"
+  }
+}

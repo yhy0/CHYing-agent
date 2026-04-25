@@ -1,0 +1,151 @@
+# Off by one overflow
+
+## Basic Information
+
+Having just access to a 1B overflow allows an attacker to modify the `size` field from the next chunk. This allows to tamper which chunks are actually freed, potentially generating a chunk that contains another legit chunk. The exploitation is similar to [double free](double-free.md) or overlapping chunks.
+
+There are 2 types of off by one vulnerabilities:
+
+- Arbitrary byte: This kind allows to overwrite that byte with any value
+- Null byte (off-by-null): This kind allows to overwrite that byte only with 0x00
+  - A common example of this vulnerability can be seen in the following code where the behavior of `strlen` and `strcpy` is inconsistent, which allows set a 0x00 byte in the beginning of the next chunk.
+  - This can be expoited with the [House of Einherjar](house-of-einherjar.md).
+  - If using Tcache, this can be leveraged to a [double free](double-free.md) situation.
+
+<details>
+
+<summary>Off-by-null</summary>
+
+```c
+// From https://ctf-wiki.mahaloz.re/pwn/linux/glibc-heap/off_by_one/
+int main(void)
+{
+    char buffer[40]="";
+    void *chunk1;
+    chunk1 = malloc(24);
+    puts("Get Input");
+    gets(buffer);
+    if(strlen(buffer)==24)
+    {
+        strcpy(chunk1,buffer);
+    }
+    return 0;
+}
+```
+
+</details>
+
+Among other checks, now whenever a chunk is free the previous size is compared with the size configured in the metadata's chunk, making this attack fairly complex from version 2.28.
+
+### Code example:
+
+- [https://github.com/DhavalKapil/heap-exploitation/blob/d778318b6a14edad18b20421f5a06fa1a6e6920e/assets/files/shrinking_free_chunks.c](https://github.com/DhavalKapil/heap-exploitation/blob/d778318b6a14edad18b20421f5a06fa1a6e6920e/assets/files/shrinking_free_chunks.c)
+- This attack is no longer working due to the use of Tcaches.
+  - Moreover, if you try to abuse it using larger chunks (so tcaches aren't involved), you will get the error: `malloc(): invalid next size (unsorted)`
+
+### Goal
+
+- Make a chunk be contained inside another chunk so writing access over that second chunk allows to overwrite the contained one
+
+### Requirements
+
+- Off by one overflow to modify the size metadata information
+
+### General off-by-one attack
+
+- Allocate three chunks `A`, `B` and `C` (say sizes 0x20), and another one to prevent consolidation with the top-chunk.
+- Free `C` (inserted into 0x20 Tcache free-list).
+- Use chunk `A` to overflow on `B`. Abuse off-by-one to modify the `size` field of `B` from 0x21 to 0x41.
+- Now we have `B` containing the free chunk `C`
+- Free `B` and allocate a 0x40 chunk (it will be placed here again)
+- We can modify the `fd` pointer from `C`, which is still free (Tcache poisoning)
+
+### Off-by-null attack
+
+- 3 chunks of memory (a, b, c) are reserved one after the other. Then the middle one is freed. The first one contains an off by one overflow vulnerability and the attacker abuses it with a 0x00 (if the previous byte was 0x10 it would make he middle chunk indicate that it’s 0x10 smaller than it really is).
+- Then, 2 more smaller chunks are allocated in the middle freed chunk (b), however, as `b + b->size` never updates the c chunk because the pointed address is smaller than it should.
+- Then, b1 and c gets freed. As `c - c->prev_size` still points to b (b1 now), both are consolidated in one chunk. However, b2 is still inside in between b1 and c.
+- Finally, a new malloc is performed reclaiming this memory area which is actually going to contain b2, allowing the owner of the new malloc to control the content of b2.
+
+This image explains perfectly the attack:
+
+<img src="../../images/image (1247).png" alt=""><figcaption><p><a href="https://heap-exploitation.dhavalkapil.com/attacks/shrinking_free_chunks">https://heap-exploitation.dhavalkapil.com/attacks/shrinking_free_chunks</a></p></figcaption>
+
+### Modern glibc hardening & bypass notes (>=2.32)
+
+- Safe-Linking now protects every singly linked bin pointer by storing `fd = ptr ^ (chunk_addr >> 12)`, so an off-by-one that only flips the low byte of `size` usually also needs a heap leak to recompute the XOR mask before Tcache poisoning works.
+- A practical leakless trick is to "double-protect" a pointer: encode a pointer you already control with `PROTECT_PTR`, then reuse the same gadget to encode your forged pointer so the alignment check passes without revealing new addresses.
+- Workflow for safe-linking + single-byte corruptions:
+  1. Grow the victim chunk until it fully covers a freed chunk you already control (overlapping-chunk setup).
+  2. Leak any heap pointer (stdout, UAF, partially controlled struct) and derive the key `heap_base >> 12`.
+  3. Re-encode free-list pointers before writing them—stage the encoded value inside user data and memcpy it later if you only own single-byte writes.
+  4. Combine with [Tcache bin attacks](tcache-bin-attack.md) to redirect allocations into `__free_hook` or `tcache_perthread_struct` entries once the forged pointer is properly encoded.
+
+A minimal helper to rehearse the encode/decode step while debugging modern exploits:
+
+```python
+def protect(ptr, chunk_addr):
+    return ptr ^ (chunk_addr >> 12)
+
+def reveal(encoded, chunk_addr):
+    return encoded ^ (chunk_addr >> 12)
+
+chunk = 0x55555555c2c0
+encoded_fd = protect(0xdeadbeefcaf0, chunk)
+print(hex(reveal(encoded_fd, chunk)))  # 0xdeadbeefcaf0
+```
+
+### Recent real-world target: glibc __vsyslog_internal off-by-one (CVE-2023-6779)
+
+- In January 2024 Qualys detailed CVE-2023-6779, an off-by-one inside `__vsyslog_internal()` that triggers when `syslog()/vsyslog()` format strings exceed `INT_MAX`, so the terminating `\0` corrupts the next chunk’s least-significant `size` byte on glibc 2.37–2.39 systems ([Qualys advisory](https://www.qualys.com/2024/01/30/cve-2023-6246/syslog.txt)).
+- Their Fedora 38 exploit pipeline:
+  1. Craft an overlong `openlog()` ident so `vasprintf` returns a heap buffer next to attacker-controlled data.
+  2. Call `syslog()` to smash the neighbor chunk’s `size | prev_inuse` byte, free it, and force consolidation that overlaps attacker data.
+  3. Use the overlapped view to corrupt `tcache_perthread_struct` metadata and aim the next allocation at `__free_hook`, overwriting it with `system`/a one_gadget for root.
+- To reproduce the corrupting write in a harness, fork with a gigantic `argv[0]`, call `openlog(NULL, LOG_PID, LOG_USER)` and then `syslog(LOG_INFO, "%s", payload)` where `payload = b"A" * 0x7fffffff`; `pwndbg`’s `heap bins` immediately shows the single-byte overwrite.
+- Ubuntu tracks the bug as [CVE-2023-6779](https://ubuntu.com/security/CVE-2023-6779), documenting the same INT truncation that makes this a reliable off-by-one primitive.
+
+## Other Examples & References
+
+- [**https://heap-exploitation.dhavalkapil.com/attacks/shrinking_free_chunks**](https://heap-exploitation.dhavalkapil.com/attacks/shrinking_free_chunks)
+- [**Bon-nie-appetit. HTB Cyber Apocalypse CTF 2022**](https://7rocky.github.io/en/ctf/htb-challenges/pwn/bon-nie-appetit/)
+  - Off-by-one because of `strlen` considering the next chunk's `size` field.
+  - Tcache is being used, so a general off-by-one attacks works to get an arbitrary write primitive with Tcache poisoning.
+- [**Asis CTF 2016 b00ks**](https://ctf-wiki.mahaloz.re/pwn/linux/glibc-heap/off_by_one/#1-asis-ctf-2016-b00ks)
+  - It's possible to abuse an off by one to leak an address from the heap because the byte 0x00 of the end of a string being overwritten by the next field.
+  - Arbitrary write is obtained by abusing the off by one write to make the pointer point to another place were a fake struct with fake pointers will be built. Then, it's possible to follow the pointer of this struct to obtain arbitrary write.
+  - The libc address is leaked because if the heap is extended using mmap, the memory allocated by mmap has a fixed offset from libc.
+  - Finally the arbitrary write is abused to write into the address of `__free_hook` with a one gadget.
+- [**plaidctf 2015 plaiddb**](https://ctf-wiki.mahaloz.re/pwn/linux/glibc-heap/off_by_one/#instance-2-plaidctf-2015-plaiddb)
+  - There is a NULL off by one vulnerability in the `getline` function that reads user input lines. This function is used to read the "key" of the content and not the content.
+  - In the writeup 5 initial chunks are created:
+    - chunk1 (0x200)
+    - chunk2 (0x50)
+    - chunk5 (0x68)
+    - chunk3 (0x1f8)
+    - chunk4 (0xf0)
+    - chunk defense (0x400) to avoid consolidating with top chunk
+  - Then chunk 1, 5 and 3 are freed, so:
+    - ```python
+      [ 0x200 Chunk 1 (free) ] [ 0x50 Chunk 2 ] [ 0x68 Chunk 5 (free) ] [ 0x1f8 Chunk 3 (free) ] [ 0xf0 Chunk 4 ] [ 0x400 Chunk defense ]
+      ```
+  - Then abusing chunk3 (0x1f8) the null off-by-one is abused writing the prev_size to `0x4e0`.
+    - Note how the sizes of the initially allocated chunks1, 2, 5 and 3 plus the headers of 4 of those chunks equals to `0x4e0`: `hex(0x1f8 + 0x10 + 0x68 + 0x10 + 0x50 + 0x10 + 0x200) = 0x4e0`
+  - Then, chunk 4 is freed, generating a chunk that consumes all the chunks till the beginning:
+    - ```python
+      [ 0x4e0 Chunk 1-2-5-3 (free) ] [ 0xf0 Chunk 4 (corrupted) ] [ 0x400 Chunk defense ]
+      ```
+    - ```python
+      [ 0x200 Chunk 1 (free) ] [ 0x50 Chunk 2 ] [ 0x68 Chunk 5 (free) ] [ 0x1f8 Chunk 3 (free) ] [ 0xf0 Chunk 4 ] [ 0x400 Chunk defense ]
+      ```
+  - Then, `0x200` bytes are allocated filling the original chunk 1
+    - And another 0x200 bytes are allocated and chunk2 is destroyed and therefore there isn't no fucking leak and this doesn't work? Maybe this shouldn't be done
+  - Then, it allocates another chunk with 0x58 "a"s (overwriting chunk2 and reaching chunk5) and modifies the `fd` of the fast bin chunk of chunk5 pointing it to `__malloc_hook`
+  - Then, a chunk of 0x68 is allocated so the fake fast bin chunk in `__malloc_hook` is the following fast bin chunk
+  - Finally, a new fast bin chunk of 0x68 is allocated and `__malloc_hook` is overwritten with a `one_gadget` address
+
+## References
+
+- [Qualys Security Advisory – CVE-2023-6246/6779/6780](https://www.qualys.com/2024/01/30/cve-2023-6246/syslog.txt)
+- [Ubuntu Security – CVE-2023-6779](https://ubuntu.com/security/CVE-2023-6779)
+- [Breaking Safe-Linking in Modern Glibc – Google CTF 2022 "saas" analysis](https://blog.csdn.net/2402_86373248/article/details/148717274)

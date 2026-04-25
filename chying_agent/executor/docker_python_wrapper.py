@@ -17,15 +17,19 @@ class DockerPythonExecutor(BaseExecutor):
         """
         self.docker_executor = docker_executor
     
-    def execute(self, command: str, timeout: int = 120) -> ExecutionResult:
+    def execute(self, command: str, timeout: int = 120, is_python: bool = True,
+                workdir: str | None = None, caller: str = "",
+                environment: dict[str, str] | None = None) -> ExecutionResult:
         """
         执行 Python 代码
-        
+
         Args:
             command: Python 代码字符串
             timeout: 超时时间（秒）
-            
+
         Returns:
             ExecutionResult 实例
         """
-        return self.docker_executor.execute(command, timeout=timeout, is_python=True)
+        return self.docker_executor.execute(command, timeout=timeout, is_python=True,
+                                            workdir=workdir, caller=caller,
+                                            environment=environment)

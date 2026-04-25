@@ -1,0 +1,61 @@
+# Az - MySQL Database Privesc
+
+## MySQL Database Privesc
+For more information about SQL Database check:
+
+### `Microsoft.DBforMySQL/flexibleServers/read` && `Microsoft.DBforMySQL/flexibleServers/write`
+
+With this permission, you can create, update, or delete MySQL Flexible Server instances on Azure. This includes provisioning new servers, modifying existing server configurations, decommissioning servers or changing the admins user's password.
+
+```bash
+az mysql flexible-server create \
+    --name <ServerName> \
+    --resource-group <ResourceGroupName> \
+    --location <Location> \
+    --admin-user <AdminUsername> \
+    --admin-password <AdminPassword> \
+    --sku-name <SkuName> \
+    --storage-size <StorageSizeInGB> \
+    --tier <PricingTier> \
+    --version <MySQLVersion>
+```
+
+For example, this permissions allow changing the MySQL password, usefull of course in case that MySQL authentication is enabled.
+
+```bash
+az mysql flexible-server update \
+    --resource-group <resource_group_name> \
+    --name <server_name> \
+    --admin-password <password_to_update>
+```
+
+Additionally it is necesary to have the public access enabled if you want to access from a non private endpoint, to enable it:
+
+```bash
+az mysql flexible-server update --resource-group <resource_group_name> --server-name <server_name> --public-access Enabled
+```
+
+### `Microsoft.DBforMySQL/flexibleServers/read`, `Microsoft.DBforMySQL/flexibleServers/write`, `Microsoft.DBforMySQL/flexibleServers/backups/read`, `Microsoft.ManagedIdentity/userAssignedIdentities/assign/action`
+
+With this permissions you can restore a MySQL server from a backup:
+
+```bash
+az mysql flexible-server restore \
+    --resource-group <resource_group_name> \
+    --name <restore_server_name> \
+    --source-server <server_name> \
+    --yes
+```
+
+### `Microsoft.DBforMySQL/flexibleServers/read`, `Microsoft.DBforMySQL/flexibleServers/write`, `Microsoft.ManagedIdentity/userAssignedIdentities/assign/action`, `Microsoft.DBforMySQL/flexibleServers/administrators/write` && `Microsoft.DBforMySQL/flexibleServers/administrators/read`
+
+With this permission, you can configure Azure Active Directory (AD) administrators for a MySQL Flexible Server. This can be exploited by setting oneself or another account as the AD administrator, granting full administrative control over the MySQL server. It's important that the flexible-server has a user assigned managed identities to use.
+
+```bash
+az mysql flexible-server ad-admin create \
+    --resource-group <ResourceGroupName> \
+    --server-name <ServerName> \
+    --display-name <ADAdminDisplayName> \
+    --identity <IdentityNameOrID> \
+    --object-id <ObjectID>
+```

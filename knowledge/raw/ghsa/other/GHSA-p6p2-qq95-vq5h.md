@@ -1,0 +1,27 @@
+# Remote Code Execution in Custom Integration Upload
+
+**GHSA**: GHSA-p6p2-qq95-vq5h | **CVE**: CVE-2023-41319 | **Severity**: high (CVSS 8.8)
+
+**CWE**: CWE-693
+
+**Affected Packages**:
+- **ethyca-fides** (pip): >= 2.11.0, < 2.19.0
+
+## Description
+
+### Impact
+The Fides webserver API allows custom integrations to be uploaded as a ZIP file. This ZIP file must contain YAML files, but Fides can be configured to also accept the inclusion of custom Python code in it. The custom code is executed in a restricted, sandboxed environment, but the sandbox can be bypassed to execute any arbitrary code.
+
+The vulnerability allows the execution of arbitrary code on the target system within the context of the webserver python process owner on the webserver container, which by default is `root`, and leverage that access to attack underlying infrastructure and integrated systems.
+
+This vulnerability affects Fides versions `2.11.0` through `2.18.0`.
+
+Exploitation is limited to API clients with the `CONNECTOR_TEMPLATE_REGISTER` authorization scope. In the Fides Admin UI this scope is restricted to highly privileged users, specifically root users and users with the owner role. 
+
+Exploitation is only possible if the security configuration parameter `allow_custom_connector_functions` is enabled by the user deploying the Fides webserver container, either in `fides.toml` or by setting the env var `FIDES__SECURITY__ALLOW_CUSTOM_CONNECTOR_FUNCTIONS=True`. By default this configuration parameter is disabled.
+
+### Patches
+The vulnerability has been patched in Fides version `2.19.0`. Users are advised to upgrade to this version or later to secure their systems against this threat.
+
+### Workarounds
+Ensure that `allow_custom_connector_functions` in `fides.toml` and the `FIDES__SECURITY__ALLOW_CUSTOM_CONNECTOR_FUNCTIONS` are both either unset or explicit set to `False`.

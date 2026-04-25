@@ -1,0 +1,15 @@
+# GCP - Resourcemanager Privesc
+
+## resourcemanager
+
+### `resourcemanager.organizations.setIamPolicy`
+
+Like in the exploitation of `iam.serviceAccounts.setIamPolicy`, this permission allows you to **modify** your **permissions** against **any resource** at **organization** level. So, you can follow the same exploitation example.
+
+### `resourcemanager.folders.setIamPolicy`
+
+Like in the exploitation of `iam.serviceAccounts.setIamPolicy`, this permission allows you to **modify** your **permissions** against **any resource** at **folder** level. So, you can follow the same exploitation example.
+
+### `resourcemanager.projects.setIamPolicy`
+
+Like in the exploitation of `iam.serviceAccounts.setIamPolicy`, this permission allows you to **modify** your **permissions** against **any resource** at **project** level. So, you can follow the same exploitation example.

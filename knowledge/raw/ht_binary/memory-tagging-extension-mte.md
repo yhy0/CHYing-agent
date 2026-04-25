@@ -1,0 +1,85 @@
+# Memory Tagging Extension (MTE)
+
+## Basic Information
+
+**Memory Tagging Extension (MTE)** is designed to enhance software reliability and security by **detecting and preventing memory-related errors**, such as buffer overflows and use-after-free vulnerabilities. MTE, as part of the **ARM** architecture, provides a mechanism to attach a **small tag to each memory allocation** and a **corresponding tag to each pointer** referencing that memory. This approach allows for the detection of illegal memory accesses at runtime, significantly reducing the risk of exploiting such vulnerabilities for executing arbitrary code.
+
+### **How Memory Tagging Extension Works**
+
+MTE operates by **dividing memory into small, fixed-size blocks, with each block assigned a tag,** typically a few bits in size.
+
+When a pointer is created to point to that memory, it gets the same tag. This tag is stored in the **unused bits of a memory pointer**, effectively linking the pointer to its corresponding memory block.
+
+<img src="../../images/image (1202).png" alt=""><figcaption><p><a href="https://www.youtube.com/watch?v=UwMt0e_dC_Q">https://www.youtube.com/watch?v=UwMt0e_dC_Q</a></p></figcaption>
+
+When a program accesses memory through a pointer, the MTE hardware checks that the **pointer's tag matches the memory block's tag**. If the tags **do not match**, it indicates an **illegal memory access.**
+
+### MTE Pointer Tags
+
+Tags inside a pointer are stored in 4 bits inside the top byte:
+
+<img src="../../images/image (1203).png" alt=""><figcaption><p><a href="https://www.youtube.com/watch?v=UwMt0e_dC_Q">https://www.youtube.com/watch?v=UwMt0e_dC_Q</a></p></figcaption>
+
+Therefore, this allows up to **16 different tag values**.
+
+### MTE Memory Tags
+
+Every **16B of physical memory** have a corresponding **memory tag**.
+
+The memory tags are stored in a **dedicated RAM region** (not accessible for normal usage). Having 4bits tags for every 16B memory tags up to 3% of RAM.
+
+ARM introduces the following instructions to manipulate these tags in the dedicated RAM memory:
+
+```asm
+STG [<Xn/SP>], #<simm>    Store Allocation (memory) Tag
+LDG <Xt>, [<Xn/SP>]       Load Allocatoin (memory) Tag
+IRG <Xd/SP>, <Xn/SP>      Insert Random [pointer] Tag
+...
+```
+
+## Checking Modes
+
+### Sync
+
+The CPU check the tags **during the instruction executing**, if there is a mismatch, it raises an exception (SIGSEGV with `SEGV_MTESERR`) and you immediately know the exact instruction and address.\
+This is the slowest and most secure because the offending load/store is blocked.
+
+### Async
+
+The CPU check the tags **asynchronously**, and when a mismatch is found it sets an exception bit in one of the system registers. It's **faster** than the previous one but it's **unable to point out** the exact instruction that cause the mismatch and it doesn't raise the exception immediately (`SIGSEGV` with `SEGV_MTEAERR`), giving some time to the attacker to complete his attack.
+
+### Mixed
+
+Per-core preferences (for example writing `sync`, `async` or `asymm` to `/sys/devices/system/cpu/cpu*/mte_tcf_preferred`) let kernels silently upgrade or downgrade per-process requests, so production builds usually request ASYNC while privileged cores force SYNC when workload allows it.
+
+## Implementation & Detection Examples
+
+Called Hardware Tag-Based KASAN, MTE-based KASAN or in-kernel MTE.\
+The kernel allocators (like `kmalloc`) will **call this module** which will prepare the tag to use (randomly) attach it to the kernel space allocated and to the returned pointer.
+
+Note that it'll **only mark enough memory granules** (16B each) for the requested size. So if the requested size was 35 and a slab of 60B was given, it'll mark the first 16\*3 = 48B with this tag and the **rest** will be **marked** with a so-called **invalid tag (0xE)**.
+
+The tag **0xF** is the **match all pointer**. A memory with this pointer allows **any tag to be used** to access its memory (no mismatches). This could prevent MTE from detecting an attack if that tag is being used in the attacked memory.
+
+Therefore there are only **14 values** that can be used to generate tags as 0xE and 0xF are reserved, giving a probability of **reusing tags** to 1/17 -> around **7%**.
+
+If the kernel accesses the **invalid tag granule**, the **mismatch** will be **detected**. If it accesses another memory location and the **memory has a different tag** (or the invalid tag) the mismatch will also be detected. If the attacker is lucky and the memory is using the same tag, it won't be detected. Chances are around 7%.
+
+Another bug occurs in the **last granule** of the allocated memory. If the application requested 35B, it was given the granule from 32 to 48. Therefore, the **bytes from 36 to 47 are using the same tag** but they weren't requested. If the attacker accesses **these extra bytes, this isn't detected**.
+
+When **`kfree()`** is executed, the memory is retagged with the invalid memory tag, so in a **use-after-free**, when the memory is accessed again, the **mismatch is detected**.
+
+However, in a use-after-free, if the same **chunk is reallocated again with the SAME tag** as previously, an attacker will be able to use this access and this won't be detected (around 7% chance).
+
+Moreover, only **`slab` and `page_alloc`** uses tagged memory but in the future this will also be used in `vmalloc`, `stack` and `globals` (at the moment of the video these can still be abused).
+
+When a **mismatch is detected** the kernel will **panic** to prevent further exploitation and retries of the exploit (MTE doesn't have false positives).
+
+### Speculative Tag Leakage (TikTag)
+
+*TikTag* (2024) demonstrated two speculative execution gadgets (TIKTAG-v1/v2) able to leak the 4-bit allocation tag of any address in <4 seconds with >95% success. By speculatively touching attacker-chosen cache lines and observing prefetch-induced timing, an attacker can derandomize the tag assigned to Chrome processes, Android system services, or the Linux kernel and then craft pointers carrying the leaked value. Once the tag space is brute-forced away, the probabilistic granule reuse assumptions (`≈7%` false-negative rate) collapse and classic heap exploits (UAF, OOB) regain near-100% reliability even when MTE is enabled. The paper also ships proof-of-concept exploits that pivot from leaked tags to retagging fake slabs, illustrating that speculative side channels remain a viable bypass path for hardware tagging schemes.
+
+## References
+
+- [https://www.youtube.com/watch?v=UwMt0e_dC_Q](https://www.youtube.com/watch?v=UwMt0e_dC_Q)
+- [TikTag: Breaking ARM's Memory Tagging Extension with Speculative Execution](https://arxiv.org/abs/2406.08719)

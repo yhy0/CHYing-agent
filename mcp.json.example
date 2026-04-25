@@ -1,0 +1,28 @@
+{
+  "_comment": "MCP 服务器配置 — 与 Claude Code CLI --mcp-config 格式一致",
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "npx",
+      "args": ["-y", "chrome-devtools-mcp@latest"],
+      "_description": "Chrome DevTools MCP — 浏览器自动化（导航、交互、截图、JS 注入、网络分析）"
+    },
+    "c2_sliver": {
+      "type": "sse",
+      "url": "http://localhost:8000/sse",
+      "_description": "Sliver C2 MCP 服务器（SSE 传输）"
+    },
+    "local_tool": {
+      "command": "python",
+      "args": ["-m", "my_mcp_server"],
+      "_description": "本地 MCP 服务器（stdio 传输）"
+    },
+    "remote_api": {
+      "type": "http",
+      "url": "https://api.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer your-token"
+      },
+      "_description": "远程 HTTP MCP 服务器"
+    }
+  }
+}

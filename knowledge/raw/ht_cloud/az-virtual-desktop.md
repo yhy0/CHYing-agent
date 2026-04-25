@@ -1,0 +1,125 @@
+# Az - Virtual Desktop
+
+## Azure Virtual Desktop
+
+Virtual Desktop is a **desktop and app virtualization service**. It enables to deliver full Windows desktops, including Windows 11, Windows 10, or Windows Server to users remotely, either as individual desktops or through individual applications. It supports single-session setups for personal use and multi-session environments Users can connect from virtually any device using native apps or a web browser.
+
+### Host Pools
+
+Host pools in Azure Virtual Desktop are collections of Azure virtual machines configured as session hosts, providing virtual desktops and apps to users. There are two main types: 
+
+- **Personal host pools**, where each virtual machine is dedicated to a single user.
+  - It can be configured so the **admin can assign** specific users to VMs or having this done **automatically**.
+  - This is ideal for people with intensive workloads as each person will have its own VM. Moreover, they will be able to store files and configure settings in the OS disk and these will persist as **each user has its own VM (host)**.
+
+- **Pooled host pools**, where multiple **users share resources** on available session hosts.
+  - It’s possible to configure a **maximum number of users** (sessions) per host.
+  - It’s possible to **add VMs manually** using a registration keys, or **allow Azure to automatically scale** the number of hosts without having the option of adding VMs using the registration key. It’s not possible to automatically scale VMs for personal pools.
+  - To persist files in users sessions, it’s needed to use **FSlogix**.
+
+### Session Hosts
+
+These are the **VMs that users will connect to.** 
+
+- If automated scaling was selected, a template will be created with the **characteristics of the hosts** that need to be created for the pool.
+- If not, when creating the Host pool it’s possible to indicate the **characteristics and the number of VMs** you want to create and Azure will create and add them for you.
+
+The main features to **configure the VMs** are:
+
+- The **prefix** name of the new VMs
+- The **VM type**: This can be “Azure virtual machine” (to use Azure VMs) or “Azure Local virtual machine” which allow hosts to be deployed on-premises or at the edge.
+- The location, zones, VM security options, image, CPU, memory, Disk size…
+- The **VNet, security group and ports** to expose to the internet
+- It’s possible to set credentials to automatically **join an AD domain**, or use Entra ID directory
+  - If Entra ID, It’s possible to automatically **enroll the new VM in Intune**
+- It’s needed to set an **administrator username and password** unless Azure will scale the hosts, in that case a **secret must be configured with the username and another one with the password**
+- It’s possible to **configure a script to be executed** for custom configuration
+
+### Application Groups
+
+**Application groups** control user access to either a full desktop or specific sets of applications available on session hosts within a host pool.
+
+There are two types of application groups:
+
+- **Desktop application groups**, which give users access to a complete Windows desktops and attached apps.
+- **RemoteApp groups**, which allow users to access individual applications.
+  - It’s not possible to assign this kind of application group to a Personal Pool.
+  - It’s needed to indicate the path to the binary to execute inside the VM.
+
+A Pooled Pool can have **one Desktop application** group and **multiple RemoteApp groups** and users can be assigned to multiple application groups across different host pools.
+
+When a user is **granted access** it’s given the role **`Desktop Virtualization User`** over the application group.
+
+### Workspaces & Connections
+
+A **workspace** is a collection of application groups.
+
+In order to **connect** to the Desktop or apps assigned it’s possible to do so from [https://windows365.microsoft.com/ent#/devices](https://windows365.microsoft.com/ent#/devices)
+And there are other methods described on [https://learn.microsoft.com/en-us/azure/virtual-desktop/users/connect-remote-desktop-client](https://learn.microsoft.com/en-us/azure/virtual-desktop/users/connect-remote-desktop-client)
+
+When a user access his account he is going to be **presented separated by workspaces everything he has access to**. Therefore, it’s needed to add **each application group to one workspace** in order for the defined accesses to be visible.
+
+In order for a user to be able to access a Desktop or an app, he also needs the role **`Virtual Machine User Login`** or **`Virtual Machine Administrator Login`** over the VM.
+
+### Managed Identities
+
+It’s not possible to assign managed identities to host pools so the created VMs inside a pool will have them.
+However, it’s possible to **assign system and user managed identities to the VMs** and then access the tokens from the metadata. Actually, after launching the host pools form the web, the 2 generated VMs have the system assigned managed identity enabled (although it doesn’t have any permissions).
+
+### Enumeration
+
+```bash
+az extension add --name desktopvirtualization
+
+# List HostPools
+az desktopvirtualization hostpool list
+
+# List Workspaces 
+az desktopvirtualization workspace list
+
+# List Application Groups
+az desktopvirtualization applicationgroup list 
+
+# List Applications in a Application Group
+az rest --method GET --url "https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.DesktopVirtualization/applicationGroups/{applicationGroupName}/applications?api-version=2024-04-03"
+
+# Check if Desktops are enabled
+az rest --method GET --url "https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.DesktopVirtualization/applicationGroups/{applicationGroupName}/desktops?api-version=2024-04-03"
+
+# List Assigned Users to the Application Group
+az rest \
+  --method GET \
+  --url "https://management.azure.com/subscriptions/<SUBSCRIPTION_ID>/resourceGroups/<RESOURCE_GROUP_NAME>/providers/Microsoft.DesktopVirtualization/applicationGroups/<APP_GROUP_NAME>/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01" \
+| jq '.value[] | select((.properties.scope | ascii_downcase) == "/subscriptions/<subscription_id_in_lowercase>/resourcegroups/<resource_group_name_in_lowercase>/providers/microsoft.desktopvirtualization/applicationgroups/<app_group_name_in_lowercase>")'
+
+# List hosts
+az rest --method GET --url "https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.DesktopVirtualization/hostPools/{hostPoolName}/sessionHosts?api-version=2024-04-03"
+
+# List App Attach packages
+az rest --method GET --url "https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.DesktopVirtualization/appAttachPackages?api-version=2024-04-03"
+
+# List user sessions
+az rest --method GET --url "https://management.azure.com/ssubscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.DesktopVirtualization/hostpools/{hostPoolName}/sessionhosts/{hostPoolHostName}/userSessions?api-version=2024-04-03"
+
+# List Desktops
+az rest --method GET --url "https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.DesktopVirtualization/applicationGroups/{applicationGroupName}/desktops?api-version=2024-04-03"
+
+# List MSIX Packages
+az rest --method GET --url "https://management.azure.com/subscriptions/{subscriptionId}/resourcegroups/{resourceGroupName}/providers/Microsoft.DesktopVirtualization/hostPools/{hostPoolName}/msixPackages?api-version=2024-04-03"
+
+# List private endpoint connections associated with hostpool.
+az rest --method GET --url "https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.DesktopVirtualization/hostPools/{hostPoolName}/privateEndpointConnections?api-version=2024-04-03"
+
+# List private endpoint connections associated By Workspace.
+az rest --method GET --url "https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.DesktopVirtualization/workspaces/{workspaceName}/privateEndpointConnections?api-version=2024-04-03"
+
+# List the private link resources available for a hostpool.
+az rest --method GET --url "https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.DesktopVirtualization/hostPools/{hostPoolName}/privateLinkResources?api-version=2024-04-03"
+
+# List the private link resources available for this workspace.
+az rest --method GET --url "https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.DesktopVirtualization/workspaces/{workspaceName}/privateLinkResources?api-version=2024-04-03"
+```
+
+## Privesc
+
+## Post Exploitation & Persistence

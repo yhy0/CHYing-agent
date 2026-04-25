@@ -1,0 +1,116 @@
+# Az - PostgreSQL Privesc
+
+## PostgreSQL Privesc
+For more information about SQL Database check:
+
+### `Microsoft.DBforPostgreSQL/flexibleServers/read` && `Microsoft.DBforPostgreSQL/flexibleServers/write`
+
+With this permission, you can create, update, or delete PostgreSQL Flexible Server instances on Azure. This includes provisioning new servers, modifying existing server configurations, decommissioning servers, or change the admin user's password.
+
+```bash
+az postgres flexible-server create \
+    --name <ServerName> \
+    --resource-group <ResourceGroupName> \
+    --location <Location> \
+    --admin-user <AdminUsername> \
+    --admin-password <AdminPassword> \
+    --sku-name <SkuName> \
+    --storage-size <StorageSizeInGB> \
+    --tier <PricingTier> \
+    --version <PostgreSQLVersion>
+```
+
+For example, this permissions allow changing the PostgreSQL password, usefull of course in case that PostgreSQL authentication is enabled:
+
+```bash
+# Using the CLI
+az postgres flexible-server update \
+    --resource-group <resource_group_name> \
+    --name <server_name> \
+    --admin-password <password_to_update>
+
+# Using the API
+az rest --method patch \
+  --url "https://management.azure.com/subscriptions/<subscription>/resourceGroups/<res-group>/providers/Microsoft.DBforPostgreSQL/flexibleServers/<server-name>?api-version=2024-11-01-preview" \
+  --body '{"properties": {"administratorLoginPassword": "<new-password>"}}
+```
+
+Furthermore, with the permissions you can enable the assigned identity, and operate with the managed identity attached to the server. Here you can find all the extensions that Azure PostgreSQL flexible server supports [https://learn.microsoft.com/en-us/azure/cosmos-db/postgresql/reference-extensions](https://learn.microsoft.com/en-us/azure/cosmos-db/postgresql/reference-extensions). To be able to use these extensions some server parameters (azure.extensions) need to be changed. For example here with a managed identity that can access Azure Storage:
+
+First we change the parameters and be sure the assigned identity is enabled:
+```bash
+az postgres flexible-server parameter set \
+  --resource-group <YourResourceGroupName> \
+  --server-name <YourServerName> \
+  --name azure.extensions \
+  --value "AZURE_STORAGE"
+
+az postgres flexible-server identity update \
+    --resource-group <YourResourceGroupName> \
+    --server-name <YourServerName> \
+    --system-assigned Enabled
+```
+```sql 
+-- Make sure the extension is installed
+CREATE EXTENSION IF NOT EXISTS azure_storage;
+
+-- Login using storage keys
+SELECT azure_storage.account_add('<storage-account>', '<storage-key>');
+-- Login using managed identity
+SELECT azure_storage.account_add(azure_storage.account_options_managed_identity('<storage-account>', 'blob'));
+
+-- List configured accounts
+SELECT * FROM azure_storage.account_list();
+
+-- List all the files in the storage account
+SELECT *
+FROM azure_storage.blob_list(
+    '<storage-account>',
+    '<container>'
+);
+
+-- Access one file inside the storage account
+SELECT *
+FROM azure_storage.blob_get(
+    '<storage-account>',
+    '<container>',
+    'message.txt',
+    decoder := 'text'
+) AS t(content text)
+LIMIT 1;
+```
+
+Additionally it is necesary to have the public access enabled if you want to access from a non private endpoint, to enable it:
+
+```bash
+az postgres flexible-server update --resource-group <resource_group_name> --server-name <server_name> --public-access Enabled
+```
+
+### `Microsoft.DBforPostgreSQL/flexibleServers/read`, `Microsoft.DBforPostgreSQL/flexibleServers/write`, `Microsoft.DBforPostgreSQL/flexibleServers/backups/read`, `Microsoft.ManagedIdentity/userAssignedIdentities/assign/action`
+
+With this permissions you can restore a server from a backup with:
+
+```bash
+az postgres flexible-server restore \
+  --resource-group <RESOURCE_GROUP> \
+  --name <NEW_SERVER_NAME> \
+  --source-server <SOURCE_SERVER_NAME> \
+  --restore-time "<ISO8601_TIMESTAMP>" \
+  --yes
+
+```
+
+### `Microsoft.DBforPostgreSQL/flexibleServers/read`, `Microsoft.DBforPostgreSQL/flexibleServers/write`, `Microsoft.ManagedIdentity/userAssignedIdentities/assign/action`, `Microsoft.DBforPostgreSQL/flexibleServers/administrators/write` && `Microsoft.DBforPostgreSQL/flexibleServers/administrators/read`
+
+With this permission, you can configure Azure Active Directory (AD) administrators for a PostgreSQL Flexible Server. This can be exploited by setting oneself or another account as the AD administrator, granting full administrative control over the PostgreSQL server. Updating existing principal is not supported yet so if there is one created you must delete it first.
+
+It's important that the flexible-server has a user assigned managed identities to use.
+
+```bash
+az postgres flexible-server ad-admin create \
+    --resource-group <ResourceGroupName> \
+    --server-name <ServerName> \
+    --display-name <ADAdminDisplayName> \
+    --identity <IdentityNameOrID> \
+    --object-id <ObjectID>
+```

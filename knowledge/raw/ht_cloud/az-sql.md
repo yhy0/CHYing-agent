@@ -1,0 +1,332 @@
+# Az - SQL
+
+## Azure SQL
+
+Azure SQL is a family of managed, secure, and intelligent products that use the **SQL Server database engine in the Azure cloud**. This means you don't have to worry about the physical administration of your servers, and you can focus on managing your data.
+
+Azure SQL consists of four main offerings:
+
+1. **Azure SQL Server**: A server is needed for the **deployment and management** of SQL Server databases.
+2. **Azure SQL Database**: This is a **fully-managed database service**, which allows you to host individual databases in the Azure cloud.
+3. **Azure SQL Managed Instance**: This is for larger scale, entire SQL Server instance-scoped deployments. 
+4. **Azure SQL Server on Azure VMs**: This is best for architectures where you want **control over the operating system **and SQL Server instance.
+
+### SQL Server Security Features 
+
+**Network access:**
+
+- Public endpoint (can limit access to specific networks).
+- Private endpoints.
+- It’s also possible to restrict connections based on domain names.
+- It’s also possible to allow Azure services to access it (like to use the Query editor in the portal or to allow an Azure VM to connect).
+
+**Authentication Methods:**
+
+- Microsoft **Entra-only** authentication: You need to indicate the Entra principals that will have access to the service.
+- **Both SQL and Microsoft Entra** authentication: Traditional SQL authentication with username and password alongside Microsoft Entra.
+- **Only SQL** authentication: Only allow access via database users.
+
+Note that if any SQL auth is allowed an admin user (username + password) needs to be indicated and if Entra ID auth is selected it’s also needed to indicate at least one principal with admin access.
+
+**Encryption:**
+
+- It’s called “Transparent data encryption” and it encrypts databases, backups, and logs at rest.
+- As always, an Azure managed key is used by default but a customer managed encryption key (CMEK) could also be used.
+**Managed Identities:**
+
+- It’s possible to assign system and user managed MIs.
+- Used to access the encryption key (is a CMEK is used) and other services from the databases.
+  - For some examples of the Azure services that can be accessed from the database check [this page of the docs](https://learn.microsoft.com/en-us/sql/t-sql/statements/create-external-data-source-transact-sql)
+- If more than one UMI is assigned, It’s possible to indicate the default one to use.
+- It’s possible to configure a federated client identity for cross-tenant access.
+
+Some commands to access info inside a blob storage from a SQL database:
+
+```sql
+-- Create a credential for the managed identity
+CREATE DATABASE SCOPED CREDENTIAL [ManagedIdentityCredential]
+WITH IDENTITY = 'Managed Identity';
+GO
+
+-- Create an external data source pointing to the blob storage to access
+CREATE EXTERNAL DATA SOURCE ManagedIdentity
+WITH (
+   TYPE = BLOB_STORAGE,
+   LOCATION = 'https://testsqlidentity.blob.core.windows.net/sqlcontainer',
+   CREDENTIAL = ManagedIdentityCredential
+);
+GO
+
+-- Read a file from ths storage and return it
+SELECT *
+FROM OPENROWSET(
+   BULK 'message.txt',
+   DATA_SOURCE = 'ManagedIdentity',
+   SINGLE_CLOB
+) AS DataFile;
+GO
+```
+
+**Microsoft Defender:**
+
+- Useful for “mitigating potential database vulnerabilities, and detecting anomalous activities”
+- We will talk about Defender in its own lesson (it can be enabled in several other Azure services)
+
+**Backups:**
+- Backup frequency is managed in the retention policies.
+
+**Deleted databases:**
+- It’s possible to restore DBs that have been deleted from existing backups.
+
+## Azure SQL Database
+
+**Azure SQL Database** is a **fully managed database platform as a service (PaaS)** that provides scalable and secure relational database solutions. It's built on the latest SQL Server technologies and eliminates the need for infrastructure management, making it a popular choice for cloud-based applications.
+
+To create a SQL database it’s needed to indicate the SQL server where it’ll be hosted.
+
+### SQL Database Security Features
+
+- **Always Up-to-Date**: Runs on the latest stable version of SQL Server and Receives new features and patches automatically.
+- **Inherited SQL Server security features:**
+  - Authentication (SQL and/or Entra ID)
+  - Assigned Managed Identities
+  - Network restrictions
+  - Encryption
+  - Backups
+  - …
+- **Data redundancy:** Options are local, zone, Geo or Geo-Zone redundant.
+- **Ledger:** It cryptographically verifies the integrity of data, ensuring that any tampering is detected. Useful to financial, medical and any organization managing sensitive data.
+
+A SQL database could be part of an **elastic Pool**. Elastic pools are a cost-effective solution for managing multiple databases by sharing configurable compute (eDTUs) and storage resources among them, with pricing based solely on the resources allocated rather than the number of databases.
+
+#### Azure SQL Column Level Security (Masking) & Row Level Security
+
+**Azure SQL's dynamic** data masking is a feature that helps **protect sensitive information by hiding it** from unauthorized users. Instead of altering the actual data, it dynamically masks the displayed data, ensuring that sensitive details like credit card numbers are obscured. 
+
+The **Dynamic Data Masking** affects to all users except the ones that are unmasked (these users need to be indicated) and administrators. It has the configuration option that specifies which SQL users are exempt from dynamic data masking, with **administrators always excluded**. 
+
+**Azure SQL Row Level Security (RLS)** is a feature that **controls which rows a user can view or modify**, ensuring each user only sees the data relevant to them. By creating security policies with filter or block predicates, organizations can enforce fine-grained access at the database level.
+
+### Azure SQL Managed Instance
+
+**Azure SQL Managed Instances** are for larger scale, entire SQL Server instance-scoped deployments. It provides near 100% compatibility with the latest SQL Server on-premises (Enterprise Edition) Database Engine, which provides a native virtual network (VNet) implementation that addresses common security concerns, and a business model favorable for on-premises SQL Server customers.
+
+### Azure SQL Virtual Machines
+
+**Azure SQL Virtual Machines** allows to **control the operating system** and the SQL Server instance, as a VM will be spawn in the VM service running the SQL server.
+
+When a SQL Virtual Machine is created it’s possible to **selected all the settings of the VM** (as shown the VM lesson) that will be hosting the SQL server.
+- This means that the VM will be accessing some VNet(s), might have **Managed Identities attached** to it, could have file shares mounted… making a **pivoting from the SQL** to the VM super interesting.
+- Moreover, it’s possible to configure an app id and secret to **allow the SQL to access an specific key vault**, which could contain sensitive info.
+
+It's also possible to configure things like **automatic SQL updates**, **automatic backups**, **Entra ID authentication** and most of the features of the other SQL services.
+
+## Enumeration
+
+{{#tabs}}
+{{#tab name="az cli"}}
+
+```bash
+# List Servers
+az sql server list # managed identities are enumerated here too
+## List Server Usages
+az sql server list-usages --name <server_name> --resource-group <resource_group>
+## List Server Firewalls
+az sql server firewall-rule list --resource-group <resource_group> --server <server_name>
+## List of Azure Active Directory administrators in a server.
+az sql server ad-admin list --resource-group <resource_group> --server <server_name>
+## Gets an advanced threat protection
+az sql server advanced-threat-protection-setting show --resource-group <resource_group> --name <server_name>
+## Get server's auditing policy.
+az sql server audit-policy show --resource-group <resource_group> --name <server_name>
+## Gets a server's secure connection policy.
+az sql server conn-policy show --resource-group <resource_group> --server <server_name>
+## Gets a list of server DNS aliases for a server.
+az sql server dns-alias list --resource-group <resource_group> --server <server_name>
+## List of server keys.
+az sql server key list --resource-group <resource_group> --server <server_name>
+## Gets a server encryption protector.
+az sql server tde-key show --resource-group <resource_group> --server <server_name>
+
+# List Databases in a SQL server
+az sql db list --server <server_name> --resource-group <resource_group> #--output table
+## Get details of a specific database
+az sql db show --name <database_name> --server <server_name> --resource-group <resource_group>
+## List database usages
+az sql db list-usages --name <database_name> --server <server_name> --resource-group <resource_group>
+## List of operations performed on the database.
+az sql db op list --database <database_name> --server <server_name> --resource-group <resource_group>
+## List sql database classification
+az sql db classification list --name <database_name> --server <server_name> --resource-group <resource_group>
+## List long-term retention backups for a SQL database
+az sql db ltr-backup list --database <database_name> --server <server_name> --resource-group <resource_group>
+## List long-term retention policy
+az sql db ltr-policy --name <database_name> --server <server_name> --resource-group <resource_group>
+## List long-term retention policy
+az sql db str-policy --name <database_name> --server <server_name> --resource-group <resource_group>
+## List the replicas of a database and their replication status
+az sql db replica list-links --name <database_name> --server <server_name> --resource-group <resource_group>
+## List deleted SQL databases
+az sql db list-deleted --server <server_name> --resource-group <resource_group>
+## List database usages
+az sql db list-usages --name <database_name> --server <server_name> --resource-group <resource_group>
+## List restorable dropped databases in a SQL server
+az sql db list-deleted --server <server_name> --resource-group <resource_group>
+## List advanced threat protection setting show
+az sql db advanced-threat-protection-setting --name <database_name> --server <server_name> --resource-group <resource_group>
+
+# List all elastic pools in a SQL server
+az sql elastic-pool list --server <server_name> --resource-group <resource_group> #--output table
+## List all databases in a specific elastic pool
+az sql elastic-pool show --name <elastic_pool_name>  --server <server_name> --resource-group <resource_group>
+## List of databases in an elastic pool.
+az sql elastic-pool list-dbs --name <elastic_pool_name>  --server <server_name> --resource-group <resource_group>
+
+# List all managed Instances
+az sql mi list
+az sql mi show --resource-group <res-grp> --name <name>
+az sql midb list
+az sql midb show --resource-group <res-grp> --name <name>
+
+# Lis all sql VM
+az sql vm list
+az sql vm show --resource-group <res-grp> --name <name>
+
+# List schema by the database
+az rest --method get \
+  --uri "https://management.azure.com/subscriptions/<subscriptionId>/resourceGroups/<resourceGroupName>/providers/Microsoft.Sql/servers/<serverName>/databases/<databaseName>/schemas?api-version=2021-11-01"
+
+# Get tables of a database with the schema
+az rest --method get \
+  --uri "https://management.azure.com/subscriptions/<subscriptionId>/resourceGroups/<resourceGroupName>/providers/Microsoft.Sql/servers/<serverName>/databases/<databaseName>/schemas/<schemaName>/tables?api-version=2021-11-01"
+
+# Get columns of a database
+az rest --method get \
+  --uri "https://management.azure.com/subscriptions/<subscriptionId>/resourceGroups/<resourceGroupName>/providers/Microsoft.Sql/servers/<serverName>/databases/<databaseName>/columns?api-version=2021-11-01"
+
+# Get columns of a table
+az rest --method get \
+  --uri "https://management.azure.com/subscriptions/<subscriptionId>/resourceGroups/<resourceGroupName>/providers/Microsoft.Sql/servers/<serverName>/databases/<databaseName>/schemas/<schemaName>/tables/<tableName>/columns?api-version=2021-11-01"
+
+# Get DataMaskingPolicies of a database
+az rest --method get \
+  --uri "https://management.azure.com/subscriptions/<subscriptionId>/resourceGroups/<resourceGroupName>/providers/Microsoft.Sql/servers/<serverName>/databases/<databaseName>/dataMaskingPolicies/Default?api-version=2021-11-01"
+
+az rest --method get \
+    --uri "https://management.azure.com/subscriptions/<subscriptionId>/resourceGroups/<resourceGroupName>/providers/Microsoft.Sql/servers/<serverName>/databases/<databaseName>/dataMaskingPolicies/Default/rules?api-version=2021-11-01"
+
+```
+
+{{#endtab}}
+
+{{#tab name="Az PowerShell"}}
+
+```bash
+# List Servers
+Get-AzSqlServer -ResourceGroupName "<resource-group-name>"
+
+# List All Databases in a SQL Server
+Get-AzSqlDatabase -ServerName "<server_name>" -ResourceGroupName "<resource_group>"
+# Get Details of a Specific Database
+Get-AzSqlDatabase -Name "<database_name>" -ServerName "<server_name>" -ResourceGroupName "<resource_group>"
+
+# List Operations Performed on the Database
+Get-AzSqlDatabaseActivity -DatabaseName "<database_name>" -ServerName "<server_name>" -ResourceGroupName "<resource_group>"
+
+# List SQL Database Classification
+Get-AzSqlDatabaseSensitivityClassification -DatabaseName "<database_name>" -ServerName "<server_name>" -ResourceGroupName "<resource_group>"
+
+# List Long-Term Retention Backups for a SQL Database
+Get-AzSqlDatabaseLongTermRetentionBackup -ResourceGroupName "<resource_group>" -Location "<location>"
+# List Replicas of a Database and Their Replication Status
+Get-AzSqlDatabaseReplicationLink -DatabaseName "<database_name>" -ServerName "<server_name>" -ResourceGroupName "<resource_group>"
+# List Deleted SQL Databases
+Get-AzSqlDeletedDatabaseBackup -ServerName "<server_name>" -ResourceGroupName "<resource_group>"
+
+# List All Elastic Pools in a SQL Server
+Get-AzSqlElasticPool -ServerName "<server_name>" -ResourceGroupName "<resource_group>"
+# List All Databases in a Specific Elastic Pool
+Get-AzSqlElasticPoolDatabase -ElasticPoolName "<elastic_pool_name>" -ServerName "<server_name>" -ResourceGroupName "<resource_group>"
+
+# List all managed Instances
+Get-AzSqlInstance
+Get-AzSqlInstance -ResourceGroupName <ResourceGroupName> -Name <ManagedInstanceName>
+
+# List All Databases in a SQL Managed Instance
+Get-AzSqlInstanceDatabase -ResourceGroupName <ResourceGroupName> -InstanceName <ManagedInstanceName>
+
+# Lis all sql VM
+Get-AzSqlVM
+```
+
+{{#endtab}}
+{{#endtabs}}
+
+Additionally if you want to enumerate the Dynamic Data Masking, and Row Level policies, within the database, you can query:
+
+```sql
+--Enumerates the masked columns
+SELECT 
+    OBJECT_NAME(mc.object_id) AS TableName,
+    c.name AS ColumnName,
+    mc.masking_function AS MaskingFunction
+FROM sys.masked_columns AS mc
+JOIN sys.columns AS c 
+    ON mc.object_id = c.object_id 
+    AND mc.column_id = c.column_id
+
+--Enumerates Row level policies
+SELECT
+    sp.name AS PolicyName,
+    sp.is_enabled,
+    sp.create_date,
+    sp.modify_date,
+    OBJECT_NAME(sp.object_id) AS TableName,
+    sp2.predicate_definition AS PredicateDefinition
+FROM sys.security_policies AS sp
+JOIN sys.security_predicates AS sp2
+    ON sp.object_id = sp2.object_id;
+
+```
+
+### Connect and run SQL queries
+
+You could find a connection string (containing credentials) from example [enumerating an Az WebApp](az-app-services.md):
+
+```bash
+function invoke-sql{
+    param($query)
+    $Connection_string = "Server=tcp:supercorp.database.windows.net,1433;Initial Catalog=flag;Persist Security Info=False;User ID=db_read;Password=gAegH!324fAG!#1fht;MultipleActiveResultSets=False;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
+    $Connection = New-Object System.Data.SqlClient.SqlConnection $Connection_string
+    $Connection.Open()
+    $Command = New-Object System.Data.SqlClient.SqlCommand
+    $Command.Connection = $Connection
+    $Command.CommandText = $query
+    $Reader = $Command.ExecuteReader()
+    while ($Reader.Read()) {
+        $Reader.GetValue(0)
+    }
+    $Connection.Close()
+}
+
+invoke-sql 'Select Distinct TABLE_NAME From information_schema.TABLES;'
+```
+
+You can also use sqlcmd to access the database. It is important to know if the server allows public connections `az sql server show --name <server-name> --resource-group <resource-group>`, and also if it the firewall rule let's our IP to access:
+
+```bash
+sqlcmd -S <sql-server>.database.windows.net -U <server-user> -P <server-passworkd> -d <database>
+```
+
+## References
+
+- [https://learn.microsoft.com/en-us/azure/azure-sql/azure-sql-iaas-vs-paas-what-is-overview?view=azuresql](https://learn.microsoft.com/en-us/azure/azure-sql/azure-sql-iaas-vs-paas-what-is-overview?view=azuresql)
+- [https://learn.microsoft.com/en-us/azure/azure-sql/database/single-database-overview?view=azuresql](https://learn.microsoft.com/en-us/azure/azure-sql/database/single-database-overview?view=azuresql)
+- [https://learn.microsoft.com/en-us/azure/azure-sql/managed-instance/sql-managed-instance-paas-overview?view=azuresql](https://learn.microsoft.com/en-us/azure/azure-sql/managed-instance/sql-managed-instance-paas-overview?view=azuresql)
+- [https://learn.microsoft.com/en-us/azure/azure-sql/virtual-machines/windows/sql-server-on-azure-vm-iaas-what-is-overview?view=azuresql](https://learn.microsoft.com/en-us/azure/azure-sql/virtual-machines/windows/sql-server-on-azure-vm-iaas-what-is-overview?view=azuresql)
+
+## Privilege Escalation
+
+## Post Exploitation
+
+### Persistence

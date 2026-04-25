@@ -1,0 +1,228 @@
+# AWS - EFS Enum
+
+## EFS
+
+### Basic Information
+
+Amazon Elastic File System (EFS) is presented as a **fully managed, scalable, and elastic network file system** by AWS. The service facilitates the creation and configuration of **file systems** that can be concurrently accessed by multiple EC2 instances and other AWS services. The key features of EFS include its ability to automatically scale without manual intervention, provision low-latency access, support high-throughput workloads, guarantee data durability, and seamlessly integrate with various AWS security mechanisms.
+
+By **default**, the EFS folder to mount will be **`/`** but it could have a **different name**.
+
+### Network Access
+
+An EFS is created in a VPC and would be **by default accessible in all the VPC subnetworks**. However, the EFS will have a Security Group. In order to **give access to an EC2** (or any other AWS service) to mount the EFS, it’s needed to **allow in the EFS security group an inbound NFS** (2049 port) **rule from the EC2 Security Group**.
+
+Without this, you **won't be able to contact the NFS service**.
+
+For more information about how to do this check: [https://stackoverflow.com/questions/38632222/aws-efs-connection-timeout-at-mount](https://stackoverflow.com/questions/38632222/aws-efs-connection-timeout-at-mount)
+
+### Enumeration
+
+```bash
+# Get filesystems and access policies (if any)
+aws efs describe-file-systems
+aws efs describe-file-system-policy --file-system-id <id>
+
+# Get subnetworks and IP addresses where you can find the file system
+aws efs describe-mount-targets --file-system-id <id>
+aws efs describe-mount-target-security-groups --mount-target-id <id>
+aws ec2 describe-security-groups --group-ids <sg_id>
+
+# Get other access points
+aws efs describe-access-points
+
+# Get replication configurations
+aws efs describe-replication-configurations
+
+# Search for NFS in EC2 networks
+sudo nmap -T4 -Pn -p 2049 --open 10.10.10.0/20 # or /16 to be sure
+```
+
+> [!CAUTION]
+> It might be that the EFS mount point is inside the same VPC but in a different subnet. If you want to be sure you find all **EFS points it would be better to scan the `/16` netmask**.
+
+### Mount EFS
+
+```bash
+sudo mkdir /efs
+
+## Mount found
+sudo apt install nfs-common
+sudo mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport <IP>:/ /efs
+
+## Mount with efs type
+## You need to have installed the package amazon-efs-utils
+sudo yum install amazon-efs-utils # If centos
+sudo apt-get install amazon-efs-utils # If ubuntu
+sudo mount -t efs <file-system-id/EFS DNS name>:/ /efs/
+```
+
+### IAM Access
+
+By **default** anyone with **network access to the EFS** will be able to mount, **read and write it even as root user**. However, File System policies could be in place **only allowing principals with specific permissions** to access it.\
+For example, this File System policy **won't allow even to mount** the file system if you **don't have the IAM permission**:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Id": "efs-policy-wizard-2ca2ba76-5d83-40be-8557-8f6c19eaa797",
+  "Statement": [
+    {
+      "Sid": "efs-statement-e7f4b04c-ad75-4a7f-a316-4e5d12f0dbf5",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "*"
+      },
+      "Action": "",
+      "Resource": "arn:aws:elasticfilesystem:us-east-1:318142138553:file-system/fs-0ab66ad201b58a018",
+      "Condition": {
+        "Bool": {
+          "elasticfilesystem:AccessedViaMountTarget": "true"
+        }
+      }
+    }
+  ]
+}
+```
+
+Or this will **prevent anonymous access**:
+
+<img src="../../../images/image (278).png" alt=""><figcaption></figcaption>
+
+Note that to mount file systems protected by IAM you MUST use the type "efs" in the mount command:
+
+```bash
+sudo mkdir /efs
+sudo mount -t efs -o tls,iam  <file-system-id/EFS DNS name>:/ /efs/
+# To use a different pforile from ~/.aws/credentials
+# You can use: -o tls,iam,awsprofile=namedprofile
+```
+
+### Access Points
+
+**Access points** are **application**-specific entry points **into an EFS file system** that make it easier to manage application access to shared datasets.
+
+When you create an access point, you can **specify the owner and POSIX permissions** for the files and directories created through the access point. You can also **define a custom root directory** for the access point, either by specifying an existing directory or by creating a new one with the desired permissions. This allows you to **control access to your EFS file system on a per-application or per-user basis**, making it easier to manage and secure your shared file data.
+
+**You can mount the File System from an access point with something like:**
+
+```bash
+# Use IAM if you need to use iam permissions
+sudo mount -t efs -o tls,[iam],accesspoint=<access-point-id> \
+    <file-system-id/EFS DNS> /efs/
+```
+
+> [!WARNING]
+> Note that even trying to mount an access point you still need to be able to **contact the NFS service via network**, and if the EFS has a file system **policy**, you need **enough IAM permissions** to mount it.
+
+Access points can be used for the following purposes:
+
+- **Simplify permissions management**: By defining a POSIX user and group for each access point, you can easily manage access permissions for different applications or users without modifying the underlying file system's permissions.
+- **Enforce a root directory**: Access points can restrict access to a specific directory within the EFS file system, ensuring that each application or user operates within its designated folder. This helps prevent accidental data exposure or modification.
+- **Easier file system access**: Access points can be associated with an AWS Lambda function or an AWS Fargate task, simplifying file system access for serverless and containerized applications.
+
+## EFS IP address
+
+Using the information related to the EFS IP address, the following Python script can assist in retrieving details about the EFS system. This information is useful for building the mount system command or performing further enumeration with knowledge of the subnet ID. Additionally, the script shows access points, which can be valuable when the root directory or primary mount path is restricted. In such cases, the access points provide alternative paths to access sensitive information
+
+```bash
+Usage: python efs_ip_enum.py <IP_ADDRESS>
+```
+
+```python
+import boto3
+import sys
+
+def get_efs_info(ip_address):
+    try:
+        session = boto3.Session(profile_name="profile")
+        ec2_client = session.client('ec2')
+        efs_client = session.client('efs')
+
+        print(f"[*] Enumerating EFS information for IP address: {ip_address}\n")
+
+        try:
+            response = ec2_client.describe_network_interfaces(Filters=[
+                {'Name': 'addresses.private-ip-address', 'Values': [ip_address]}
+            ])
+
+            if not response['NetworkInterfaces']:
+                print(f"[!] No network interface found for IP address {ip_address}")
+                return
+
+            network_interface = response['NetworkInterfaces'][0]
+            network_interface_id = network_interface['NetworkInterfaceId']
+            print(f"[+] Found network interface: {network_interface_id}\n")
+        except Exception as e:
+            print(f"[!] Error retrieving network interface: {str(e)}")
+            return
+
+        try:
+            efs_response = efs_client.describe_file_systems()
+            file_systems = efs_response['FileSystems']
+        except Exception as e:
+            print(f"[!] Error retrieving EFS file systems: {str(e)}")
+            return
+
+        for fs in file_systems:
+            fs_id = fs['FileSystemId']
+
+            try:
+                mount_targets = efs_client.describe_mount_targets(FileSystemId=fs_id)['MountTargets']
+
+                for mt in mount_targets:
+                    if mt['NetworkInterfaceId'] == network_interface_id:
+                        try:
+                            policy = efs_client.describe_file_system_policy(FileSystemId=fs_id).get('Policy', 'No policy attached')
+                        except Exception as e:
+                            policy = f"Error retrieving policy: {str(e)}"
+
+                        print("[+] Found matching EFS File System:\n")
+                        print(f"    FileSystemId: {fs_id}")
+                        print(f"    MountTargetId: {mt['MountTargetId']}")
+                        print(f"    DNSName: {fs_id}.efs.{session.region_name}.amazonaws.com")
+                        print(f"    LifeCycleState: {mt['LifeCycleState']}")
+                        print(f"    SubnetId: {mt['SubnetId']}")
+                        print(f"    SecurityGroups: {', '.join(mt.get('SecurityGroups', [])) if mt.get('SecurityGroups') else 'None'}")
+                        print(f"    Policy: {policy}\n")
+
+                        try:
+                            access_points = efs_client.describe_access_points(FileSystemId=fs_id)['AccessPoints']
+
+                            if access_points:
+                                print(f"[+] Access Points for FileSystemId {fs_id}:")
+                                for ap in access_points:
+                                    print(f"    AccessPointId: {ap['AccessPointId']}")
+                                    print(f"    Name: {ap.get('Name', 'N/A')}")
+                                    print(f"    OwnerId: {ap['OwnerId']}")
+                                    posix_user = ap.get('PosixUser', {})
+                                    print(f"    PosixUser: UID={posix_user.get('Uid', 'N/A')}, GID={posix_user.get('Gid', 'N/A')}")
+                                    root_dir = ap.get('RootDirectory', {})
+                                    print(f"    RootDirectory: Path={root_dir.get('Path', 'N/A')}")
+                                    creation_info = root_dir.get('CreationInfo', {})
+                                    print(f"        CreationInfo: OwnerUID={creation_info.get('OwnerUid', 'N/A')}, OwnerGID={creation_info.get('OwnerGid', 'N/A')}, Permissions={creation_info.get('Permissions', 'N/A')}\n")
+                            else:
+                                print(f"[!] No Access Points found for FileSystemId {fs_id}\n")
+                        except Exception as e:
+                            print(f"[!] Error retrieving access points for FileSystemId {fs_id}: {str(e)}\n")
+            except Exception as e:
+                print(f"[!] Error processing file system {fs_id}: {str(e)}\n")
+
+    except Exception as e:
+        print(f"[!] General Error: {str(e)}\n")
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Usage: python efs_enum.py <IP_ADDRESS>")
+        sys.exit(1)
+
+    ip_address = sys.argv[1]
+    get_efs_info(ip_address)
+
+```
+
+## Privesc
+
+## Post Exploitation
+
+## Persistence

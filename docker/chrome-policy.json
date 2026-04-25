@@ -1,0 +1,6 @@
+{
+  "DownloadRestrictions": 0,
+  "DefaultDownloadDirectory": "/tmp/downloads",
+  "PromptForDownload": false,
+  "AutoOpenAllowedForURLs": ["*"]
+}

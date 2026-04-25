@@ -1,0 +1,218 @@
+# Web Vulnerabilities Methodology
+
+In every Web Pentest, there are **several hidden and obvious places that might be vulnerable**. This post is meant to be a checklist to confirm that you have searched for vulnerabilities in all the possible places.
+
+## Proxies
+
+> [!TIP]
+> Nowadays **web** **applications** usually **uses** some kind of **intermediary** **proxies**, those may be (ab)used to exploit vulnerabilities. These vulnerabilities need a vulnerable proxy to be in place, but they usually also need some extra vulnerability in the backend.
+
+- [ ] [**Abusing hop-by-hop headers**](abusing-hop-by-hop-headers.md)
+- [ ] [**Cache Poisoning/Cache Deception**](cache-deception/index.html)
+- [ ] [**HTTP Connection Contamination**](http-connection-contamination.md)
+- [ ] [**HTTP Connection Request Smuggling**](http-connection-request-smuggling.md)
+- [ ] [**HTTP Request Smuggling**](http-request-smuggling/)
+- [ ] [**HTTP Response Smuggling / Desync**](http-response-smuggling-desync.md)
+- [ ] [**H2C Smuggling**](h2c-smuggling.md)
+- [ ] [**Server Side Inclusion/Edge Side Inclusion**](server-side-inclusion-edge-side-inclusion-injection.md)
+- [ ] [**Uncovering Cloudflare**](../network-services-pentesting/pentesting-web/uncovering-cloudflare.md)
+- [ ] [**XSLT Server Side Injection**](xslt-server-side-injection-extensible-stylesheet-language-transformations.md)
+- [ ] [**Proxy / WAF Protections Bypass**](proxy-waf-protections-bypass.md)
+
+## **User input**
+
+> [!TIP]
+> Most of the web applications will **allow users to input some data that will be processed later.**\
+> Depending on the structure of the data the server is expecting some vulnerabilities may or may not apply.
+
+### **Reflected Values**
+
+If the introduced data may somehow be reflected in the response, the page might be vulnerable to several issues.
+
+- [ ] [**Client Side Path Traversal**](client-side-path-traversal.md)
+- [ ] [**Client Side Template Injection**](client-side-template-injection-csti.md)
+- [ ] [**Command Injection**](command-injection.md)
+- [ ] [**CRLF**](crlf-0d-0a.md)
+- [ ] [**Dangling Markup**](dangling-markup-html-scriptless-injection/index.html)
+- [ ] [**File Inclusion/Path Traversal**](file-inclusion/index.html)
+- [ ] [**Open Redirect**](open-redirect.md)
+- [ ] [**Prototype Pollution to XSS**](deserialization/nodejs-proto-prototype-pollution/index.html#client-side-prototype-pollution-to-xss)
+- [ ] [**Server Side Inclusion/Edge Side Inclusion**](server-side-inclusion-edge-side-inclusion-injection.md)
+- [ ] [**Server Side Request Forgery**](ssrf-server-side-request-forgery/index.html)
+- [ ] [**Server Side Template Injection**](ssti-server-side-template-injection/index.html)
+- [ ] [**Reverse Tab Nabbing**](reverse-tab-nabbing.md)
+- [ ] [**XSLT Server Side Injection**](xslt-server-side-injection-extensible-stylesheet-language-transformations.md)
+- [ ] [**XSS**](xss-cross-site-scripting/index.html)
+- [ ] [**XSSI**](xssi-cross-site-script-inclusion.md)
+- [ ] [**XS-Search**](xs-search/index.html)
+
+Some of the mentioned vulnerabilities require special conditions, others just require the content to be reflected. You can find some interesting polygloths to test quickly the vulnerabilities in:
+
+### **Search functionalities**
+
+If the functionality may be used to search some kind of data inside the backend, maybe you can (ab)use it to search arbitrary data.
+
+- [ ] [**File Inclusion/Path Traversal**](file-inclusion/index.html)
+- [ ] [**NoSQL Injection**](nosql-injection.md)
+- [ ] [**LDAP Injection**](ldap-injection.md)
+- [ ] [**ReDoS**](regular-expression-denial-of-service-redos.md)
+- [ ] [**SQL Injection**](sql-injection/index.html)
+- [ ] [**ORM Injection**](orm-injection.md)
+- [ ] [**RSQL Injection**](rsql-injection.md)
+- [ ] [**XPATH Injection**](xpath-injection.md)
+
+### **Forms, WebSockets and PostMsgs**
+
+When a websocket posts a message or a form allowing users to perform actions vulnerabilities may arise.
+
+- [ ] [**Cross Site Request Forgery**](csrf-cross-site-request-forgery.md)
+- [ ] [**Cross-site WebSocket hijacking (CSWSH)**](websocket-attacks.md)
+- [ ] [**Phone Number Injections**](phone-number-injections.md)
+- [ ] [**PostMessage Vulnerabilities**](postmessage-vulnerabilities/index.html)
+
+#### Cross-site WebSocket hijacking & localhost abuse
+
+WebSocket upgrades automatically forward cookies and do not block `ws://127.0.0.1`, so **any web origin can drive desktop IPC endpoints** that skip `Origin` validation. When you spot a launcher exposing a JSON-RPC-like API through a local agent:
+
+- Observe emitted frames to clone the `type`/`name`/`args` tuples required by each method.
+- Bruteforce the listening port directly from the browser (Chromium will handle ~16k failed upgrades) until a loopback socket answers with the protocol banner—Firefox tends to crash quickly under the same load.
+- Chain a *create → privileged action* pair: e.g., invoke a `create*` method that returns a GUID and immediately call the corresponding `*Launch*` method with attacker-controlled payloads.
+
+If you can pass arbitrary JVM flags (such as `AdditionalJavaArguments`), force an error with `-XX:MaxMetaspaceSize=<tiny>` and attach `-XX:OnOutOfMemoryError="<cmd>"` to run OS commands without touching application logic. See [WebSocket attacks](websocket-attacks.md#localhost-websocket-abuse--browser-port-discovery) for a walk-through.
+
+### **HTTP Headers**
+
+Depending on the HTTP headers given by the web server some vulnerabilities might be present.
+
+- [ ] [**Clickjacking**](clickjacking.md)
+- [ ] [**Iframe Traps / Click Isolation**](iframe-traps.md)
+- [ ] [**Content Security Policy bypass**](content-security-policy-csp-bypass/index.html)
+- [ ] [**Cookies Hacking**](hacking-with-cookies/index.html)
+- [ ] [**CORS - Misconfigurations & Bypass**](cors-bypass.md)
+
+### **Bypasses**
+
+There are several specific functionalities where some workarounds might be useful to bypass them
+
+- [ ] [**2FA/OTP Bypass**](2fa-bypass.md)
+- [ ] [**Bypass Payment Process**](bypass-payment-process.md)
+- [ ] [**Captcha Bypass**](captcha-bypass.md)
+- [ ] [**Account Takeover Playbooks**](account-takeover.md)
+- [ ] [**Login Bypass**](login-bypass/index.html)
+- [ ] [**Race Condition**](race-condition.md)
+- [ ] [**Rate Limit Bypass**](rate-limit-bypass.md)
+- [ ] [**Reset Forgotten Password Bypass**](reset-password.md)
+- [ ] [**Registration Vulnerabilities**](registration-vulnerabilities.md)
+
+### **Structured objects / Specific functionalities**
+
+Some functionalities will require the **data to be structured in a very specific format** (like a language serialized object or XML). Therefore, it's easier to identify if the application might be vulnerable as it needs to be processing that kind of data.\
+Some **specific functionalities** may be also vulnerable if a **specific format of the input is used** (like Email Header Injections).
+
+- [ ] [**Deserialization**](deserialization/index.html)
+- [ ] [**Email Header Injection**](email-injections.md)
+- [ ] [**JWT Vulnerabilities**](hacking-jwt-json-web-tokens.md)
+- [ ] [**JSON / XML / YAML Hacking**](json-xml-yaml-hacking.md)
+- [ ] [**XML External Entity**](xxe-xee-xml-external-entity.md)
+- [ ] [**GraphQL Attacks**](../network-services-pentesting/pentesting-web/graphql.md)
+- [ ] [**gRPC-Web Attacks**](grpc-web-pentest.md)
+- [ ] [**SOAP/JAX-WS ThreadLocal Auth Bypass**](soap-jax-ws-threadlocal-auth-bypass.md)
+
+### Files
+
+Functionalities that allow uploading files might be vulnerable to several issues.\
+Functionalities that generate files including user input might execute unexpected code.\
+Users that open files uploaded by users or automatically generated including user input might be compromised.
+
+- [ ] [**File Upload**](file-upload/index.html)
+- [ ] [**Formula Injection**](formula-csv-doc-latex-ghostscript-injection.md)
+- [ ] [**PDF Injection**](xss-cross-site-scripting/pdf-injection.md)
+- [ ] [**Server Side XSS**](xss-cross-site-scripting/server-side-xss-dynamic-pdf.md)
+
+### **External Identity Management**
+
+- [ ] [**OAUTH to Account takeover**](oauth-to-account-takeover.md)
+- [ ] [**SAML Attacks**](saml-attacks/index.html)
+
+### **Other Helpful Vulnerabilities**
+
+These vulnerabilities might help to exploit other vulnerabilities.
+
+- [ ] [**Domain/Subdomain takeover**](domain-subdomain-takeover.md)
+- [ ] [**IDOR**](idor.md)
+- [ ] [**Mass Assignment (CWE-915)**](mass-assignment-cwe-915.md)
+- [ ] [**Parameter Pollution**](parameter-pollution.md)
+- [ ] [**Unicode Normalization vulnerability**](unicode-injection/index.html)
+
+### **Web Servers & Middleware**
+
+Misconfigurations in the edge stack often unlock more impactful bugs in the application layer.
+
+- [ ] [**Apache**](../network-services-pentesting/pentesting-web/apache.md)
+- [ ] [**Nginx**](../network-services-pentesting/pentesting-web/nginx.md)
+- [ ] [**IIS**](../network-services-pentesting/pentesting-web/iis-internet-information-services.md)
+- [ ] [**Tomcat**](../network-services-pentesting/pentesting-web/tomcat/)
+- [ ] [**Spring Actuators**](../network-services-pentesting/pentesting-web/spring-actuators.md)
+- [ ] [**PUT Method / WebDAV**](../network-services-pentesting/pentesting-web/put-method-webdav.md)
+- [ ] [**Special HTTP Headers**](../network-services-pentesting/pentesting-web/special-http-headers.md)
+- [ ] [**WSGI Deployment**](../network-services-pentesting/pentesting-web/wsgi.md)
+- [ ] [**Werkzeug Debug Exposure**](../network-services-pentesting/pentesting-web/werkzeug.md)
+
+### **Application Frameworks & Stacks**
+
+Framework-specific primitives frequently expose gadgets, dangerous defaults, or framework-owned endpoints.
+
+- [ ] [**Django**](../network-services-pentesting/pentesting-web/django.md)
+- [ ] [**Flask**](../network-services-pentesting/pentesting-web/flask.md)
+- [ ] [**NodeJS / Express**](../network-services-pentesting/pentesting-web/nodejs-express.md)
+- [ ] [**Angular**](../network-services-pentesting/pentesting-web/angular.md)
+- [ ] [**Vue / Nuxt**](../network-services-pentesting/pentesting-web/vuejs.md)
+- [ ] [**Next.js**](../network-services-pentesting/pentesting-web/nextjs.md)
+- [ ] [**Laravel**](../network-services-pentesting/pentesting-web/laravel.md)
+- [ ] [**Symfony**](../network-services-pentesting/pentesting-web/symphony.md)
+
+### **CMS, SaaS & Managed Platforms**
+
+High-surface products often ship with known exploits, weak plugins, or privileged admin endpoints.
+
+- [ ] [**WordPress**](../network-services-pentesting/pentesting-web/wordpress.md)
+- [ ] [**Joomla**](../network-services-pentesting/pentesting-web/joomla.md)
+- [ ] [**Drupal**](../network-services-pentesting/pentesting-web/drupal/)
+- [ ] [**Moodle**](../network-services-pentesting/pentesting-web/moodle.md)
+- [ ] [**Prestashop**](../network-services-pentesting/pentesting-web/prestashop.md)
+- [ ] [**Atlassian Jira**](../network-services-pentesting/pentesting-web/jira.md)
+- [ ] [**Grafana**](../network-services-pentesting/pentesting-web/grafana.md)
+- [ ] [**Rocket.Chat**](../network-services-pentesting/pentesting-web/rocket-chat.md)
+- [ ] [**Zabbix**](../network-services-pentesting/pentesting-web/zabbix.md)
+- [ ] [**Microsoft SharePoint**](../network-services-pentesting/pentesting-web/microsoft-sharepoint.md)
+- [ ] [**Sitecore**](../network-services-pentesting/pentesting-web/sitecore/)
+
+### **APIs, Buckets & Integrations**
+
+Server-side helpers and third-party integrations can expose file parsing or storage-layer weaknesses.
+
+- [ ] [**Web API Pentesting**](../network-services-pentesting/pentesting-web/web-api-pentesting.md)
+- [ ] [**Storage Buckets & Firebase**](../network-services-pentesting/pentesting-web/buckets/)
+- [ ] [**Imagemagick Security**](../network-services-pentesting/pentesting-web/imagemagick-security.md)
+- [ ] [**Artifactory & Package Registries**](../network-services-pentesting/pentesting-web/artifactory-hacking-guide.md)
+- [ ] [**Code Review Tooling**](../network-services-pentesting/pentesting-web/code-review-tools.md)
+
+### **Supply Chain & Identifier Abuse**
+
+Attacks that target build pipelines or predictable identifiers can become the initial foothold before exploiting traditional bugs.
+
+- [ ] [**Dependency Confusion**](dependency-confusion.md)
+- [ ] [**Timing Attacks**](timing-attacks.md)
+- [ ] [**UUID Insecurities**](uuid-insecurities.md)
+
+### **Web3, Extensions & Tooling**
+
+Modern applications extend into browsers, wallets, and automation pipelines—keep these vectors in scope.
+
+- [ ] [**dApps / Decentralized Applications**](dapps-DecentralizedApplications.md)
+- [ ] [**Browser Extension Pentesting**](browser-extension-pentesting-methodology/)
+- [ ] [**wfuzz Web Fuzzing**](web-tool-wfuzz.md)
+
+## References
+
+- [When WebSockets Lead to RCE in CurseForge](https://elliott.diy/blog/curseforge/)

